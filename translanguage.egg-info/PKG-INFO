@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: translanguage
+Version: 0.1.0
+Summary: Extensible video translation and dubbing desktop application
+Requires-Python: >=3.11
+Requires-Dist: PySide6<7,>=6.7

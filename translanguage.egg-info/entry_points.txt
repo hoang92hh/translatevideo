@@ -1,0 +1,2 @@
+[console_scripts]
+translanguage = video_translator.app:main

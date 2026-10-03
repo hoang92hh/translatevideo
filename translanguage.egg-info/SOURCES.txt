@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+translanguage.egg-info/PKG-INFO
+translanguage.egg-info/SOURCES.txt
+translanguage.egg-info/dependency_links.txt
+translanguage.egg-info/entry_points.txt
+translanguage.egg-info/requires.txt
+translanguage.egg-info/top_level.txt
+video_translator/__init__.py
+video_translator/__main__.py
+video_translator/app.py
+video_translator/mock_pipeline.py
+video_translator/models.py
+video_translator/state.py
+video_translator/ui.py

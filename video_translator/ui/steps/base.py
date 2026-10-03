@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QProgressBar,
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
@@ -93,6 +94,15 @@ class StepPage(QWidget):
         self.result_summary.setObjectName("resultSummary")
         self.result_summary.setWordWrap(True)
         output_card.content_layout.addWidget(self.result_summary)
+        self.progress_message = QLabel("Đang chờ xử lý")
+        self.progress_message.setObjectName("muted")
+        self.progress_message.setVisible(False)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setVisible(False)
+        output_card.content_layout.addWidget(self.progress_message)
+        output_card.content_layout.addWidget(self.progress_bar)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["ID", "Start", "End", "Source", "Translation", "Audio"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -108,6 +118,9 @@ class StepPage(QWidget):
         self.artifacts.setMaximumHeight(92)
         self.artifacts.setPlaceholderText("Các artifact đầu ra sẽ xuất hiện tại đây")
         output_card.content_layout.addWidget(self.artifacts)
+        result_extra = self.build_result_extra()
+        if result_extra:
+            output_card.content_layout.addWidget(result_extra)
         column.addWidget(output_card)
         actions = QHBoxLayout()
         actions.addStretch()
@@ -121,15 +134,33 @@ class StepPage(QWidget):
     def build_special_card(self) -> Card | None:
         return None
 
+    def build_result_extra(self) -> QWidget | None:
+        return None
+
     def refresh_special(self) -> None:
         pass
 
     def settings(self) -> dict[str, Any]:
         return self.provider_panel.values()
 
+    def prepare_run(self) -> None:
+        """Cho phép step giải phóng resource trước khi worker bắt đầu."""
+        pass
+
     def set_busy(self, busy: bool) -> None:
         self.run_button.setDisabled(busy)
         self.run_button.setText("Đang xử lý…" if busy else f"Chạy step {self.spec.number}")
+        if busy:
+            self.progress_bar.setValue(0)
+            self.progress_bar.setVisible(True)
+            self.progress_message.setText("Đang bắt đầu xử lý…")
+            self.progress_message.setVisible(True)
+
+    def set_progress(self, value: int, message: str) -> None:
+        self.progress_bar.setVisible(True)
+        self.progress_message.setVisible(True)
+        self.progress_bar.setValue(max(0, min(100, value)))
+        self.progress_message.setText(message)
 
     def refresh(self) -> None:
         status = self.state.statuses[self.spec.step]
@@ -192,4 +223,3 @@ class StepPage(QWidget):
         if index + 1 < len(STEP_ORDER):
             self.state.invalidate_from(STEP_ORDER[index + 1])
         self.state.save_project()
-

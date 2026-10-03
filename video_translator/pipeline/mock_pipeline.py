@@ -8,9 +8,22 @@ from .mock_steps import HANDLERS
 
 
 class MockPipeline:
-    """Điều phối các implementation mô phỏng độc lập của từng step."""
+    """Điều phối implementation thật hoặc mô phỏng độc lập của từng step."""
 
-    def execute(self, step: StepId, state: ProjectState, settings: dict[str, Any]) -> StepResult:
+    def execute(
+        self,
+        step: StepId,
+        state: ProjectState,
+        settings: dict[str, Any],
+        progress: Callable[[int, str], None] | None = None,
+    ) -> StepResult:
         handler: Callable[[ProjectState, dict[str, Any]], StepResult] = HANDLERS[step]
-        return handler(state, settings)
-
+        if progress:
+            progress(0, "Đang bắt đầu xử lý…")
+        if step == StepId.EXTRACT:
+            result = handler(state, settings, progress)
+        else:
+            result = handler(state, settings)
+        if progress:
+            progress(100, "Hoàn thành.")
+        return result

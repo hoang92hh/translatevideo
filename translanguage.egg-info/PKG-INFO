@@ -3,4 +3,5 @@ Name: translanguage
 Version: 0.1.0
 Summary: Extensible video translation and dubbing desktop application
 Requires-Python: >=3.11
+Requires-Dist: audio-separator[cpu]<1,>=0.47
 Requires-Dist: PySide6<7,>=6.7

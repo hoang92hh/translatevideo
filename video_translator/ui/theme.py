@@ -42,6 +42,11 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QListWidget {
 QLineEdit:focus, QComboBox:focus, QTextEdit:focus { border-color: #38bdf8; }
 QComboBox::drop-down { border: none; width: 24px; }
 QCheckBox { spacing: 8px; }
+QProgressBar {
+    background: #0b1220; border: 1px solid #2a3850; border-radius: 6px;
+    min-height: 14px; text-align: center; color: #e8edf6;
+}
+QProgressBar::chunk { background: #0284c7; border-radius: 5px; }
 QListWidget#recentProjects::item { padding: 12px; border-bottom: 1px solid #202c41; }
 QListWidget#recentProjects::item:hover { background: #162237; }
 QTableWidget { background: #0b1220; alternate-background-color: #101827; border: 1px solid #29364d; border-radius: 8px; gridline-color: #253047; selection-background-color: #164e63; }
@@ -65,4 +70,3 @@ def apply_application_style(app: QApplication) -> None:
     palette.setColor(palette.ColorRole.HighlightedText, QColor("#ffffff"))
     app.setPalette(palette)
     app.setFont(QFont("Segoe UI", 10))
-

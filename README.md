@@ -32,6 +32,7 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 ├── project.json
 ├── input/
 ├── extracted/
+├── audio_separation/
 ├── transcripts/
 ├── translations/
 ├── generated_audio/
@@ -49,4 +50,12 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Giao diện và mock handler của mỗi step nằm trong module riêng.
 - Cấu hình hiển thị theo provider được chọn.
 - Bảng segment giữ ID xuyên suốt pipeline và cho phép chỉnh sửa nội dung.
-- Đầu ra hiện được mô phỏng bởi pipeline trong `video_translator/pipeline/mock_steps/`; chưa gọi FFmpeg, Faster Whisper, Gemini hoặc VieNeu-TTS.
+- Step 1 dùng FFmpeg để tạo Original Mix và có thể dùng MDX qua `audio-separator` để tạo `Voice` + `Background`.
+- Mỗi lần chạy MDX tạo một candidate riêng trong `audio_separation/`; người dùng có thể nghe, so sánh, chọn input cho Step 2 và đặt candidate mặc định.
+- Demucs và RoFormer đã có vị trí trong danh sách provider nhưng được đánh dấu chưa triển khai.
+- Có thể tự tìm FFmpeg trong `PATH` hoặc chọn trực tiếp `ffmpeg.exe`; FFprobe trong cùng thư mục được dùng để tính tiến độ và thời lượng.
+- Chế độ chạy toàn pipeline tái sử dụng candidate mặc định còn hợp lệ; nếu chưa có thì chạy MDX mặc định.
+- Khi chạy lại Step 1, audio player được giải phóng trước; MDX tái sử dụng Original Mix có cấu hình phù hợp thay vì ghi đè file đang nghe.
+- Khi chạy MDX, ứng dụng tự đưa thư mục chứa FFmpeg/FFprobe đã chọn vào môi trường của provider; không bắt buộc cấu hình PATH toàn hệ thống.
+- Lỗi provider được hiển thị theo nhóm nguyên nhân, kèm hướng xử lý và phần chi tiết kỹ thuật có thể mở rộng.
+- Step 2–7 hiện vẫn được mô phỏng; chưa gọi Faster Whisper, Gemini hoặc VieNeu-TTS.

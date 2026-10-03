@@ -15,6 +15,7 @@ PROJECT_FILE = "project.json"
 PROJECT_FOLDERS = (
     "input",
     "extracted",
+    "audio_separation",
     "transcripts",
     "translations",
     "generated_audio",
@@ -47,6 +48,11 @@ class VideoProject:
     created_at: str
     updated_at: str
     pipeline: dict[str, Any] = field(default_factory=dict)
+    audio_candidates: list[dict[str, Any]] = field(default_factory=list)
+    selected_audio_candidate_id: str = ""
+    selected_audio_stem: str = ""
+    default_audio_candidate_id: str = ""
+    default_audio_stem: str = ""
 
     @property
     def root_path(self) -> Path:
@@ -122,4 +128,3 @@ class ProjectService:
         for folder in PROJECT_FOLDERS:
             project.path(folder).mkdir(exist_ok=True)
         return project
-

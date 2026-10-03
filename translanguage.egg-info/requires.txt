@@ -1,1 +1,2 @@
+audio-separator[cpu]<1,>=0.47
 PySide6<7,>=6.7

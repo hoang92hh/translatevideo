@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from ..models import STEP_ORDER, StepId, StepStatus
 from ..pipeline import MockPipeline
+from ..pipeline.worker import PipelineWorker
 from ..project import VideoProject
 from ..state import ProjectState
 from .project_manager import ProjectManagerPage
@@ -35,6 +36,7 @@ class MainWindow(QMainWindow):
         self.state = ProjectState()
         self.pipeline = MockPipeline()
         self.running_all = False
+        self.active_workers: set[PipelineWorker] = set()
         self.pages: dict[StepId, StepPage] = {}
         self.stack = QStackedWidget()
         self.project_manager = ProjectManagerPage()
@@ -107,34 +109,69 @@ class MainWindow(QMainWindow):
         self._execute_step(StepId(step_value))
 
     def _execute_step(self, step: StepId, continue_all: bool = False) -> None:
+        if self.active_workers:
+            QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ step hiện tại hoàn thành.")
+            return
         if not self.state.can_run(step):
             QMessageBox.information(self, "Chưa đủ đầu vào", "Hãy hoàn thành step trước trước khi chạy step này.")
             self._stop_run_all()
             return
         page = self.pages[step]
         settings = page.settings()
-        self.state.mark_running(step)
         page.set_busy(True)
+        page.prepare_run()
+        self.state.mark_running(step)
         self.tabs.setCurrentWidget(page)
+        worker = PipelineWorker(self.pipeline, step, self.state, settings)
+        outcome = {"success": False}
+        self.active_workers.add(worker)
+        worker.progress_changed.connect(page.set_progress)
 
-        def finish() -> None:
-            try:
-                self.state.set_result(self.pipeline.execute(step, self.state, settings))
-            except Exception as exc:
-                self.state.mark_error(step)
-                QMessageBox.critical(self, "Không thể chạy step", str(exc))
-                self._stop_run_all()
-            finally:
-                page.set_busy(False)
-                page.refresh()
-            if continue_all and self.running_all:
+        def succeeded(result: object) -> None:
+            self.state.set_result(result)
+            outcome["success"] = True
+            page.set_progress(100, "Hoàn thành.")
+            page.set_busy(False)
+            page.refresh()
+
+        def failed(payload: object) -> None:
+            self.state.mark_error(step)
+            page.set_progress(0, "Xử lý thất bại.")
+            page.set_busy(False)
+            page.refresh()
+            data = payload if isinstance(payload, dict) else {
+                "title": "Không thể chạy step",
+                "message": str(payload),
+                "suggestion": "",
+                "technical_detail": "",
+            }
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Icon.Critical)
+            dialog.setWindowTitle(str(data.get("title", "Không thể chạy step")))
+            dialog.setText(str(data.get("message", "Đã xảy ra lỗi.")))
+            suggestion = str(data.get("suggestion", ""))
+            if suggestion:
+                dialog.setInformativeText(suggestion)
+            technical_detail = str(data.get("technical_detail", ""))
+            if technical_detail:
+                dialog.setDetailedText(technical_detail)
+            dialog.exec()
+            self._stop_run_all()
+
+        def finished() -> None:
+            self.active_workers.discard(worker)
+            worker.deleteLater()
+            if outcome["success"] and continue_all and self.running_all:
                 next_index = STEP_ORDER.index(step) + 1
                 if next_index < len(STEP_ORDER):
                     self._execute_step(STEP_ORDER[next_index], continue_all=True)
                 else:
                     self._stop_run_all()
 
-        QTimer.singleShot(550, finish)
+        worker.succeeded.connect(succeeded)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        QTimer.singleShot(150, worker.start)
 
     def _run_all(self) -> None:
         if not self.state.project:
@@ -144,7 +181,12 @@ class MainWindow(QMainWindow):
         self.running_all = True
         self.run_all_button.setEnabled(False)
         self.run_all_button.setText("Pipeline đang chạy…")
-        self._execute_step(StepId.EXTRACT, continue_all=True)
+        reusable = self.state.valid_default_audio_input()
+        if reusable:
+            self.state.activate_audio_candidate(*reusable)
+            self._execute_step(StepId.STT, continue_all=True)
+        else:
+            self._execute_step(StepId.EXTRACT, continue_all=True)
 
     def _stop_run_all(self) -> None:
         self.running_all = False
@@ -168,6 +210,9 @@ class MainWindow(QMainWindow):
             self.project_label.setText("Chưa mở project")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.active_workers:
+            QMessageBox.information(self, "Pipeline đang chạy", "Hãy chờ step hiện tại hoàn thành trước khi đóng ứng dụng.")
+            event.ignore()
+            return
         self.state.save_project()
         super().closeEvent(event)
-

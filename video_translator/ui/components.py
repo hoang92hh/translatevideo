@@ -6,10 +6,13 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSpinBox,
     QStackedWidget,
     QVBoxLayout,
@@ -17,6 +20,31 @@ from PySide6.QtWidgets import (
 )
 
 from .specs import FieldSpec, ProviderSpec
+
+
+class FilePicker(QWidget):
+    def __init__(self, value: str = "") -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.field = QLineEdit(value)
+        self.field.setPlaceholderText("Auto hoặc đường dẫn tới executable")
+        browse = QPushButton("Chọn file…")
+        browse.clicked.connect(self._browse)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.field, 1)
+        row.addWidget(browse)
+        layout.addLayout(row)
+
+    def _browse(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn executable", "", "Executable (*.exe);;Tất cả file (*)")
+        if path:
+            self.field.setText(path)
+
+    def value(self) -> str:
+        return self.field.text().strip()
 
 
 class Card(QFrame):
@@ -51,6 +79,7 @@ class ProviderPanel(Card):
                 item = self.provider_combo.model().item(index)
                 if item:
                     item.setEnabled(False)
+                    item.setToolTip("Tính năng này đã được khai báo nhưng chưa triển khai.")
             page = QWidget()
             form = QFormLayout(page)
             form.setContentsMargins(0, 8, 0, 0)
@@ -70,6 +99,8 @@ class ProviderPanel(Card):
 
     @staticmethod
     def _make_control(spec: FieldSpec) -> QWidget:
+        if spec.kind == "file":
+            return FilePicker(str(spec.default))
         if spec.kind == "choice":
             widget = QComboBox()
             widget.addItems(spec.choices)
@@ -103,5 +134,6 @@ class ProviderPanel(Card):
                 values[key] = control.value()
             elif isinstance(control, QLineEdit):
                 values[key] = control.text()
+            elif isinstance(control, FilePicker):
+                values[key] = control.value()
         return values
-

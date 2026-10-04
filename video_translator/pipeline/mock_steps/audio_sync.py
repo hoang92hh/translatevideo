@@ -90,6 +90,13 @@ def execute(
                     "speed_factor": outcome.speed_factor,
                     "used_gap": outcome.used_gap,
                     "status": "ready" if outcome.success else "needs_edit",
+                    "initial_sync_error": not outcome.success,
+                    "seq": 0 if outcome.success else 1,
+                    "repair_status": "pending" if not outcome.success else "not_needed",
+                    "draft_text": segment.translated_text,
+                    "edit_source": "original",
+                    "repair_attempts": 0,
+                    "ai_rewrite_count": 0,
                     "error": outcome.error,
                     "corrected_in_step_5": False,
                 }

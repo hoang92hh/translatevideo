@@ -155,6 +155,88 @@ class GoogleTranslationService:
             progress(95, "Đã dịch xong; đang tạo output…")
         return TranslationResponse(translated, credential.source)
 
+    def rewrite_for_timing(
+        self,
+        items: list[dict[str, object]],
+        batch_size: int = 30,
+        progress: ProgressCallback | None = None,
+    ) -> TranslationResponse:
+        """Rút gọn các câu dịch đã có dựa trên thời lượng TTS đo được."""
+        if not items:
+            raise UserFacingError(
+                "Chưa chọn segment",
+                "Không có segment nào được chọn để AI chỉnh sửa.",
+                "Đánh dấu ít nhất một checkbox rồi thử lại.",
+            )
+        client, credential = self._client()
+        rewritten: dict[int, str] = {}
+        size = max(1, batch_size)
+        batches = [items[index : index + size] for index in range(0, len(items), size)]
+        try:
+            from google.genai import types
+
+            for batch_index, batch in enumerate(batches, start=1):
+                if progress:
+                    percent = 5 + int((batch_index - 1) / len(batches) * 88)
+                    progress(percent, f"AI đang rút gọn batch {batch_index}/{len(batches)}…")
+                content = json.dumps(batch, ensure_ascii=False)
+                response = client.models.generate_content(
+                    model=self.model_name,
+                    contents=content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=(
+                            "You are revising existing audiovisual translations so their synthesized speech "
+                            "fits a measured time window. For every item, rewrite current_translation in "
+                            f"{self.target_language}; use source_text only to protect meaning and context. "
+                            "The fields measured_tts_seconds, allowed_seconds, current_required_speed, "
+                            "target_speed, and requested_reduction_ratio describe the real TTS result. "
+                            "Make the sentence concise enough to fit at or below target_speed, using the "
+                            "requested reduction as a practical minimum. Prefer natural spoken phrasing and "
+                            "remove repetition, filler, and optional wording. Preserve essential meaning, "
+                            "negation, speaker intent, proper names, numbers, and cause-and-effect. Do not add "
+                            "facts, explanations, labels, or alternatives. Return every input ID exactly once "
+                            "and do not merge, split, or omit IDs."
+                        ),
+                        response_mime_type="application/json",
+                        response_schema=list[TranslationItem],
+                        temperature=0.1,
+                    ),
+                )
+                parsed = response.parsed
+                if not isinstance(parsed, list):
+                    raise UserFacingError(
+                        "Kết quả Gemini không hợp lệ",
+                        f"Batch {batch_index} không trả về danh sách nội dung rút gọn có cấu trúc.",
+                        "Thử lại hoặc chọn model Gemini khác ở Step 3.",
+                    )
+                batch_result: dict[int, str] = {}
+                for item in parsed:
+                    value = item if isinstance(item, TranslationItem) else TranslationItem.model_validate(item)
+                    text = value.translated_text.strip()
+                    if value.id in batch_result or not text:
+                        raise ValueError(f"ID trùng hoặc nội dung rút gọn trống: {value.id}")
+                    batch_result[value.id] = text
+                expected = {int(item["id"]) for item in batch}
+                if set(batch_result) != expected:
+                    missing = sorted(expected - set(batch_result))
+                    extra = sorted(set(batch_result) - expected)
+                    raise UserFacingError(
+                        "Gemini trả về thiếu segment",
+                        f"Batch {batch_index} không giữ đúng danh sách segment đã chọn.",
+                        "Thử lại với ít segment hơn.",
+                        f"Missing IDs: {missing}; extra IDs: {extra}",
+                    )
+                rewritten.update(batch_result)
+        except UserFacingError:
+            raise
+        except Exception as exc:
+            raise self._friendly_error(exc, credential.value) from exc
+        finally:
+            self._close(client)
+        if progress:
+            progress(95, "AI đã trả về nội dung rút gọn.")
+        return TranslationResponse(rewritten, credential.source)
+
     @staticmethod
     def _close(client: object) -> None:
         close = getattr(client, "close", None)

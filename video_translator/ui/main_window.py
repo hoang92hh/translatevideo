@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -17,9 +18,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config.gemini import GEMINI_DEFAULT_MODEL
 from ..models import STEP_ORDER, StepId, StepStatus
 from ..pipeline import MockPipeline
-from ..pipeline.worker import AudioSyncRepairWorker, PipelineWorker
+from ..pipeline.worker import AudioSyncAiRewriteWorker, AudioSyncBatchRepairWorker, PipelineWorker
 from ..project import VideoProject
 from ..state import ProjectState
 from .project_manager import ProjectManagerPage
@@ -100,8 +102,10 @@ class MainWindow(QMainWindow):
         for page_type in STEP_PAGE_TYPES:
             page = page_type(self.state)
             page.run_requested.connect(self._run_requested)
-            if hasattr(page, "repair_requested"):
-                page.repair_requested.connect(self._repair_sync_segment)
+            if hasattr(page, "ai_rewrite_requested"):
+                page.ai_rewrite_requested.connect(self._rewrite_sync_segments)
+            if hasattr(page, "batch_repair_requested"):
+                page.batch_repair_requested.connect(self._repair_sync_segments)
             self.pages[page.spec.step] = page
             self.tabs.addTab(page, f"{page.spec.number}  {page.spec.title}")
         self.tabs.currentChanged.connect(self._tab_changed)
@@ -156,21 +160,76 @@ class MainWindow(QMainWindow):
     def _run_requested(self, step_value: str) -> None:
         self._execute_step(StepId(step_value))
 
-    def _repair_sync_segment(self, candidate_id: str, segment_id: int, translated_text: str) -> None:
+    def _sync_repair_chain(self, candidate_id: str) -> dict[str, str] | None:
+        candidate = self.state.sync_candidate(candidate_id)
+        if not candidate or not Path(candidate.path).is_file():
+            QMessageBox.information(self, "Không tìm thấy output", "Manifest Step 5 không còn tồn tại.")
+            return None
+        try:
+            sync_payload = json.loads(Path(candidate.path).read_text(encoding="utf-8"))
+            tts_id = str(sync_payload.get("source_tts_candidate_id", ""))
+            tts_candidate = self.state.tts_candidate(tts_id)
+            if not tts_candidate or not Path(tts_candidate.path).is_file():
+                raise ValueError("Không tìm thấy candidate Step 4 nguồn.")
+            tts_payload = json.loads(Path(tts_candidate.path).read_text(encoding="utf-8"))
+            translation_id = str(tts_payload.get("source_translation_candidate_id", ""))
+            translation_candidate = self.state.translation_candidate(translation_id)
+            if not translation_candidate or not Path(translation_candidate.path).is_file():
+                raise ValueError("Không tìm thấy candidate Step 3 nguồn.")
+            translation_payload = json.loads(Path(translation_candidate.path).read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(
+                self,
+                "Chuỗi candidate không hợp lệ",
+                f"Không thể nối candidate Step 3 → Step 4 → Step 5 để cập nhật tại chỗ.\n{exc}",
+            )
+            return None
+        return {
+            "sync_id": candidate_id,
+            "sync_manifest": candidate.path,
+            "tts_id": tts_id,
+            "tts_manifest": tts_candidate.path,
+            "translation_id": translation_id,
+            "translation_manifest": translation_candidate.path,
+            "model": str(translation_payload.get("model") or translation_candidate.metadata.get("model") or GEMINI_DEFAULT_MODEL),
+        }
+
+    @staticmethod
+    def _show_worker_error(parent: QMainWindow, payload: object, fallback_title: str) -> None:
+        data = payload if isinstance(payload, dict) else {
+            "title": fallback_title,
+            "message": str(payload),
+            "suggestion": "",
+            "technical_detail": "",
+        }
+        dialog = QMessageBox(parent)
+        dialog.setIcon(QMessageBox.Icon.Critical)
+        dialog.setWindowTitle(str(data.get("title", fallback_title)))
+        dialog.setText(str(data.get("message", "Đã xảy ra lỗi.")))
+        if data.get("suggestion"):
+            dialog.setInformativeText(str(data["suggestion"]))
+        if data.get("technical_detail"):
+            dialog.setDetailedText(str(data["technical_detail"]))
+        dialog.exec()
+
+    def _rewrite_sync_segments(self, candidate_id: str, selected_texts: dict[int, str]) -> None:
         if self.active_workers:
             QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ tác vụ hiện tại hoàn thành.")
             return
-        candidate = self.state.sync_candidate(candidate_id)
-        page = self.pages[StepId.SYNC]
-        if not candidate or not Path(candidate.path).is_file():
-            QMessageBox.information(self, "Không tìm thấy output", "Manifest Step 5 không còn tồn tại.")
+        if not selected_texts:
+            QMessageBox.information(self, "Chưa chọn segment", "Hãy đánh dấu ít nhất một checkbox trước khi dùng AI.")
             return
-        page.set_repair_busy(True)
-        page.set_progress(0, f"Đang chuẩn bị sửa segment #{segment_id:04d}…")
-        worker = AudioSyncRepairWorker(
-            candidate.path,
-            segment_id,
-            translated_text,
+        chain = self._sync_repair_chain(candidate_id)
+        if not chain:
+            return
+        page = self.pages[StepId.SYNC]
+        page.set_repair_busy(True, f"Đang gửi {len(selected_texts)} segment tới Gemini…")
+        page.set_progress(0, "Đang chuẩn bị nội dung cho Gemini…")
+        worker = AudioSyncAiRewriteWorker(
+            chain["sync_manifest"],
+            selected_texts,
+            chain["model"],
+            self.state.source_language,
             self.state.target_language,
         )
         self.active_workers.add(worker)
@@ -178,35 +237,64 @@ class MainWindow(QMainWindow):
 
         def succeeded(result: object) -> None:
             data = result if isinstance(result, dict) else {}
-            refreshed = self.state.refresh_sync_candidate(candidate_id, activate_if_complete=True)
-            page.set_progress(100, str(data.get("message") or "Đã cập nhật segment."))
-            page.repair_finished(candidate_id)
-            if not refreshed:
-                QMessageBox.warning(self, "Không thể nạp lại output", "Manifest đã sửa nhưng không còn hợp lệ.")
-            elif not bool(data.get("success", False)):
-                QMessageBox.information(
-                    self,
-                    "Segment vẫn còn dài",
-                    str(data.get("message", "Hãy rút gọn thêm nội dung rồi thử lại.")),
-                )
+            translations = {
+                int(key): str(value)
+                for key, value in dict(data.get("translations", {})).items()
+            }
+            message = str(data.get("message") or "AI đã cập nhật nội dung trong danh sách.")
+            page.set_progress(100, message)
+            page.ai_rewrite_finished(translations, message)
 
         def failed(payload: object) -> None:
             page.set_repair_busy(False)
-            data = payload if isinstance(payload, dict) else {
-                "title": "Không thể sửa segment",
-                "message": str(payload),
-                "suggestion": "",
-                "technical_detail": "",
-            }
-            dialog = QMessageBox(self)
-            dialog.setIcon(QMessageBox.Icon.Critical)
-            dialog.setWindowTitle(str(data.get("title", "Không thể sửa segment")))
-            dialog.setText(str(data.get("message", "Đã xảy ra lỗi.")))
-            if data.get("suggestion"):
-                dialog.setInformativeText(str(data["suggestion"]))
-            if data.get("technical_detail"):
-                dialog.setDetailedText(str(data["technical_detail"]))
-            dialog.exec()
+            self._show_worker_error(self, payload, "Không thể dùng AI chỉnh sửa")
+
+        def finished() -> None:
+            self.active_workers.discard(worker)
+            worker.deleteLater()
+
+        worker.succeeded.connect(succeeded)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        QTimer.singleShot(100, worker.start)
+
+    def _repair_sync_segments(self, candidate_id: str, edited_texts: dict[int, str]) -> None:
+        if self.active_workers:
+            QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ tác vụ hiện tại hoàn thành.")
+            return
+        chain = self._sync_repair_chain(candidate_id)
+        if not chain:
+            return
+        page = self.pages[StepId.SYNC]
+        page.prepare_run()
+        page.set_repair_busy(True, "Đang tạo lại voice và đồng bộ toàn bộ segment cần xử lý…")
+        page.set_progress(0, "Đang chuẩn bị cập nhật Step 3 → Step 4 → Step 5…")
+        worker = AudioSyncBatchRepairWorker(
+            chain["sync_manifest"],
+            chain["tts_manifest"],
+            chain["translation_manifest"],
+            edited_texts,
+            self.state.target_language,
+        )
+        self.active_workers.add(worker)
+        worker.progress_changed.connect(page.set_progress)
+
+        def succeeded(result: object) -> None:
+            data = result if isinstance(result, dict) else {}
+            refreshed = self.state.refresh_repaired_chain(
+                chain["translation_id"],
+                chain["tts_id"],
+                candidate_id,
+            )
+            message = str(data.get("message") or "Đã cập nhật các segment.")
+            page.set_progress(100, message)
+            page.repair_finished(candidate_id)
+            if not refreshed:
+                QMessageBox.warning(self, "Không thể nạp lại output", "Các manifest đã cập nhật nhưng không thể nạp lại chuỗi candidate.")
+
+        def failed(payload: object) -> None:
+            page.set_repair_busy(False)
+            self._show_worker_error(self, payload, "Không thể tạo lại voice")
 
         def finished() -> None:
             self.active_workers.discard(worker)

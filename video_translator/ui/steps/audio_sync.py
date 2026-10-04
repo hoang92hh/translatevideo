@@ -12,18 +12,19 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from ...models import StepId, StepResult
+from ..sync_repair_dialog import SyncRepairDialog
 from ..specs import FieldSpec, ProviderSpec, StepSpec
 from .base import StepPage
 
 
 class AudioSyncStepPage(StepPage):
-    repair_requested = Signal(str, int, str)
+    ai_rewrite_requested = Signal(str, object)
+    batch_repair_requested = Signal(str, object)
 
     SPEC = StepSpec(
         StepId.SYNC,
@@ -46,6 +47,7 @@ class AudioSyncStepPage(StepPage):
         self._candidate_payload: dict[str, object] = {}
         self._loaded_manifest_signature: tuple[str, int, int] | None = None
         self._repairing = False
+        self._repair_dialog: SyncRepairDialog | None = None
         super().__init__(state)
 
     def build_result_extra(self) -> QWidget:
@@ -97,22 +99,15 @@ class AudioSyncStepPage(StepPage):
         transport.addWidget(self.time_label)
         layout.addLayout(transport)
 
-        error_title = QLabel("Segment cần sửa")
+        error_title = QLabel("Segment từng lỗi")
         error_title.setObjectName("cardTitle")
         layout.addWidget(error_title)
-        self.error_combo = QComboBox()
-        self.error_combo.currentIndexChanged.connect(self._error_changed)
-        layout.addWidget(self.error_combo)
-        self.error_info = QLabel("Không có segment lỗi")
+        self.error_info = QLabel("Không có segment có seq > 0")
         self.error_info.setObjectName("muted")
         self.error_info.setWordWrap(True)
         layout.addWidget(self.error_info)
-        self.translation_editor = QTextEdit()
-        self.translation_editor.setPlaceholderText("Sửa ngắn lại câu dịch của segment đang lỗi")
-        self.translation_editor.setMaximumHeight(90)
-        layout.addWidget(self.translation_editor)
-        self.repair_button = QPushButton("Tạo lại giọng và đồng bộ segment này")
-        self.repair_button.clicked.connect(self._request_repair)
+        self.repair_button = QPushButton("Mở danh sách xử lý segment")
+        self.repair_button.clicked.connect(self._open_repair_dialog)
         layout.addWidget(self.repair_button)
 
         actions = QHBoxLayout()
@@ -209,29 +204,31 @@ class AudioSyncStepPage(StepPage):
     def _fill_segments(self, segments: list[object]) -> None:
         valid = [item for item in segments if isinstance(item, dict)]
         self.preview_combo.blockSignals(True)
-        self.error_combo.blockSignals(True)
         self.preview_combo.clear()
-        self.error_combo.clear()
         for index, item in enumerate(valid):
             segment_id = int(item.get("id", index + 1))
             label = f"#{segment_id:04d} · {float(item.get('start', 0)):.2f}s–{float(item.get('end', 0)):.2f}s"
             self.preview_combo.addItem(label, index)
-            if item.get("status") != "ready":
-                self.error_combo.addItem(f"{label} · {item.get('error', '')}", index)
         self.preview_combo.blockSignals(False)
-        self.error_combo.blockSignals(False)
         if self.preview_combo.count():
             self.preview_combo.setCurrentIndex(0)
             self._preview_changed()
         else:
             self.preview_info.setText("Candidate không có segment hợp lệ")
-        if self.error_combo.count():
-            self.error_combo.setCurrentIndex(0)
-            self._error_changed()
+        tracked = [
+            item
+            for item in valid
+            if int(item.get("seq", 1 if item.get("status") != "ready" or item.get("corrected_in_step_5") else 0)) > 0
+        ]
+        unresolved = sum(1 for item in tracked if item.get("status") != "ready")
+        if tracked:
+            self.error_info.setText(
+                f"{len(tracked)} segment có seq > 0 · {unresolved} chưa xử lý xong. "
+                "Mở popup để AI chỉnh sửa theo checkbox hoặc sửa nội dung thủ công."
+            )
+            self.repair_button.setEnabled(not self._repairing)
         else:
-            self.error_info.setText("Không có segment lỗi. Output có thể dùng cho Step 6.")
-            self.translation_editor.clear()
-            self.translation_editor.setEnabled(False)
+            self.error_info.setText("Không có segment có seq > 0.")
             self.repair_button.setEnabled(False)
 
     def _segments(self) -> list[dict[str, object]]:
@@ -266,49 +263,91 @@ class AudioSyncStepPage(StepPage):
             self.player.setSource(QUrl.fromLocalFile(str(path)))
             self.player.play()
 
-    def _error_changed(self, *_: object) -> None:
-        index = self.error_combo.currentData()
-        segments = self._segments()
-        if not isinstance(index, int) or index >= len(segments):
-            return
-        item = segments[index]
-        self.translation_editor.setEnabled(True)
-        self.translation_editor.setPlainText(str(item.get("translated_text", "")))
-        self.error_info.setText(
-            f"Segment #{int(item.get('id', 0)):04d} · "
-            f"audio {float(item.get('prepared_duration', 0)):.2f}s / "
-            f"cho phép {float(item.get('allowed_duration', 0)):.2f}s\n"
-            f"{item.get('error', '')}"
-        )
-        self.repair_button.setEnabled(not self._repairing)
-        preview_index = self.preview_combo.findData(index)
-        if preview_index >= 0:
-            self.preview_combo.setCurrentIndex(preview_index)
-
-    def _request_repair(self) -> None:
+    def _open_repair_dialog(self) -> None:
         candidate = self._current_candidate()
-        index = self.error_combo.currentData()
-        segments = self._segments()
-        text = self.translation_editor.toPlainText().strip()
-        if not candidate or not isinstance(index, int) or index >= len(segments):
+        if not candidate or not self._candidate_payload:
             return
-        if not text:
-            QMessageBox.information(self, "Nội dung đang trống", "Hãy nhập câu dịch đã rút gọn.")
+        if self._repair_dialog and self._repair_dialog.isVisible():
+            self._repair_dialog.raise_()
+            self._repair_dialog.activateWindow()
             return
-        self.repair_requested.emit(candidate.id, int(segments[index].get("id", 0)), text)
+        dialog = SyncRepairDialog(candidate.id, dict(self._candidate_payload), self)
+        dialog.ai_requested.connect(lambda texts: self.ai_rewrite_requested.emit(candidate.id, texts))
+        dialog.process_requested.connect(lambda texts: self.batch_repair_requested.emit(candidate.id, texts))
+        dialog.drafts_changed.connect(lambda texts: self._save_repair_drafts(candidate.id, texts))
+        dialog.finished.connect(lambda *_: setattr(self, "_repair_dialog", None))
+        self._repair_dialog = dialog
+        dialog.show()
 
-    def set_repair_busy(self, busy: bool) -> None:
+    def _save_repair_drafts(self, candidate_id: str, texts: dict[int, str]) -> None:
+        candidate = self.state.sync_candidate(candidate_id)
+        if not candidate or not Path(candidate.path).is_file():
+            return
+        try:
+            payload = json.loads(Path(candidate.path).read_text(encoding="utf-8"))
+            raw_segments = payload.get("segments", [])
+            if not isinstance(raw_segments, list):
+                return
+            changed = False
+            for item in raw_segments:
+                if not isinstance(item, dict):
+                    continue
+                segment_id = int(item.get("id", -1))
+                if segment_id not in texts:
+                    continue
+                if item.get("status") == "ready":
+                    continue
+                text = texts[segment_id].strip()
+                previous = str(item.get("draft_text") or item.get("translated_text", "")).strip()
+                if text and text != previous:
+                    item["draft_text"] = text
+                    item["edit_source"] = "manual"
+                    item["repair_status"] = "awaiting_voice"
+                    changed = True
+            if not changed:
+                return
+            manifest = Path(candidate.path)
+            temporary = manifest.with_suffix(f"{manifest.suffix}.part")
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(manifest)
+            self._candidate_payload = payload
+            self._loaded_manifest_signature = None
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return
+
+    def set_repair_busy(self, busy: bool, message: str = "") -> None:
         self._repairing = busy
-        self.repair_button.setEnabled(not busy and self.error_combo.count() > 0)
-        self.repair_button.setText("Đang tạo lại segment…" if busy else "Tạo lại giọng và đồng bộ segment này")
+        self.repair_button.setEnabled(not busy and any(
+            int(item.get("seq", 1 if item.get("status") != "ready" or item.get("corrected_in_step_5") else 0)) > 0
+            for item in self._segments()
+        ))
+        self.repair_button.setText("Đang xử lý…" if busy else "Mở danh sách xử lý segment")
+        if self._repair_dialog:
+            self._repair_dialog.set_busy(busy, message)
         self.run_button.setEnabled(not busy and self.state.can_run(StepId.SYNC))
+
+    def ai_rewrite_finished(self, translations: dict[int, str], message: str) -> None:
+        self.set_repair_busy(False)
+        for item in self._segments():
+            segment_id = int(item.get("id", -1))
+            if segment_id in translations:
+                item["draft_text"] = translations[segment_id]
+                item["edit_source"] = "ai"
+                item["repair_status"] = "awaiting_voice"
+        self._loaded_manifest_signature = None
+        if self._repair_dialog:
+            self._repair_dialog.apply_ai_results(translations)
+            self._repair_dialog.set_busy(False, message)
 
     def repair_finished(self, candidate_id: str) -> None:
         self.set_repair_busy(False)
+        self._loaded_manifest_signature = None
         self._refresh_candidates(prefer_current=True)
         target = self.sync_combo.findData(candidate_id)
         if target >= 0:
             self.sync_combo.setCurrentIndex(target)
+        if self._repair_dialog and self._repair_dialog.candidate_id == candidate_id:
+            self._repair_dialog.load_payload(dict(self._candidate_payload))
 
     def _select_for_step_six(self) -> None:
         candidate = self._current_candidate()

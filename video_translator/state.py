@@ -768,7 +768,12 @@ class ProjectState(QObject):
         self.results[StepId.SYNC] = result
         self.statuses[StepId.SYNC] = StepStatus.ERROR if error_count else StepStatus.DONE
         self.invalidate_from(StepId.BUILD_AUDIO)
-        if not error_count and activate_if_complete:
+        if error_count:
+            if self.selected_sync_candidate_id == candidate_id:
+                self.selected_sync_candidate_id = ""
+            if self.default_sync_candidate_id == candidate_id:
+                self.default_sync_candidate_id = ""
+        elif activate_if_complete:
             self.selected_sync_candidate_id = candidate_id
             self.default_sync_candidate_id = candidate_id
             self.statuses[StepId.BUILD_AUDIO] = StepStatus.READY
@@ -777,6 +782,32 @@ class ProjectState(QObject):
         self.project_changed.emit()
         self.save_project()
         return True
+
+    def refresh_repaired_chain(
+        self,
+        translation_candidate_id: str,
+        tts_candidate_id: str,
+        sync_candidate_id: str,
+    ) -> bool:
+        translation = self._result_from_translation(translation_candidate_id)
+        tts = self._result_from_tts(tts_candidate_id)
+        if translation is None or tts is None:
+            return False
+        translation_candidate = self.translation_candidate(translation_candidate_id)
+        tts_candidate = self.tts_candidate(tts_candidate_id)
+        if translation_candidate:
+            translation_candidate.metadata = dict(translation.metadata)
+        if tts_candidate:
+            tts_candidate.metadata = dict(tts.metadata)
+        if self.selected_translation_candidate_id == translation_candidate_id:
+            self.results[StepId.TRANSLATE] = translation
+            self.statuses[StepId.TRANSLATE] = StepStatus.DONE
+            self.step_changed.emit(StepId.TRANSLATE.value)
+        if self.selected_tts_candidate_id == tts_candidate_id:
+            self.results[StepId.TTS] = tts
+            self.statuses[StepId.TTS] = StepStatus.DONE
+            self.step_changed.emit(StepId.TTS.value)
+        return self.refresh_sync_candidate(sync_candidate_id, activate_if_complete=True)
 
     def remove_sync_candidate(self, candidate_id: str) -> None:
         removed_selected = candidate_id == self.selected_sync_candidate_id

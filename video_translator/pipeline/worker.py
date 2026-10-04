@@ -7,7 +7,10 @@ from PySide6.QtCore import QThread, Signal
 from ..errors import error_payload
 from ..models import StepId
 from ..state import ProjectState
-from ..services.audio_sync_service import repair_sync_segment
+from ..services.audio_sync_service import (
+    repair_sync_segments,
+    rewrite_sync_drafts,
+)
 from .mock_pipeline import MockPipeline
 
 
@@ -43,7 +46,7 @@ class PipelineWorker(QThread):
         self.succeeded.emit(result)
 
 
-class AudioSyncRepairWorker(QThread):
+class AudioSyncAiRewriteWorker(QThread):
     succeeded = Signal(object)
     failed = Signal(object)
     progress_changed = Signal(int, str)
@@ -51,22 +54,61 @@ class AudioSyncRepairWorker(QThread):
     def __init__(
         self,
         manifest_path: str,
-        segment_id: int,
-        translated_text: str,
+        selected_texts: dict[int, str],
+        model_name: str,
+        source_language: str,
         target_language: str,
     ) -> None:
         super().__init__()
         self.manifest_path = manifest_path
-        self.segment_id = segment_id
-        self.translated_text = translated_text
+        self.selected_texts = selected_texts
+        self.model_name = model_name
+        self.source_language = source_language
         self.target_language = target_language
 
     def run(self) -> None:
         try:
-            result = repair_sync_segment(
+            result = rewrite_sync_drafts(
                 self.manifest_path,
-                self.segment_id,
-                self.translated_text,
+                self.selected_texts,
+                self.model_name,
+                self.source_language,
+                self.target_language,
+                self.progress_changed.emit,
+            )
+        except Exception as exc:
+            self.failed.emit(error_payload(exc))
+            return
+        self.succeeded.emit(result)
+
+
+class AudioSyncBatchRepairWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    progress_changed = Signal(int, str)
+
+    def __init__(
+        self,
+        sync_manifest_path: str,
+        tts_manifest_path: str,
+        translation_manifest_path: str,
+        edited_texts: dict[int, str],
+        target_language: str,
+    ) -> None:
+        super().__init__()
+        self.sync_manifest_path = sync_manifest_path
+        self.tts_manifest_path = tts_manifest_path
+        self.translation_manifest_path = translation_manifest_path
+        self.edited_texts = edited_texts
+        self.target_language = target_language
+
+    def run(self) -> None:
+        try:
+            result = repair_sync_segments(
+                self.sync_manifest_path,
+                self.tts_manifest_path,
+                self.translation_manifest_path,
+                self.edited_texts,
                 self.target_language,
                 self.progress_changed.emit,
             )

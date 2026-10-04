@@ -25,8 +25,9 @@ synchronized_audio/<sync-candidate-id>/
 │   ├── segment_0001.wav
 │   └── ...
 └── repairs/
-    └── segment_XXXX/
-        └── attempt-XXXXXXXX/
+    └── batch-XXXXXXXX/
+        ├── segment_XXXX.wav
+        └── ...
 ```
 
 Candidate không có lỗi mới tự động trở thành input mặc định của Step 6. Có thể chọn lại candidate hoàn chỉnh cũ bằng nút **Dùng làm input Step 6**. Nếu lần chạy mới còn segment lỗi, input Step 6 đã chọn trước đó không thay đổi.
@@ -37,26 +38,35 @@ Khi audio cần tốc độ cao hơn giới hạn đã chọn, Step 5 không c�
 
 Để sửa:
 
-1. Chọn candidate có nhãn **Cần sửa**.
-2. Chọn segment trong phần **Segment cần sửa**.
-3. Nghe file TTS gốc, xem thời lượng audio và thời lượng cho phép.
-4. Rút gọn câu dịch nhưng giữ nguyên ý.
-5. Bấm **Tạo lại giọng và đồng bộ segment này**.
+1. Chọn candidate có nhãn **Cần sửa** và mở **Danh sách xử lý segment**.
+2. Popup chỉ hiển thị các segment có `seq > 0`. Checkbox dùng riêng để chọn những câu cần Gemini rút gọn.
+   Có thể dùng **Chọn tất cả** hoặc **Bỏ chọn tất cả** để thay đổi nhanh checkbox AI. Row **Đã xử lý** được giữ để theo dõi nhưng bị khóa, không được chọn AI hoặc tạo voice lại.
+3. Bấm **AI chỉnh sửa các segment đã chọn**. Nếu chưa chọn checkbox nào, ứng dụng chỉ hiện thông báo và không gọi API.
+4. Xem nội dung AI trả về ngay trong grid. Các row không chọn có thể sửa tay tại cột nội dung hiện tại.
+5. Bấm **Tạo lại voice và đồng bộ** để xử lý toàn bộ row chưa đạt hoặc vừa được thay đổi.
 
-Tool sử dụng lại provider, giọng, tốc độ và thiết bị của candidate Step 4 để tạo lại đúng một segment. Các segment đã thành công không bị tạo lại. Nếu audio mới vẫn quá dài, segment tiếp tục nằm trong danh sách lỗi để sửa thêm.
+Nút AI chỉ cập nhật nội dung nháp, chưa tạo audio. Nút tạo voice sử dụng lại provider, giọng, tốc độ và thiết bị của candidate Step 4, sau đó cập nhật trực tiếp segment tương ứng trong candidate Step 3, Step 4 và Step 5 hiện tại. Thao tác sửa lỗi không tạo candidate mới. Nếu audio mới vẫn quá dài, segment giữ trạng thái chưa đạt để tiếp tục sửa.
+
+`seq` ghi nhận số lần đồng bộ không đạt của từng segment:
+
+- Thành công ngay lần chạy Step 5 đầu tiên: `seq = 0`.
+- Lỗi ở lần đầu: `seq = 1`.
+- Mỗi lần xử lý lại vẫn lỗi: tăng thêm `1`.
+- Khi xử lý thành công, giữ nguyên `seq`; row được đánh dấu **Đã xử lý** và vẫn còn trong popup.
 
 Khi lỗi cuối cùng được xử lý xong, candidate tự động hoàn thành và trở thành input Step 6.
 
 ## Phạm vi của bản sửa
 
-Bản sửa tại Step 5 là sửa cục bộ:
+Bản sửa được áp dụng cho đúng chuỗi candidate nguồn của output Step 5 đang mở:
 
-- `original_translated_text` giữ câu dịch nhận từ Step 4.
-- `translated_text` giữ câu đã sửa tại Step 5.
-- Audio tạo lại và thông tin đồng bộ được lưu trong candidate Step 5.
-- Candidate Step 3 và Step 4 không bị ghi đè.
+- `original_translated_text` giữ câu dịch trước lần sửa đầu tiên.
+- Nội dung hiện tại được ghi vào segment tương ứng của candidate Step 3.
+- Voice mới thay thế audio của segment tương ứng trong candidate Step 4.
+- Kết quả đồng bộ và trạng thái được cập nhật trong candidate Step 5.
+- Các candidate khác không bị thay đổi.
 
-Nếu sau này chọn một candidate Step 4 khác và chạy Step 5 lại từ đầu, các bản sửa cục bộ của candidate Step 5 cũ không tự động áp dụng cho lần chạy mới. Candidate cũ vẫn được lưu để nghe, so sánh hoặc chọn lại.
+Candidate mới chỉ được tạo khi người dùng chạy lại toàn bộ Step 3, Step 4 hoặc Step 5 bằng nút chạy step tương ứng.
 
 ## Kiểm tra trước khi sang Step 6
 

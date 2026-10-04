@@ -104,7 +104,7 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - `Auto` ở provider local chọn GPU khi runtime CUDA của chính provider khả dụng, nếu không chọn CPU. `CPU` và `GPU` tuân thủ đúng lựa chọn; chế độ `GPU` báo lỗi thay vì fallback CPU.
 - XTTS-v2 chỉ nằm trong danh sách dưới dạng chưa triển khai và có ghi chú chỉ phi thương mại theo Coqui Public Model License.
 - Step 5 cắt khoảng lặng thừa, tận dụng khoảng trống trước segment kế tiếp, tăng tốc trong giới hạn người dùng chọn và chèn khoảng lặng khi audio ngắn hơn timestamp gốc. Mỗi lần chạy tạo candidate riêng trong `synchronized_audio/`.
-- Segment không thể đặt vừa trong giới hạn tốc độ được liệt kê để sửa câu dịch và tạo lại riêng ngay tại Step 5. Bản sửa không ghi đè output Step 3/4; candidate chỉ trở thành input Step 6 sau khi hết lỗi.
+- Segment không thể đặt vừa trong giới hạn tốc độ được đưa vào popup xử lý của Step 5. Checkbox chỉ chọn các câu cần Gemini rút gọn; các câu còn lại có thể sửa tay trong grid. Nút tạo voice cập nhật trực tiếp segment tương ứng trong candidate Step 3, Step 4 và Step 5 hiện tại, không tạo candidate mới. Candidate Step 5 chỉ trở thành input Step 6 sau khi hết lỗi.
 - Local Model ở Step 3 được đánh dấu chưa triển khai. Step 6–7 hiện vẫn được mô phỏng.
 
 Hướng dẫn chi tiết:

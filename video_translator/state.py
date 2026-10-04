@@ -16,6 +16,7 @@ from .models import (
     StepResult,
     StepStatus,
     TranscriptCandidate,
+    TranslationCandidate,
 )
 from .project import VideoProject
 
@@ -39,6 +40,9 @@ class ProjectState(QObject):
         self.transcript_candidates: dict[str, TranscriptCandidate] = {}
         self.selected_transcript_candidate_id = ""
         self.default_transcript_candidate_id = ""
+        self.translation_candidates: dict[str, TranslationCandidate] = {}
+        self.selected_translation_candidate_id = ""
+        self.default_translation_candidate_id = ""
         self.results: dict[StepId, StepResult] = {}
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -81,6 +85,13 @@ class ProjectState(QObject):
         }
         self.selected_transcript_candidate_id = project.selected_transcript_candidate_id
         self.default_transcript_candidate_id = project.default_transcript_candidate_id
+        self.translation_candidates = {
+            item["id"]: TranslationCandidate(**item)
+            for item in project.translation_candidates
+            if item.get("id")
+        }
+        self.selected_translation_candidate_id = project.selected_translation_candidate_id
+        self.default_translation_candidate_id = project.default_translation_candidate_id
         self.results.clear()
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -92,6 +103,8 @@ class ProjectState(QObject):
             self.statuses[step] = StepStatus.DONE
         self._register_legacy_transcript()
         self._restore_selected_transcript()
+        self._register_legacy_translation()
+        self._restore_selected_translation()
         completed = len(self.results)
         if completed < len(STEP_ORDER):
             self.statuses[STEP_ORDER[completed]] = StepStatus.READY
@@ -119,6 +132,11 @@ class ProjectState(QObject):
         ]
         self.project.selected_transcript_candidate_id = self.selected_transcript_candidate_id
         self.project.default_transcript_candidate_id = self.default_transcript_candidate_id
+        self.project.translation_candidates = [
+            asdict(candidate) for candidate in self.translation_candidates.values()
+        ]
+        self.project.selected_translation_candidate_id = self.selected_translation_candidate_id
+        self.project.default_translation_candidate_id = self.default_translation_candidate_id
         self.project.pipeline = {
             step.value: self._serialize_result(result)
             for step, result in self.results.items()
@@ -136,6 +154,9 @@ class ProjectState(QObject):
             "transcript_candidates": [
                 asdict(candidate) for candidate in result.transcript_candidates
             ],
+            "translation_candidates": [
+                asdict(candidate) for candidate in result.translation_candidates
+            ],
         }
 
     @staticmethod
@@ -149,6 +170,9 @@ class ProjectState(QObject):
             audio_candidates=[AudioCandidate(**item) for item in data.get("audio_candidates", [])],
             transcript_candidates=[
                 TranscriptCandidate(**item) for item in data.get("transcript_candidates", [])
+            ],
+            translation_candidates=[
+                TranslationCandidate(**item) for item in data.get("translation_candidates", [])
             ],
         )
 
@@ -380,6 +404,164 @@ class ProjectState(QObject):
             metadata=metadata,
         )
 
+    def translation_candidate(self, candidate_id: str) -> TranslationCandidate | None:
+        return self.translation_candidates.get(candidate_id)
+
+    def select_translation_candidate(self, candidate_id: str) -> bool:
+        result = self._result_from_translation(candidate_id)
+        if result is None:
+            return False
+        current = self.results.get(StepId.TRANSLATE)
+        current_path = current.artifacts.get("translation", "") if current else ""
+        selection_changed = (
+            candidate_id != self.selected_translation_candidate_id
+            or not current_path
+            or Path(current_path) != Path(result.artifacts["translation"])
+        )
+        self.selected_translation_candidate_id = candidate_id
+        self.default_translation_candidate_id = candidate_id
+        if not selection_changed:
+            self.project_changed.emit()
+            self.save_project()
+            return True
+        self.results[StepId.TRANSLATE] = result
+        self.statuses[StepId.TRANSLATE] = StepStatus.DONE
+        self.invalidate_from(StepId.TTS)
+        self.statuses[StepId.TTS] = StepStatus.READY
+        self.step_changed.emit(StepId.TRANSLATE.value)
+        self.step_changed.emit(StepId.TTS.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def remove_translation_candidate(self, candidate_id: str) -> None:
+        removed_selected = candidate_id == self.selected_translation_candidate_id
+        removed_default = candidate_id == self.default_translation_candidate_id
+        self.translation_candidates.pop(candidate_id, None)
+        fallback = self._latest_valid_translation_candidate()
+        if removed_default:
+            self.default_translation_candidate_id = fallback.id if fallback else ""
+        if removed_selected:
+            self.selected_translation_candidate_id = ""
+            if fallback and self.select_translation_candidate(fallback.id):
+                return
+            self.invalidate_from(StepId.TRANSLATE)
+            if self.statuses[StepId.STT] == StepStatus.DONE:
+                self.statuses[StepId.TRANSLATE] = StepStatus.READY
+        self.step_changed.emit(StepId.TRANSLATE.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _register_legacy_translation(self) -> None:
+        if self.translation_candidates:
+            return
+        result = self.results.get(StepId.TRANSLATE)
+        if not result:
+            return
+        path = Path(result.artifacts.get("translation", ""))
+        if not path.is_file():
+            self.invalidate_from(StepId.TRANSLATE)
+            if self.statuses[StepId.STT] == StepStatus.DONE:
+                self.statuses[StepId.TRANSLATE] = StepStatus.READY
+            return
+        created_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+        candidate_id = "translate-legacy"
+        candidate = TranslationCandidate(
+            id=candidate_id,
+            label=f"Bản dịch cũ · {path.stem}",
+            created_at=created_at,
+            path=str(path),
+            segment_count=len(result.segments),
+            summary=result.summary,
+            metadata={**result.metadata, "translation_candidate_id": candidate_id},
+        )
+        self.translation_candidates[candidate_id] = candidate
+        self.selected_translation_candidate_id = candidate_id
+        self.default_translation_candidate_id = candidate_id
+        result.metadata["translation_candidate_id"] = candidate_id
+
+    def _restore_selected_translation(self) -> None:
+        if StepId.STT not in self.results:
+            return
+        choices = (
+            self.selected_translation_candidate_id,
+            self.default_translation_candidate_id,
+        )
+        candidate = next(
+            (
+                self.translation_candidate(candidate_id)
+                for candidate_id in choices
+                if candidate_id
+                and self.translation_candidate(candidate_id)
+                and Path(self.translation_candidate(candidate_id).path).is_file()
+            ),
+            None,
+        )
+        candidate = candidate or self._latest_valid_translation_candidate()
+        if not candidate:
+            return
+        self.selected_translation_candidate_id = candidate.id
+        self.default_translation_candidate_id = candidate.id
+        current = self.results.get(StepId.TRANSLATE)
+        current_path = current.artifacts.get("translation", "") if current else ""
+        if current and current_path and Path(current_path) == Path(candidate.path):
+            current.metadata["translation_candidate_id"] = candidate.id
+            return
+        result = self._result_from_translation(candidate.id)
+        if result:
+            self.results[StepId.TRANSLATE] = result
+            self.statuses[StepId.TRANSLATE] = StepStatus.DONE
+            for later in STEP_ORDER[STEP_ORDER.index(StepId.TTS) :]:
+                self.results.pop(later, None)
+                self.statuses[later] = StepStatus.PENDING
+
+    def _latest_valid_translation_candidate(self) -> TranslationCandidate | None:
+        valid = [
+            candidate
+            for candidate in self.translation_candidates.values()
+            if Path(candidate.path).is_file()
+        ]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_translation(self, candidate_id: str) -> StepResult | None:
+        candidate = self.translation_candidate(candidate_id)
+        if not candidate:
+            return None
+        path = Path(candidate.path)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            segments = [
+                Segment(
+                    id=int(item.get("id", index)),
+                    start=float(item.get("start", 0.0)),
+                    end=float(item.get("end", 0.0)),
+                    source_text=str(item.get("source_text", "")),
+                    translated_text=str(item.get("translated_text", "")),
+                    audio_file=str(item.get("audio_file", "")),
+                    synced_audio_file=str(item.get("synced_audio_file", "")),
+                )
+                for index, item in enumerate(payload.get("segments", []), start=1)
+            ]
+        except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if not segments or any(not segment.translated_text.strip() for segment in segments):
+            return None
+        metadata = {
+            **candidate.metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "translation_candidate_id": candidate.id,
+        }
+        summary = candidate.summary or f"Bản dịch {candidate.label} · {len(segments)} segment"
+        return StepResult(
+            step=StepId.TRANSLATE,
+            summary=summary,
+            artifacts={"translation": str(path)},
+            segments=segments,
+            metadata=metadata,
+        )
+
     def set_input_video(self, path: str) -> None:
         if path == self.input_video:
             return
@@ -407,6 +589,9 @@ class ProjectState(QObject):
         if step == StepId.STT and self.default_transcript_candidate_id:
             if self.select_transcript_candidate(self.default_transcript_candidate_id):
                 return
+        if step == StepId.TRANSLATE and self.default_translation_candidate_id:
+            if self.select_translation_candidate(self.default_translation_candidate_id):
+                return
         self.statuses[step] = StepStatus.ERROR
         self.step_changed.emit(step.value)
 
@@ -427,6 +612,12 @@ class ProjectState(QObject):
         if transcript_id and transcript_id in self.transcript_candidates:
             self.selected_transcript_candidate_id = transcript_id
             self.default_transcript_candidate_id = transcript_id
+        for candidate in result.translation_candidates:
+            self.translation_candidates[candidate.id] = candidate
+        translation_id = str(result.metadata.get("recommended_translation_candidate_id", ""))
+        if translation_id and translation_id in self.translation_candidates:
+            self.selected_translation_candidate_id = translation_id
+            self.default_translation_candidate_id = translation_id
         self.results[result.step] = result
         self.statuses[result.step] = StepStatus.DONE
         for later in STEP_ORDER[index + 1 :]:

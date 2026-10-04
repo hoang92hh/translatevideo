@@ -48,6 +48,11 @@ Nếu cần thay phiên bản cho một kiến trúc khác:
 Không thay hai phiên bản đã khóa nếu máy đang dùng GTX 1060/Pascal và pipeline
 đang hoạt động ổn định.
 
+Credential của provider không nằm trong project. Sau khi cài trên máy mới, mở
+**Cài đặt → API & Providers** để nhập lại Google API key. Key được lưu trong
+Windows Credential Locker của tài khoản Windows đang đăng nhập; cũng có thể dùng
+`GEMINI_API_KEY` hoặc `GOOGLE_API_KEY`.
+
 ## 2. Cài công cụ nền
 
 Mở **Command Prompt** và chạy:

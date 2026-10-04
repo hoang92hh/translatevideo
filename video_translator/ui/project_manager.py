@@ -122,6 +122,7 @@ class NewProjectDialog(QDialog):
 
 class ProjectManagerPage(QWidget):
     project_opened = Signal(object)
+    settings_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -146,8 +147,11 @@ class ProjectManagerPage(QWidget):
         new_button.clicked.connect(self.create_new)
         open_button = QPushButton("Mở project có sẵn")
         open_button.clicked.connect(self.open_existing)
+        settings_button = QPushButton("Cài đặt API & Providers")
+        settings_button.clicked.connect(self.settings_requested.emit)
         actions.addWidget(new_button)
         actions.addWidget(open_button)
+        actions.addWidget(settings_button)
         actions.addStretch()
         root.addLayout(actions)
 
@@ -216,4 +220,3 @@ class ProjectManagerPage(QWidget):
             item = QListWidgetItem("Chưa có project gần đây")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.recent_list.addItem(item)
-

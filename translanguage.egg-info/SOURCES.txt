@@ -13,6 +13,8 @@ video_translator/errors.py
 video_translator/models.py
 video_translator/project.py
 video_translator/state.py
+video_translator/config/__init__.py
+video_translator/config/gemini.py
 video_translator/pipeline/__init__.py
 video_translator/pipeline/mock_pipeline.py
 video_translator/pipeline/worker.py
@@ -28,13 +30,16 @@ video_translator/pipeline/mock_steps/translation.py
 video_translator/services/__init__.py
 video_translator/services/audio_separator_service.py
 video_translator/services/audio_separator_worker.py
+video_translator/services/credential_service.py
 video_translator/services/faster_whisper_worker.py
 video_translator/services/ffmpeg_service.py
+video_translator/services/google_translation_service.py
 video_translator/services/speech_to_text_service.py
 video_translator/ui/__init__.py
 video_translator/ui/components.py
 video_translator/ui/main_window.py
 video_translator/ui/project_manager.py
+video_translator/ui/settings_dialog.py
 video_translator/ui/specs.py
 video_translator/ui/theme.py
 video_translator/ui/steps/__init__.py

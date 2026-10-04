@@ -23,6 +23,7 @@ from ..pipeline.worker import PipelineWorker
 from ..project import VideoProject
 from ..state import ProjectState
 from .project_manager import ProjectManagerPage
+from .settings_dialog import ProviderSettingsDialog
 from .steps import STEP_PAGE_TYPES
 from .steps.base import StepPage
 
@@ -41,6 +42,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.project_manager = ProjectManagerPage()
         self.project_manager.project_opened.connect(self._open_project)
+        self.project_manager.settings_requested.connect(self._open_provider_settings)
         self.workspace = self._build_workspace()
         self.stack.addWidget(self.project_manager)
         self.stack.addWidget(self.workspace)
@@ -75,10 +77,13 @@ class MainWindow(QMainWindow):
         open_button.clicked.connect(self.project_manager.open_existing)
         save_button = QPushButton("Lưu")
         save_button.clicked.connect(self.state.save_project)
+        settings_button = QPushButton("Cài đặt")
+        settings_button.clicked.connect(self._open_provider_settings)
         top_layout.addWidget(project_button)
         top_layout.addWidget(new_button)
         top_layout.addWidget(open_button)
         top_layout.addWidget(save_button)
+        top_layout.addWidget(settings_button)
         self.progress_label = QLabel("0 / 7 steps hoàn thành")
         self.progress_label.setObjectName("progressLabel")
         top_layout.addWidget(self.progress_label)
@@ -103,6 +108,17 @@ class MainWindow(QMainWindow):
         self.project_manager.add_recent(project.manifest_path)
         self.stack.setCurrentWidget(self.workspace)
         for page in self.pages.values():
+            page.refresh()
+
+    def _open_provider_settings(self) -> None:
+        dialog = ProviderSettingsDialog(self)
+        dialog.credentials_changed.connect(self._refresh_provider_pages)
+        dialog.exec()
+        self._refresh_provider_pages()
+
+    def _refresh_provider_pages(self) -> None:
+        page = self.pages.get(StepId.TRANSLATE)
+        if page:
             page.refresh()
 
     def _run_requested(self, step_value: str) -> None:

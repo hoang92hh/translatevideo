@@ -2,6 +2,8 @@ audio-separator<1,>=0.47
 audioread<4,>=3.0.1
 av<19,>=11
 faster-whisper<2,>=1.2.1
+google-genai<3,>=2.26
+keyring<26,>=25.7
 PySide6<7,>=6.7
 
 [cpu]

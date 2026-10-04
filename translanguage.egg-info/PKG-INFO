@@ -7,6 +7,8 @@ Requires-Dist: audio-separator<1,>=0.47
 Requires-Dist: audioread<4,>=3.0.1
 Requires-Dist: av<19,>=11
 Requires-Dist: faster-whisper<2,>=1.2.1
+Requires-Dist: google-genai<3,>=2.26
+Requires-Dist: keyring<26,>=25.7
 Requires-Dist: PySide6<7,>=6.7
 Provides-Extra: cpu
 Requires-Dist: audio-separator[cpu]<1,>=0.47; extra == "cpu"

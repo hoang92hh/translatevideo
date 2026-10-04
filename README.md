@@ -1,6 +1,6 @@
 # TransLanguage
 
-Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project, GUI theo từng step, xử lý audio thật ở Step 1 và nhận dạng lời nói bằng Faster Whisper ở Step 2. Các Step 3–7 vẫn dùng dữ liệu mô phỏng.
+Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project, xử lý audio thật ở Step 1, nhận dạng lời nói bằng Faster Whisper ở Step 2 và dịch bằng Google Gemini ở Step 3. Các Step 4–7 vẫn dùng dữ liệu mô phỏng.
 
 ## Chạy ứng dụng
 
@@ -95,7 +95,11 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Khi chạy MDX, ứng dụng tự đưa thư mục chứa FFmpeg/FFprobe đã chọn vào môi trường của provider; không bắt buộc cấu hình PATH toàn hệ thống.
 - Step 2 dùng Faster Whisper để nhận dạng audio đã chọn, giữ timestamp và segment ID. Mỗi lần chạy thành công tạo một candidate riêng tại `transcripts/<candidate-id>/transcript.json`; candidate mới nhất tự trở thành input cho Step 3.
 - Nếu một lần chạy tạo output bị lỗi, candidate không được đăng ký và input thành công được chọn trước đó được giữ nguyên. Đây là quy ước artifact áp dụng cho các step tiếp theo khi được triển khai thật.
+- Step 3 dùng Google Gemini và structured output để giữ nguyên ID của mọi segment. Mỗi lần dịch thành công tạo `translations/<candidate-id>/translated_segments.json`; output được tạo hoặc chọn gần nhất trở thành input Step 4.
+- Google API key được quản lý tập trung tại **Cài đặt → API & Providers** và lưu trong Windows Credential Locker. Mọi project dùng chung credential; API key không được ghi vào `project.json` hoặc artifact.
 - Faster Whisper hỗ trợ `small`, `medium`, `large-v3`, VAD và ba chế độ `Auto`, `CPU`, `GPU`. Model được lưu tại cache riêng của TransLanguage trong `%LOCALAPPDATA%`.
 - Profile CUDA khóa cuBLAS `12.6.4.1` và cuDNN `9.6.0.74` để tiếp tục hỗ trợ GPU Pascal như GTX 1060.
 - Lỗi provider được hiển thị theo nhóm nguyên nhân, kèm hướng xử lý và phần chi tiết kỹ thuật có thể mở rộng.
-- Step 3–7 hiện vẫn được mô phỏng; chưa gọi Gemini hoặc VieNeu-TTS.
+- Local Model ở Step 3 được đánh dấu chưa triển khai. Step 4–7 hiện vẫn được mô phỏng; chưa gọi VieNeu-TTS.
+
+Hướng dẫn chi tiết: [`huong_dan_su_dung/06_huong_dan_step_03_translation.md`](huong_dan_su_dung/06_huong_dan_step_03_translation.md).

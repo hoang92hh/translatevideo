@@ -77,6 +77,17 @@ class TranscriptCandidate:
 
 
 @dataclass(slots=True)
+class TranslationCandidate:
+    id: str
+    label: str
+    created_at: str
+    path: str
+    segment_count: int = 0
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class StepResult:
     step: StepId
     summary: str
@@ -85,3 +96,4 @@ class StepResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     audio_candidates: list[AudioCandidate] = field(default_factory=list)
     transcript_candidates: list[TranscriptCandidate] = field(default_factory=list)
+    translation_candidates: list[TranslationCandidate] = field(default_factory=list)

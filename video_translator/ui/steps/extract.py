@@ -196,9 +196,10 @@ class ExtractStepPage(StepPage):
 
     def _load_audio(self) -> None:
         self.player.stop()
+        if not self.player.source().isEmpty():
+            self.player.setSource(QUrl())
         candidate_id, stem, path = self._current_selection()
         exists = bool(path and Path(path).is_file())
-        self.player.setSource(QUrl.fromLocalFile(path) if exists else QUrl())
         candidate = self.state.candidate(candidate_id)
         if candidate:
             status = "Sẵn sàng" if exists else "File không tồn tại"
@@ -215,6 +216,11 @@ class ExtractStepPage(StepPage):
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
         else:
+            _candidate_id, _stem, path = self._current_selection()
+            if not path or not Path(path).is_file():
+                return
+            if self.player.source().toLocalFile() != path:
+                self.player.setSource(QUrl.fromLocalFile(path))
             self.player.play()
 
     def _playback_changed(self, state: QMediaPlayer.PlaybackState) -> None:

@@ -44,6 +44,7 @@ class AudioSyncStepPage(StepPage):
 
     def __init__(self, state) -> None:
         self._candidate_payload: dict[str, object] = {}
+        self._loaded_manifest_signature: tuple[str, int, int] | None = None
         self._repairing = False
         super().__init__(state)
 
@@ -172,19 +173,33 @@ class AudioSyncStepPage(StepPage):
 
     def _candidate_changed(self, *_: object) -> None:
         self.player.stop()
+        if not self.player.source().isEmpty():
+            self.player.setSource(QUrl())
         candidate = self._current_candidate()
-        self._candidate_payload = {}
         if not candidate:
+            self._candidate_payload = {}
+            self._loaded_manifest_signature = None
             self.sync_info.setText("Chưa có output Step 5")
             self._fill_segments([])
             return
+        manifest = Path(candidate.path)
         try:
-            payload = json.loads(Path(candidate.path).read_text(encoding="utf-8"))
+            stat = manifest.stat()
+            signature = (str(manifest.resolve()), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            signature = None
+        if signature and signature == self._loaded_manifest_signature and self._candidate_payload:
+            return
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            self._candidate_payload = {}
+            self._loaded_manifest_signature = None
             self.sync_info.setText(f"Không thể đọc manifest: {exc}")
             self._fill_segments([])
             return
         self._candidate_payload = payload
+        self._loaded_manifest_signature = signature
         errors = int(payload.get("error_count", 0))
         status = "Hoàn thành" if not errors else f"Cần sửa {errors} segment"
         self.sync_info.setText(f"{status} · {candidate.segment_count} segment\n{candidate.folder}")

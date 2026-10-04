@@ -62,6 +62,7 @@ class TextToSpeechStepPage(StepPage):
     )
 
     def __init__(self, state) -> None:
+        self._loaded_manifest_signature: tuple[str, int, int] | None = None
         super().__init__(state)
         self.table.cellClicked.connect(self._table_segment_clicked)
         self.provider_panel.provider_combo.currentTextChanged.connect(self._update_provider_note)
@@ -197,14 +198,23 @@ class TextToSpeechStepPage(StepPage):
         self._load_candidate_segments(candidate.path)
 
     def _load_candidate_segments(self, manifest_path: str) -> None:
+        manifest = Path(manifest_path)
+        try:
+            stat = manifest.stat()
+            signature = (str(manifest.resolve()), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            signature = None
+        if signature and signature == self._loaded_manifest_signature and self._preview_segments:
+            return
         self.player.stop()
-        self.player.setSource(QUrl())
+        if not self.player.source().isEmpty():
+            self.player.setSource(QUrl())
         self.segment_combo.blockSignals(True)
         self.segment_combo.clear()
         self._preview_segments: list[dict[str, object]] = []
         error_message = ""
         try:
-            payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
             raw_segments = payload.get("segments", [])
             if not isinstance(raw_segments, list):
                 raise ValueError("Danh sách segment không hợp lệ")
@@ -226,14 +236,17 @@ class TextToSpeechStepPage(StepPage):
             error_message = f"Không thể đọc manifest để nghe thử: {exc}"
         self.segment_combo.blockSignals(False)
         if self.segment_combo.count():
+            self._loaded_manifest_signature = signature
             self.segment_combo.setCurrentIndex(0)
             self._segment_changed()
         else:
+            self._loaded_manifest_signature = None
             self._clear_player_source(
                 error_message or "Output này không có segment hợp lệ để nghe."
             )
 
     def _clear_segments(self) -> None:
+        self._loaded_manifest_signature = None
         self._preview_segments = []
         self.segment_combo.blockSignals(True)
         self.segment_combo.clear()
@@ -249,7 +262,8 @@ class TextToSpeechStepPage(StepPage):
         path = str(segment.get("audio_file", ""))
         exists = bool(path and Path(path).is_file())
         self.player.stop()
-        self.player.setSource(QUrl.fromLocalFile(path) if exists else QUrl())
+        if not self.player.source().isEmpty():
+            self.player.setSource(QUrl())
         segment_id = int(segment.get("id", index + 1))
         text = str(segment.get("translated_text", "")).strip()
         status = "Sẵn sàng để nghe" if exists else "File audio không tồn tại"
@@ -284,6 +298,14 @@ class TextToSpeechStepPage(StepPage):
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
         else:
+            index = self.segment_combo.currentData()
+            if not isinstance(index, int) or index < 0 or index >= len(self._preview_segments):
+                return
+            path = str(self._preview_segments[index].get("audio_file", ""))
+            if not path or not Path(path).is_file():
+                return
+            if self.player.source().toLocalFile() != path:
+                self.player.setSource(QUrl.fromLocalFile(path))
             self.player.play()
 
     def _playback_changed(self, state: QMediaPlayer.PlaybackState) -> None:

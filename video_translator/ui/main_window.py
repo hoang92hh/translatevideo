@@ -39,6 +39,8 @@ class MainWindow(QMainWindow):
         self.running_all = False
         self.active_workers: set[PipelineWorker] = set()
         self.pages: dict[StepId, StepPage] = {}
+        self._loading_project = False
+        self._dirty_steps: set[StepId] = set()
         self.stack = QStackedWidget()
         self.project_manager = ProjectManagerPage()
         self.project_manager.project_opened.connect(self._open_project)
@@ -102,15 +104,43 @@ class MainWindow(QMainWindow):
                 page.repair_requested.connect(self._repair_sync_segment)
             self.pages[page.spec.step] = page
             self.tabs.addTab(page, f"{page.spec.number}  {page.spec.title}")
+        self.tabs.currentChanged.connect(self._tab_changed)
         root.addWidget(self.tabs)
         return workspace
 
     def _open_project(self, project: VideoProject) -> None:
-        self.state.bind_project(project)
+        for page in self.pages.values():
+            page.prepare_run()
+        self._loading_project = True
+        try:
+            self.state.bind_project(project)
+        finally:
+            self._loading_project = False
         self.project_manager.add_recent(project.manifest_path)
         self.stack.setCurrentWidget(self.workspace)
-        for page in self.pages.values():
+        current = self.tabs.currentWidget()
+        if isinstance(current, StepPage):
+            step = current.spec.step
+            project_id = project.id
+
+            def refresh_current_page() -> None:
+                if not self.state.project or self.state.project.id != project_id:
+                    return
+                page = self.pages[step]
+                if self.tabs.currentWidget() is page:
+                    page.refresh()
+                    self._dirty_steps.discard(step)
+
+            QTimer.singleShot(25, refresh_current_page)
+        self._refresh_header()
+
+    def _tab_changed(self, index: int) -> None:
+        page = self.tabs.widget(index)
+        if not isinstance(page, StepPage):
+            return
+        if page.spec.step in self._dirty_steps:
             page.refresh()
+            self._dirty_steps.discard(page.spec.step)
 
     def _open_provider_settings(self) -> None:
         dialog = ProviderSettingsDialog(self)
@@ -273,7 +303,13 @@ class MainWindow(QMainWindow):
         self.run_all_button.setText("Chạy toàn bộ pipeline")
 
     def _refresh_step(self, step_value: str) -> None:
-        self.pages[StepId(step_value)].refresh()
+        step = StepId(step_value)
+        page = self.pages[step]
+        if self._loading_project or self.tabs.currentWidget() is not page:
+            self._dirty_steps.add(step)
+        else:
+            page.refresh()
+            self._dirty_steps.discard(step)
         self._refresh_header()
 
     def _refresh_header(self) -> None:

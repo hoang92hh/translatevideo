@@ -101,30 +101,38 @@ def execute(
             str(settings.get("model", "UVR-MDX-NET-Inst_HQ_4.onnx")),
             candidate_dir,
             ffmpeg_path,
+            str(settings.get("device", "Auto")),
         ).separate(
             audio_path,
             (lambda value, message: progress(20 + round(value * 0.8), message)) if progress else None,
         )
         recommended = AudioCandidate(
             id=candidate_id,
-            label=f"MDX · {settings.get('model', 'Default model')}",
+            label=f"MDX · {settings.get('model', 'Default model')} · {separated.actual_device}",
             provider="Audio Separator",
             model_family="MDX",
             model_name=separated.model_name,
             created_at=_now(),
             stems={"voice": separated.voice_path, "background": separated.background_path},
-            metadata={"device": settings.get("device", "Auto")},
+            metadata={
+                "requested_device": separated.requested_device,
+                "actual_device": separated.actual_device,
+                "execution_provider": separated.execution_provider,
+                "device_name": separated.device_name,
+                "device_diagnostics": separated.diagnostics,
+            },
         )
         recommended_stem = "voice"
         candidates.append(recommended)
 
     size_mb = file_size / (1024 * 1024)
     duration_text = f"{float(duration_seconds):.1f}s" if duration_seconds is not None else "không xác định"
+    device_text = f" · {separated.actual_device}" if provider == MDX_PROVIDER else ""
     return StepResult(
         step=StepId.EXTRACT,
         summary=(
             f"Đã tạo {len(candidates)} candidate · {duration_text} · {size_mb:.1f} MB · "
-            f"{requested_rate} Hz · {'Mono' if channels == 1 else 'Stereo'}"
+            f"{requested_rate} Hz · {'Mono' if channels == 1 else 'Stereo'}{device_text}"
         ),
         artifacts={"source_audio": audio_path, **recommended.stems},
         metadata={
@@ -133,6 +141,17 @@ def execute(
             "reused_original": reuse_original,
             "recommended_candidate_id": recommended.id,
             "recommended_stem": recommended_stem,
+            **(
+                {
+                    "requested_device": separated.requested_device,
+                    "actual_device": separated.actual_device,
+                    "execution_provider": separated.execution_provider,
+                    "device_name": separated.device_name,
+                    "device_diagnostics": separated.diagnostics,
+                }
+                if provider == MDX_PROVIDER
+                else {}
+            ),
         },
         audio_candidates=candidates,
     )

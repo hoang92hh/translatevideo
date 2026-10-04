@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-import logging
+import json
 import os
 import shutil
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -21,13 +24,25 @@ class SeparatedAudio:
     voice_path: str
     background_path: str
     model_name: str
+    requested_device: str
+    actual_device: str
+    execution_provider: str
+    device_name: str
+    diagnostics: list[dict[str, object]]
 
 
 class AudioSeparatorService:
-    def __init__(self, model_name: str, output_dir: str | Path, ffmpeg_path: str = "Auto") -> None:
+    def __init__(
+        self,
+        model_name: str,
+        output_dir: str | Path,
+        ffmpeg_path: str = "Auto",
+        device: str = "Auto",
+    ) -> None:
         self.model_name = model_name
         self.output_dir = Path(output_dir)
         self.ffmpeg_path = ffmpeg_path
+        self.device = device
 
     @staticmethod
     def model_cache_dir() -> Path:
@@ -43,31 +58,6 @@ class AudioSeparatorService:
         progress: ProgressCallback | None = None,
     ) -> SeparatedAudio:
         ffmpeg, ffprobe = self._configure_media_tools()
-        try:
-            from audio_separator.separator import Separator
-        except ModuleNotFoundError as exc:
-            raise AudioSeparationError(
-                "Thiếu thư viện cho MDX",
-                f"Không tìm thấy module Python “{exc.name or 'không xác định'}”.",
-                "Chạy: python -m pip install -e .",
-                repr(exc),
-            ) from exc
-        except (ImportError, OSError) as exc:
-            detail = str(exc)
-            if "Application Control" in detail or "DLL load failed" in detail:
-                raise AudioSeparationError(
-                    "Windows đã chặn thư viện MDX",
-                    "Một DLL/PYD cần cho audio-separator không được Windows Application Control cho phép.",
-                    "Kiểm tra Code Integrity log và sử dụng Python environment đã được phê duyệt.",
-                    repr(exc),
-                ) from exc
-            raise AudioSeparationError(
-                "Không thể nạp audio-separator",
-                "audio-separator đã được cài nhưng không thể khởi tạo dependency.",
-                "Mở chi tiết kỹ thuật để xác định module hoặc DLL gây lỗi.",
-                repr(exc),
-            ) from exc
-
         source = Path(input_audio)
         if not source.is_file():
             raise AudioSeparationError(
@@ -79,17 +69,19 @@ class AudioSeparatorService:
         if progress:
             progress(15, "Đang tải engine và model MDX…")
         try:
-            separator = Separator(
-                log_level=logging.WARNING,
-                model_file_dir=str(self.model_cache_dir()),
-                output_dir=str(self.output_dir),
-                output_format="WAV",
-            )
-            separator.load_model(model_filename=self.model_name)
-            if progress:
-                progress(30, "Đang tách Voice và Background bằng MDX…")
-            generated = separator.separate(str(source))
+            worker_result = self._run_worker(source, progress)
+            generated_value = worker_result["generated"]
+            if not isinstance(generated_value, list) or not all(isinstance(path, str) for path in generated_value):
+                raise AudioSeparationError(
+                    "Kết quả worker MDX không hợp lệ",
+                    "Worker không trả về danh sách file audio hợp lệ.",
+                    "Mở chi tiết kỹ thuật để kiểm tra dữ liệu worker.",
+                    repr(generated_value),
+                )
+            generated = generated_value
         except Exception as exc:
+            if isinstance(exc, AudioSeparationError):
+                raise
             raise self._classify_runtime_error(exc, ffmpeg, ffprobe) from exc
 
         resolved = [self._resolve_output(path) for path in generated]
@@ -107,7 +99,111 @@ class AudioSeparatorService:
         background_target = self._normalize_name(background, "background.wav")
         if progress:
             progress(98, "Đang hoàn thiện các stem…")
-        return SeparatedAudio(str(voice_target), str(background_target), self.model_name)
+        return SeparatedAudio(
+            str(voice_target),
+            str(background_target),
+            self.model_name,
+            str(worker_result["requested_device"]),
+            str(worker_result["actual_device"]),
+            str(worker_result["execution_provider"]),
+            str(worker_result.get("device_name", "")),
+            list(worker_result.get("diagnostics", [])),
+        )
+
+    def _run_worker(
+        self,
+        source: Path,
+        progress: ProgressCallback | None,
+        device_override: str | None = None,
+    ) -> dict[str, object]:
+        requested_device = device_override or self.device
+        request = {
+            "model_name": self.model_name,
+            "model_cache_dir": str(self.model_cache_dir()),
+            "output_dir": str(self.output_dir.resolve()),
+            "input_audio": str(source.resolve()),
+            "requested_device": requested_device,
+        }
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "utf-8"
+        command = [sys.executable, "-m", "video_translator.services.audio_separator_worker"]
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        result: dict[str, object] | None = None
+        worker_error: dict[str, object] | None = None
+
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=environment,
+                creationflags=creation_flags,
+            )
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            process.stdin.close()
+
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event_type = event.get("type")
+                if event_type == "progress" and progress:
+                    progress(int(event.get("value", 0)), str(event.get("message", "")))
+                elif event_type == "result":
+                    result = event
+                elif event_type == "error":
+                    worker_error = {
+                        "title": str(event.get("title", "MDX không thể tách audio")),
+                        "message": str(event.get("message", "Worker MDX gặp lỗi.")),
+                        "suggestion": str(event.get("suggestion", "")),
+                        "technical_detail": str(event.get("technical_detail", "")),
+                        "fallback_to_cpu": bool(event.get("fallback_to_cpu", False)),
+                    }
+
+            return_code = process.wait()
+            stderr_file.seek(0)
+            stderr = stderr_file.read().strip()
+
+        if worker_error:
+            if requested_device == "Auto" and bool(worker_error["fallback_to_cpu"]):
+                if progress:
+                    progress(18, "CUDA không thể khởi tạo; Auto đang thử lại bằng CPU…")
+                fallback_result = self._run_worker(source, progress, "CPU")
+                fallback_result["requested_device"] = "Auto"
+                return fallback_result
+            detail = str(worker_error["technical_detail"])
+            if stderr:
+                detail = f"{detail}\n\nWorker stderr:\n{stderr}".strip()
+            raise AudioSeparationError(
+                str(worker_error["title"]),
+                str(worker_error["message"]),
+                str(worker_error["suggestion"]),
+                detail,
+            )
+        if return_code != 0 or result is None:
+            if requested_device == "Auto":
+                if progress:
+                    progress(18, "Worker CUDA không hoàn tất; Auto đang thử lại bằng CPU…")
+                fallback_result = self._run_worker(source, progress, "CPU")
+                fallback_result["requested_device"] = "Auto"
+                return fallback_result
+            raise AudioSeparationError(
+                "Worker MDX kết thúc bất thường",
+                "Tiến trình tách audio không trả về kết quả hợp lệ.",
+                "Kiểm tra cấu hình CPU/GPU và mở chi tiết kỹ thuật để xem lỗi.",
+                stderr or f"Worker exit code: {return_code}",
+            )
+        return result
 
     def _resolve_output(self, value: str) -> Path:
         path = Path(value)

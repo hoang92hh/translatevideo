@@ -4,9 +4,17 @@ version = "0.1.0"
 description = "Extensible video translation and dubbing desktop application"
 requires-python = ">=3.11"
 dependencies = [
-    "audio-separator[cpu]>=0.47,<1",
+    "audio-separator>=0.47,<1",
     "audioread>=3.0.1,<4",
     "PySide6>=6.7,<7",
+]
+
+[project.optional-dependencies]
+cpu = ["audio-separator[cpu]>=0.47,<1"]
+cuda = [
+    "audio-separator[gpu]>=0.47,<1",
+    # GTX 10xx/Pascal cần CUDA 12.x; ONNX Runtime >=1.27 trên PyPI dùng CUDA 13.
+    "onnxruntime-gpu>=1.20,<1.21",
 ]
 
 [project.scripts]

@@ -1,2 +1,10 @@
-audio-separator[cpu]<1,>=0.47
+audio-separator<1,>=0.47
+audioread<4,>=3.0.1
 PySide6<7,>=6.7
+
+[cpu]
+audio-separator[cpu]<1,>=0.47
+
+[cuda]
+audio-separator[gpu]<1,>=0.47
+onnxruntime-gpu<1.21,>=1.20

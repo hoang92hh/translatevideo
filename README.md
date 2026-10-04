@@ -6,10 +6,30 @@ Khung ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. 
 
 Yêu cầu Python 3.11 trở lên.
 
+Chọn một profile xử lý MDX phù hợp với máy. `Auto` trong ứng dụng sẽ chỉ dùng
+GPU khi cả PyTorch CUDA và ONNX CUDA Execution Provider hoạt động:
+
 ```powershell
-python -m pip install -e .
+# Máy chỉ dùng CPU
+python -m pip install -e ".[cpu]"
+
+# Máy có NVIDIA GPU
+python -m pip install -e ".[cuda]"
+
 python main.py
 ```
+
+Profile CUDA cài ONNX Runtime GPU. Nếu `torch.cuda.is_available()` vẫn trả về
+`False`, cài bản PyTorch CUDA phù hợp theo hướng dẫn chính thức của PyTorch.
+Không cài đồng thời `onnxruntime`, `onnxruntime-gpu` và
+`onnxruntime-directml` trong cùng environment. Khi đổi profile trên một máy đã
+cài dependency, nên dùng virtual environment mới để tránh giữ lại package ONNX
+Runtime của profile cũ.
+
+Với GPU NVIDIA Pascal như GTX 10xx, profile `cuda` khóa ONNX Runtime ở dòng
+1.20.x để dùng CUDA 12.x. Worker chỉ báo `NVIDIA GPU (CUDA)` sau khi session của
+model thực sự kích hoạt `CUDAExecutionProvider`; việc provider chỉ xuất hiện
+trong danh sách khả dụng là chưa đủ.
 
 ## Pipeline trên giao diện
 
@@ -51,6 +71,7 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Cấu hình hiển thị theo provider được chọn.
 - Bảng segment giữ ID xuyên suốt pipeline và cho phép chỉnh sửa nội dung.
 - Step 1 dùng FFmpeg để tạo Original Mix và có thể dùng MDX qua `audio-separator` để tạo `Voice` + `Background`.
+- MDX hỗ trợ `Auto`, `CPU` và `NVIDIA GPU (CUDA)`. Mỗi lần tách chạy trong một worker process riêng để có thể đổi thiết bị mà không cần khởi động lại ứng dụng. `Auto` chỉ chọn CUDA khi cả PyTorch và ONNX Runtime xác nhận backend CUDA hoạt động, nếu không sẽ dùng CPU.
 - Mỗi lần chạy MDX tạo một candidate riêng trong `audio_separation/`; người dùng có thể nghe, so sánh, chọn input cho Step 2 và đặt candidate mặc định.
 - Demucs và RoFormer đã có vị trí trong danh sách provider nhưng được đánh dấu chưa triển khai.
 - Có thể tự tìm FFmpeg trong `PATH` hoặc chọn trực tiếp `ffmpeg.exe`; FFprobe trong cùng thư mục được dùng để tính tiến độ và thời lượng.

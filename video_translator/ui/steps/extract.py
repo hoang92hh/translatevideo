@@ -38,7 +38,13 @@ class ExtractStepPage(StepPage):
                 )),
                 FieldSpec("sample_rate", "Working sample rate", "choice", "44.1 kHz", ("44.1 kHz", "48 kHz")),
                 FieldSpec("channels", "Audio channels", "choice", "Stereo", ("Stereo", "Mono")),
-                FieldSpec("device", "Thiết bị", "choice", "Auto", ("Auto",)),
+                FieldSpec(
+                    "device",
+                    "Thiết bị",
+                    "choice",
+                    "Auto",
+                    ("Auto", "CPU", "NVIDIA GPU (CUDA)"),
+                ),
             )),
             ProviderSpec("Original Audio — FFmpeg", (
                 FieldSpec("ffmpeg_path", "FFmpeg executable", "file", "Auto"),
@@ -203,7 +209,11 @@ class ExtractStepPage(StepPage):
         candidate = self.state.candidate(candidate_id)
         if candidate:
             status = "Sẵn sàng" if exists else "File không tồn tại"
-            self.audio_info.setText(f"{candidate.provider} · {candidate.model_name} · {stem} · {status}\n{path}")
+            actual_device = str(candidate.metadata.get("actual_device", "")).strip()
+            device_text = f" · {actual_device}" if actual_device else ""
+            self.audio_info.setText(
+                f"{candidate.provider} · {candidate.model_name}{device_text} · {stem} · {status}\n{path}"
+            )
         else:
             self.audio_info.setText("Chưa có candidate audio")
         self.play_button.setEnabled(exists)

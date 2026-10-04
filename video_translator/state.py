@@ -17,6 +17,7 @@ from .models import (
     StepStatus,
     TranscriptCandidate,
     TranslationCandidate,
+    TtsCandidate,
 )
 from .project import VideoProject
 
@@ -43,6 +44,9 @@ class ProjectState(QObject):
         self.translation_candidates: dict[str, TranslationCandidate] = {}
         self.selected_translation_candidate_id = ""
         self.default_translation_candidate_id = ""
+        self.tts_candidates: dict[str, TtsCandidate] = {}
+        self.selected_tts_candidate_id = ""
+        self.default_tts_candidate_id = ""
         self.results: dict[StepId, StepResult] = {}
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -92,6 +96,13 @@ class ProjectState(QObject):
         }
         self.selected_translation_candidate_id = project.selected_translation_candidate_id
         self.default_translation_candidate_id = project.default_translation_candidate_id
+        self.tts_candidates = {
+            item["id"]: TtsCandidate(**item)
+            for item in project.tts_candidates
+            if item.get("id")
+        }
+        self.selected_tts_candidate_id = project.selected_tts_candidate_id
+        self.default_tts_candidate_id = project.default_tts_candidate_id
         self.results.clear()
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -105,6 +116,8 @@ class ProjectState(QObject):
         self._restore_selected_transcript()
         self._register_legacy_translation()
         self._restore_selected_translation()
+        self._register_legacy_tts()
+        self._restore_selected_tts()
         completed = len(self.results)
         if completed < len(STEP_ORDER):
             self.statuses[STEP_ORDER[completed]] = StepStatus.READY
@@ -137,6 +150,9 @@ class ProjectState(QObject):
         ]
         self.project.selected_translation_candidate_id = self.selected_translation_candidate_id
         self.project.default_translation_candidate_id = self.default_translation_candidate_id
+        self.project.tts_candidates = [asdict(candidate) for candidate in self.tts_candidates.values()]
+        self.project.selected_tts_candidate_id = self.selected_tts_candidate_id
+        self.project.default_tts_candidate_id = self.default_tts_candidate_id
         self.project.pipeline = {
             step.value: self._serialize_result(result)
             for step, result in self.results.items()
@@ -157,6 +173,7 @@ class ProjectState(QObject):
             "translation_candidates": [
                 asdict(candidate) for candidate in result.translation_candidates
             ],
+            "tts_candidates": [asdict(candidate) for candidate in result.tts_candidates],
         }
 
     @staticmethod
@@ -174,6 +191,7 @@ class ProjectState(QObject):
             translation_candidates=[
                 TranslationCandidate(**item) for item in data.get("translation_candidates", [])
             ],
+            tts_candidates=[TtsCandidate(**item) for item in data.get("tts_candidates", [])],
         )
 
     def add_audio_candidate(self, candidate: AudioCandidate) -> None:
@@ -562,6 +580,137 @@ class ProjectState(QObject):
             metadata=metadata,
         )
 
+    def tts_candidate(self, candidate_id: str) -> TtsCandidate | None:
+        return self.tts_candidates.get(candidate_id)
+
+    def select_tts_candidate(self, candidate_id: str) -> bool:
+        result = self._result_from_tts(candidate_id)
+        if result is None:
+            return False
+        self.selected_tts_candidate_id = candidate_id
+        self.default_tts_candidate_id = candidate_id
+        self.results[StepId.TTS] = result
+        self.statuses[StepId.TTS] = StepStatus.DONE
+        self.invalidate_from(StepId.SYNC)
+        self.statuses[StepId.SYNC] = StepStatus.READY
+        self.step_changed.emit(StepId.TTS.value)
+        self.step_changed.emit(StepId.SYNC.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def remove_tts_candidate(self, candidate_id: str) -> None:
+        removed_selected = candidate_id == self.selected_tts_candidate_id
+        removed_default = candidate_id == self.default_tts_candidate_id
+        self.tts_candidates.pop(candidate_id, None)
+        fallback = self._latest_valid_tts_candidate()
+        if removed_default:
+            self.default_tts_candidate_id = fallback.id if fallback else ""
+        if removed_selected:
+            self.selected_tts_candidate_id = ""
+            if fallback and self.select_tts_candidate(fallback.id):
+                return
+            self.invalidate_from(StepId.TTS)
+            if self.statuses[StepId.TRANSLATE] == StepStatus.DONE:
+                self.statuses[StepId.TTS] = StepStatus.READY
+        self.step_changed.emit(StepId.TTS.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _register_legacy_tts(self) -> None:
+        if self.tts_candidates:
+            return
+        result = self.results.get(StepId.TTS)
+        if not result or not result.segments:
+            return
+        valid_files = [Path(segment.audio_file) for segment in result.segments]
+        if not valid_files or any(not path.is_file() for path in valid_files):
+            return
+        folder = valid_files[0].parent
+        manifest = Path(result.artifacts.get("tts_manifest", folder / "manifest.json"))
+        if not manifest.is_file():
+            return
+        candidate_id = "tts-legacy"
+        created_at = datetime.fromtimestamp(manifest.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+        candidate = TtsCandidate(
+            id=candidate_id,
+            label=f"TTS cũ · {folder.name}",
+            created_at=created_at,
+            path=str(manifest),
+            folder=str(folder),
+            provider=str(result.metadata.get("provider", "Legacy")),
+            voice=str(result.metadata.get("voice", "")),
+            segment_count=len(result.segments),
+            summary=result.summary,
+            metadata={**result.metadata, "tts_candidate_id": candidate_id},
+        )
+        self.tts_candidates[candidate_id] = candidate
+        self.selected_tts_candidate_id = candidate_id
+        self.default_tts_candidate_id = candidate_id
+
+    def _restore_selected_tts(self) -> None:
+        if StepId.TRANSLATE not in self.results:
+            return
+        choices = (self.selected_tts_candidate_id, self.default_tts_candidate_id)
+        candidate = next(
+            (self.tts_candidate(item) for item in choices if item and self._result_from_tts(item)),
+            None,
+        )
+        candidate = candidate or self._latest_valid_tts_candidate()
+        if not candidate:
+            return
+        result = self._result_from_tts(candidate.id)
+        if not result:
+            return
+        self.selected_tts_candidate_id = candidate.id
+        self.default_tts_candidate_id = candidate.id
+        self.results[StepId.TTS] = result
+        self.statuses[StepId.TTS] = StepStatus.DONE
+        for later in STEP_ORDER[STEP_ORDER.index(StepId.SYNC):]:
+            self.results.pop(later, None)
+            self.statuses[later] = StepStatus.PENDING
+
+    def _latest_valid_tts_candidate(self) -> TtsCandidate | None:
+        valid = [item for item in self.tts_candidates.values() if self._result_from_tts(item.id)]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_tts(self, candidate_id: str) -> StepResult | None:
+        candidate = self.tts_candidate(candidate_id)
+        if not candidate:
+            return None
+        path = Path(candidate.path)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            segments = [
+                Segment(
+                    id=int(item.get("id", index)),
+                    start=float(item.get("start", 0.0)),
+                    end=float(item.get("end", 0.0)),
+                    source_text=str(item.get("source_text", "")),
+                    translated_text=str(item.get("translated_text", "")),
+                    audio_file=str(item.get("audio_file", "")),
+                )
+                for index, item in enumerate(payload.get("segments", []), start=1)
+            ]
+        except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if not segments or any(not item.audio_file or not Path(item.audio_file).is_file() for item in segments):
+            return None
+        metadata = {
+            **candidate.metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "tts_candidate_id": candidate.id,
+        }
+        return StepResult(
+            step=StepId.TTS,
+            summary=candidate.summary or f"{candidate.label} · {len(segments)} segment",
+            artifacts={"tts_manifest": str(path), "audio_folder": candidate.folder},
+            segments=segments,
+            metadata=metadata,
+        )
+
     def set_input_video(self, path: str) -> None:
         if path == self.input_video:
             return
@@ -592,6 +741,9 @@ class ProjectState(QObject):
         if step == StepId.TRANSLATE and self.default_translation_candidate_id:
             if self.select_translation_candidate(self.default_translation_candidate_id):
                 return
+        if step == StepId.TTS and self.default_tts_candidate_id:
+            if self.select_tts_candidate(self.default_tts_candidate_id):
+                return
         self.statuses[step] = StepStatus.ERROR
         self.step_changed.emit(step.value)
 
@@ -618,6 +770,12 @@ class ProjectState(QObject):
         if translation_id and translation_id in self.translation_candidates:
             self.selected_translation_candidate_id = translation_id
             self.default_translation_candidate_id = translation_id
+        for candidate in result.tts_candidates:
+            self.tts_candidates[candidate.id] = candidate
+        tts_id = str(result.metadata.get("recommended_tts_candidate_id", ""))
+        if tts_id and tts_id in self.tts_candidates:
+            self.selected_tts_candidate_id = tts_id
+            self.default_tts_candidate_id = tts_id
         self.results[result.step] = result
         self.statuses[result.step] = StepStatus.DONE
         for later in STEP_ORDER[index + 1 :]:

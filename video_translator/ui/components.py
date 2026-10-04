@@ -29,7 +29,7 @@ class FilePicker(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         self.field = QLineEdit(value)
-        self.field.setPlaceholderText("Auto hoặc đường dẫn tới executable")
+        self.field.setPlaceholderText("Để trống hoặc chọn đường dẫn file")
         browse = QPushButton("Chọn file…")
         browse.clicked.connect(self._browse)
         row = QHBoxLayout()
@@ -39,7 +39,12 @@ class FilePicker(QWidget):
         layout.addLayout(row)
 
     def _browse(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn executable", "", "Executable (*.exe);;Tất cả file (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Chọn file",
+            "",
+            "Audio (*.wav *.mp3 *.flac *.m4a *.ogg);;Executable (*.exe);;Tất cả file (*)",
+        )
         if path:
             self.field.setText(path)
 

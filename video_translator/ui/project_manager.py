@@ -26,7 +26,7 @@ from ..project import PROJECT_FILE, ProjectService, VideoProject
 from .components import Card
 
 
-LANGUAGES = ("Chinese", "English", "Vietnamese", "Japanese", "Korean")
+LANGUAGES = ("Chinese", "English", "Vietnamese", "Spanish", "Japanese", "Korean")
 
 
 class NewProjectDialog(QDialog):

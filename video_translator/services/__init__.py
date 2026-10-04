@@ -3,6 +3,7 @@ from .credential_service import CredentialService
 from .ffmpeg_service import FFmpegService
 from .google_translation_service import GoogleTranslationService
 from .speech_to_text_service import SpeechToTextService
+from .text_to_speech_service import TextToSpeechService
 
 __all__ = [
     "AudioSeparatorService",
@@ -10,4 +11,5 @@ __all__ = [
     "FFmpegService",
     "GoogleTranslationService",
     "SpeechToTextService",
+    "TextToSpeechService",
 ]

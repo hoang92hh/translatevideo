@@ -1,6 +1,6 @@
 # TransLanguage
 
-Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project, xử lý audio thật ở Step 1, nhận dạng lời nói bằng Faster Whisper ở Step 2 và dịch bằng Google Gemini ở Step 3. Các Step 4–7 vẫn dùng dữ liệu mô phỏng.
+Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project, xử lý audio thật ở Step 1, nhận dạng lời nói bằng Faster Whisper ở Step 2, dịch bằng Google Gemini ở Step 3 và tạo giọng nói thật ở Step 4. Các Step 5–7 vẫn dùng dữ liệu mô phỏng.
 
 ## Chạy ứng dụng
 
@@ -100,6 +100,9 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Faster Whisper hỗ trợ `small`, `medium`, `large-v3`, VAD và ba chế độ `Auto`, `CPU`, `GPU`. Model được lưu tại cache riêng của TransLanguage trong `%LOCALAPPDATA%`.
 - Profile CUDA khóa cuBLAS `12.6.4.1` và cuDNN `9.6.0.74` để tiếp tục hỗ trợ GPU Pascal như GTX 1060.
 - Lỗi provider được hiển thị theo nhóm nguyên nhân, kèm hướng xử lý và phần chi tiết kỹ thuật có thể mở rộng.
-- Local Model ở Step 3 được đánh dấu chưa triển khai. Step 4–7 hiện vẫn được mô phỏng; chưa gọi VieNeu-TTS.
+- Step 4 hỗ trợ VieNeu-TTS local cho tiếng Việt, MeloTTS + OpenVoice V2 local cho English/Spanish/Chinese/Japanese/Korean và Edge TTS online. Mỗi lần chạy thành công tạo một candidate riêng trong `generated_audio/`; candidate mới nhất tự động là input Step 5, còn lỗi không thay đổi input trước đó.
+- `Auto` ở provider local chọn GPU khi runtime CUDA của chính provider khả dụng, nếu không chọn CPU. `CPU` và `GPU` tuân thủ đúng lựa chọn; chế độ `GPU` báo lỗi thay vì fallback CPU.
+- XTTS-v2 chỉ nằm trong danh sách dưới dạng chưa triển khai và có ghi chú chỉ phi thương mại theo Coqui Public Model License.
+- Local Model ở Step 3 được đánh dấu chưa triển khai. Step 5–7 hiện vẫn được mô phỏng.
 
-Hướng dẫn chi tiết: [`huong_dan_su_dung/06_huong_dan_step_03_translation.md`](huong_dan_su_dung/06_huong_dan_step_03_translation.md).
+Hướng dẫn chi tiết: [`huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md`](huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md).

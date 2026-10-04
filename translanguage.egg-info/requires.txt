@@ -2,9 +2,12 @@ audio-separator<1,>=0.47
 audioread<4,>=3.0.1
 av<19,>=11
 faster-whisper<2,>=1.2.1
+edge-tts<8,>=7.2
 google-genai<3,>=2.26
 keyring<26,>=25.7
 PySide6<7,>=6.7
+soundfile<1,>=0.12
+vieneu<4,>=3.8
 
 [cpu]
 audio-separator[cpu]<1,>=0.47

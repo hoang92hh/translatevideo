@@ -9,9 +9,14 @@ dependencies = [
     # Faster Whisper 1.2.1 còn truyền metadata_errors; PyAV 19 đã xóa tham số này.
     "av>=11,<19",
     "faster-whisper>=1.2.1,<2",
+    "edge-tts>=7.2,<8",
     "google-genai>=2.26,<3",
     "keyring>=25.7,<26",
     "PySide6>=6.7,<7",
+    "soundfile>=0.12,<1",
+    "safetensors>=0.4,<1",
+    "transformers>=5,<6",
+    "vieneu>=3.8,<4",
 ]
 
 [project.optional-dependencies]

@@ -324,3 +324,28 @@ Không cần kích hoạt virtual environment. Luôn có thể chạy trực ti�
 Nếu `.venv` bị lỗi, đóng TransLanguage trước. Xóa riêng thư mục `.venv`, sau đó
 tạo lại theo mục 4 hoặc mục 5. Không xóa thư mục `projects` vì đây là nơi chứa
 project và các artifact đã xử lý.
+
+## 12. Dependency cho Step 04 — Text to Speech
+
+Lệnh cài project ở các mục trên sẽ cài thêm `vieneu`, `edge-tts` và `soundfile` cho VieNeu-TTS local và Edge TTS online.
+
+MeloTTS/OpenVoice V2 không được cài chung vào `.venv`: dependency chính thức của chúng cũ hơn và có thể xung đột với CUDA, Faster Whisper hoặc audio-separator. Cài Python 3.9 x64 song song, sau đó chạy:
+
+```powershell
+# NVIDIA GPU; cấu hình CUDA 11.8 này vẫn hỗ trợ GTX 10xx/Pascal
+powershell -ExecutionPolicy Bypass -File scripts/setup_melo_runtime.ps1 -Device cuda
+
+# Máy không có NVIDIA GPU
+powershell -ExecutionPolicy Bypass -File scripts/setup_melo_runtime.ps1 -Device cpu
+```
+
+Script tạo runtime tại `.runtimes/melo`, cài MeloTTS + OpenVoice và tải checkpoint V2. Không thay đổi `.venv` chính đang dùng cho Step 1–3.
+
+Quy tắc lựa chọn thiết bị của Step 4:
+
+- `Auto`: provider local tự dùng GPU khi CUDA trong đúng runtime đó khả dụng, nếu không dùng CPU.
+- `CPU`: luôn ép CPU.
+- `GPU`: luôn yêu cầu CUDA; nếu không dùng được sẽ báo lỗi và không fallback CPU.
+- Edge TTS chạy online nên không có lựa chọn CPU/GPU.
+
+XTTS-v2 được hiển thị nhưng khóa và chưa triển khai. Checkpoint này dùng Coqui Public Model License, chỉ phù hợp mục đích phi thương mại. Xem thêm [`07_huong_dan_step_04_text_to_speech.md`](07_huong_dan_step_04_text_to_speech.md).

@@ -51,9 +51,23 @@ quota và rate limit riêng; project đã bật billing sẽ tính phí theo tok
 
 ## 3. Quy tắc xử lý
 
-Gemini nhận từng batch dưới dạng danh sách ID và source text, sau đó trả structured
-JSON. Ứng dụng kiểm tra mỗi ID xuất hiện đúng một lần, không thiếu, không dư và
-không có bản dịch trống.
+Gemini nhận từng batch dưới dạng danh sách gồm ID, source text, timestamp bắt đầu,
+timestamp kết thúc và thời lượng của từng segment, sau đó trả structured JSON.
+Ứng dụng kiểm tra mỗi ID xuất hiện đúng một lần, không thiếu, không dư và không có
+bản dịch trống.
+
+Chiến lược `timing_aware_v1` coi thời lượng là mục tiêu mềm. Gemini được yêu cầu:
+
+- Dùng ngữ cảnh của các segment liền kề nhưng vẫn trả riêng từng ID.
+- Ưu tiên câu nói tự nhiên, rõ ràng và đủ súc tích để đọc trong thời lượng gốc.
+- Loại bỏ từ đệm hoặc cách diễn đạt dư thừa khi có thể.
+- Không bỏ hoặc làm sai ý chính, câu phủ định, ý định người nói, tên riêng, con số
+  và quan hệ nguyên nhân–kết quả.
+- Cho phép bản dịch dài hơn thời lượng nếu việc ép ngắn sẽ tạo câu cụt, khó hiểu
+  hoặc làm mất thông tin quan trọng.
+
+Đây không phải giới hạn cứng theo số ký tự. Step 05 vẫn là nơi đo thời lượng audio
+TTS thực tế và liệt kê các segment cần sửa thêm.
 
 Nếu một batch lỗi, Step 03 dừng toàn bộ lần chạy. Không candidate mới nào được
 đăng ký và input Step 04 thành công trước đó được giữ nguyên.

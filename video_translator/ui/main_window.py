@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from ..models import STEP_ORDER, StepId, StepStatus
 from ..pipeline import MockPipeline
-from ..pipeline.worker import PipelineWorker
+from ..pipeline.worker import AudioSyncRepairWorker, PipelineWorker
 from ..project import VideoProject
 from ..state import ProjectState
 from .project_manager import ProjectManagerPage
@@ -98,6 +98,8 @@ class MainWindow(QMainWindow):
         for page_type in STEP_PAGE_TYPES:
             page = page_type(self.state)
             page.run_requested.connect(self._run_requested)
+            if hasattr(page, "repair_requested"):
+                page.repair_requested.connect(self._repair_sync_segment)
             self.pages[page.spec.step] = page
             self.tabs.addTab(page, f"{page.spec.number}  {page.spec.title}")
         root.addWidget(self.tabs)
@@ -123,6 +125,67 @@ class MainWindow(QMainWindow):
 
     def _run_requested(self, step_value: str) -> None:
         self._execute_step(StepId(step_value))
+
+    def _repair_sync_segment(self, candidate_id: str, segment_id: int, translated_text: str) -> None:
+        if self.active_workers:
+            QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ tác vụ hiện tại hoàn thành.")
+            return
+        candidate = self.state.sync_candidate(candidate_id)
+        page = self.pages[StepId.SYNC]
+        if not candidate or not Path(candidate.path).is_file():
+            QMessageBox.information(self, "Không tìm thấy output", "Manifest Step 5 không còn tồn tại.")
+            return
+        page.set_repair_busy(True)
+        page.set_progress(0, f"Đang chuẩn bị sửa segment #{segment_id:04d}…")
+        worker = AudioSyncRepairWorker(
+            candidate.path,
+            segment_id,
+            translated_text,
+            self.state.target_language,
+        )
+        self.active_workers.add(worker)
+        worker.progress_changed.connect(page.set_progress)
+
+        def succeeded(result: object) -> None:
+            data = result if isinstance(result, dict) else {}
+            refreshed = self.state.refresh_sync_candidate(candidate_id, activate_if_complete=True)
+            page.set_progress(100, str(data.get("message") or "Đã cập nhật segment."))
+            page.repair_finished(candidate_id)
+            if not refreshed:
+                QMessageBox.warning(self, "Không thể nạp lại output", "Manifest đã sửa nhưng không còn hợp lệ.")
+            elif not bool(data.get("success", False)):
+                QMessageBox.information(
+                    self,
+                    "Segment vẫn còn dài",
+                    str(data.get("message", "Hãy rút gọn thêm nội dung rồi thử lại.")),
+                )
+
+        def failed(payload: object) -> None:
+            page.set_repair_busy(False)
+            data = payload if isinstance(payload, dict) else {
+                "title": "Không thể sửa segment",
+                "message": str(payload),
+                "suggestion": "",
+                "technical_detail": "",
+            }
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Icon.Critical)
+            dialog.setWindowTitle(str(data.get("title", "Không thể sửa segment")))
+            dialog.setText(str(data.get("message", "Đã xảy ra lỗi.")))
+            if data.get("suggestion"):
+                dialog.setInformativeText(str(data["suggestion"]))
+            if data.get("technical_detail"):
+                dialog.setDetailedText(str(data["technical_detail"]))
+            dialog.exec()
+
+        def finished() -> None:
+            self.active_workers.discard(worker)
+            worker.deleteLater()
+
+        worker.succeeded.connect(succeeded)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        QTimer.singleShot(100, worker.start)
 
     def _execute_step(self, step: StepId, continue_all: bool = False) -> None:
         if self.active_workers:

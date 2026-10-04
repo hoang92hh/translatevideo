@@ -102,6 +102,19 @@ class TtsCandidate:
 
 
 @dataclass(slots=True)
+class SyncCandidate:
+    id: str
+    label: str
+    created_at: str
+    path: str
+    folder: str
+    segment_count: int = 0
+    error_count: int = 0
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class StepResult:
     step: StepId
     summary: str
@@ -112,3 +125,4 @@ class StepResult:
     transcript_candidates: list[TranscriptCandidate] = field(default_factory=list)
     translation_candidates: list[TranslationCandidate] = field(default_factory=list)
     tts_candidates: list[TtsCandidate] = field(default_factory=list)
+    sync_candidates: list[SyncCandidate] = field(default_factory=list)

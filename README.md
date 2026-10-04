@@ -1,6 +1,6 @@
 # TransLanguage
 
-Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project, xử lý audio thật ở Step 1, nhận dạng lời nói bằng Faster Whisper ở Step 2, dịch bằng Google Gemini ở Step 3 và tạo giọng nói thật ở Step 4. Các Step 5–7 vẫn dùng dữ liệu mô phỏng.
+Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project, xử lý audio thật ở Step 1, nhận dạng lời nói bằng Faster Whisper ở Step 2, dịch bằng Google Gemini ở Step 3, tạo giọng nói thật ở Step 4 và đồng bộ thời lượng bằng FFmpeg ở Step 5. Step 6–7 vẫn dùng dữ liệu mô phỏng.
 
 ## Chạy ứng dụng
 
@@ -94,8 +94,8 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Khi chạy lại Step 1, audio player được giải phóng trước; MDX tái sử dụng Original Mix có cấu hình phù hợp thay vì ghi đè file đang nghe.
 - Khi chạy MDX, ứng dụng tự đưa thư mục chứa FFmpeg/FFprobe đã chọn vào môi trường của provider; không bắt buộc cấu hình PATH toàn hệ thống.
 - Step 2 dùng Faster Whisper để nhận dạng audio đã chọn, giữ timestamp và segment ID. Mỗi lần chạy thành công tạo một candidate riêng tại `transcripts/<candidate-id>/transcript.json`; candidate mới nhất tự trở thành input cho Step 3.
-- Nếu một lần chạy tạo output bị lỗi, candidate không được đăng ký và input thành công được chọn trước đó được giữ nguyên. Đây là quy ước artifact áp dụng cho các step tiếp theo khi được triển khai thật.
-- Step 3 dùng Google Gemini và structured output để giữ nguyên ID của mọi segment. Mỗi lần dịch thành công tạo `translations/<candidate-id>/translated_segments.json`; output được tạo hoặc chọn gần nhất trở thành input Step 4.
+- Nếu Step 1–4 gặp lỗi không tạo được output hợp lệ, candidate chưa hoàn chỉnh không được đăng ký và input thành công trước đó được giữ nguyên. Riêng Step 5 giữ candidate `needs_edit` để người dùng sửa từng segment, nhưng không chọn candidate đó làm input Step 6 cho tới khi hết lỗi.
+- Step 3 dùng Google Gemini và structured output để giữ nguyên ID của mọi segment. Request gửi kèm timestamp/thời lượng để model ưu tiên câu nói súc tích theo giới hạn mềm, nhưng không được hy sinh ý chính hoặc độ rõ ràng. Mỗi lần dịch thành công tạo `translations/<candidate-id>/translated_segments.json`; output được tạo hoặc chọn gần nhất trở thành input Step 4.
 - Google API key được quản lý tập trung tại **Cài đặt → API & Providers** và lưu trong Windows Credential Locker. Mọi project dùng chung credential; API key không được ghi vào `project.json` hoặc artifact.
 - Faster Whisper hỗ trợ `small`, `medium`, `large-v3`, VAD và ba chế độ `Auto`, `CPU`, `GPU`. Model được lưu tại cache riêng của TransLanguage trong `%LOCALAPPDATA%`.
 - Profile CUDA khóa cuBLAS `12.6.4.1` và cuDNN `9.6.0.74` để tiếp tục hỗ trợ GPU Pascal như GTX 1060.
@@ -103,6 +103,11 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Step 4 hỗ trợ VieNeu-TTS local cho tiếng Việt, MeloTTS + OpenVoice V2 local cho English/Spanish/Chinese/Japanese/Korean và Edge TTS online. Mỗi lần chạy thành công tạo một candidate riêng trong `generated_audio/`; candidate mới nhất tự động là input Step 5, còn lỗi không thay đổi input trước đó.
 - `Auto` ở provider local chọn GPU khi runtime CUDA của chính provider khả dụng, nếu không chọn CPU. `CPU` và `GPU` tuân thủ đúng lựa chọn; chế độ `GPU` báo lỗi thay vì fallback CPU.
 - XTTS-v2 chỉ nằm trong danh sách dưới dạng chưa triển khai và có ghi chú chỉ phi thương mại theo Coqui Public Model License.
-- Local Model ở Step 3 được đánh dấu chưa triển khai. Step 5–7 hiện vẫn được mô phỏng.
+- Step 5 cắt khoảng lặng thừa, tận dụng khoảng trống trước segment kế tiếp, tăng tốc trong giới hạn người dùng chọn và chèn khoảng lặng khi audio ngắn hơn timestamp gốc. Mỗi lần chạy tạo candidate riêng trong `synchronized_audio/`.
+- Segment không thể đặt vừa trong giới hạn tốc độ được liệt kê để sửa câu dịch và tạo lại riêng ngay tại Step 5. Bản sửa không ghi đè output Step 3/4; candidate chỉ trở thành input Step 6 sau khi hết lỗi.
+- Local Model ở Step 3 được đánh dấu chưa triển khai. Step 6–7 hiện vẫn được mô phỏng.
 
-Hướng dẫn chi tiết: [`huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md`](huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md).
+Hướng dẫn chi tiết:
+
+- [`huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md`](huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md)
+- [`huong_dan_su_dung/08_huong_dan_step_05_audio_sync.md`](huong_dan_su_dung/08_huong_dan_step_05_audio_sync.md)

@@ -86,7 +86,16 @@ class GoogleTranslationService:
                     percent = 5 + int((batch_index - 1) / len(batches) * 88)
                     progress(percent, f"Đang dịch batch {batch_index}/{len(batches)}…")
                 content = json.dumps(
-                    [{"id": segment.id, "text": segment.source_text} for segment in batch],
+                    [
+                        {
+                            "id": segment.id,
+                            "start_seconds": round(segment.start, 3),
+                            "end_seconds": round(segment.end, 3),
+                            "duration_seconds": round(segment.duration, 3),
+                            "text": segment.source_text,
+                        }
+                        for segment in batch
+                    ],
                     ensure_ascii=False,
                 )
                 response = client.models.generate_content(
@@ -96,8 +105,14 @@ class GoogleTranslationService:
                         system_instruction=(
                             "You are a professional audiovisual subtitle translator. "
                             f"Translate every segment from {self.source_language} to {self.target_language}. "
-                            "Preserve meaning, tone, names, numbers, and continuity across adjacent segments. "
-                            "Write natural spoken-language subtitles. Return every input ID exactly once. "
+                            "Use adjacent segments for context and write clear, natural spoken language. "
+                            "Treat duration_seconds as a soft timing target: prefer concise, idiomatic phrasing "
+                            "that can be spoken within that duration at a natural pace, removing redundancy and "
+                            "unnecessary filler when possible. Never omit or alter essential meaning, negation, "
+                            "speaker intent, proper names, numbers, or cause-and-effect relationships. "
+                            "Do not produce an unclear fragment merely to meet timing. If a complete and clear "
+                            "translation cannot reasonably fit, preserve meaning and clarity even if it may run "
+                            "longer than duration_seconds. Return every input ID exactly once. "
                             "Do not merge, split, omit, explain, or add IDs."
                         ),
                         response_mime_type="application/json",

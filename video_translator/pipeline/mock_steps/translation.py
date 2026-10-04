@@ -43,6 +43,7 @@ def execute(
         "provider": provider,
         "model": model_name,
         "batch_size": batch_size,
+        "translation_strategy": "timing_aware_v1",
         "segments": [
             {
                 "id": segment.id,
@@ -74,6 +75,7 @@ def execute(
         "provider": provider,
         "model": model_name,
         "batch_size": batch_size,
+        "translation_strategy": "timing_aware_v1",
         "source_transcript_candidate_id": state.selected_transcript_candidate_id,
         "credential_source": response.credential_source,
         "translation_candidate_id": candidate_id,

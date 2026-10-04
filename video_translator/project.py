@@ -62,6 +62,9 @@ class VideoProject:
     tts_candidates: list[dict[str, Any]] = field(default_factory=list)
     selected_tts_candidate_id: str = ""
     default_tts_candidate_id: str = ""
+    sync_candidates: list[dict[str, Any]] = field(default_factory=list)
+    selected_sync_candidate_id: str = ""
+    default_sync_candidate_id: str = ""
 
     @property
     def root_path(self) -> Path:

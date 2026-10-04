@@ -15,6 +15,7 @@ from .models import (
     StepId,
     StepResult,
     StepStatus,
+    SyncCandidate,
     TranscriptCandidate,
     TranslationCandidate,
     TtsCandidate,
@@ -47,6 +48,9 @@ class ProjectState(QObject):
         self.tts_candidates: dict[str, TtsCandidate] = {}
         self.selected_tts_candidate_id = ""
         self.default_tts_candidate_id = ""
+        self.sync_candidates: dict[str, SyncCandidate] = {}
+        self.selected_sync_candidate_id = ""
+        self.default_sync_candidate_id = ""
         self.results: dict[StepId, StepResult] = {}
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -103,6 +107,13 @@ class ProjectState(QObject):
         }
         self.selected_tts_candidate_id = project.selected_tts_candidate_id
         self.default_tts_candidate_id = project.default_tts_candidate_id
+        self.sync_candidates = {
+            item["id"]: SyncCandidate(**item)
+            for item in project.sync_candidates
+            if item.get("id")
+        }
+        self.selected_sync_candidate_id = project.selected_sync_candidate_id
+        self.default_sync_candidate_id = project.default_sync_candidate_id
         self.results.clear()
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -118,9 +129,15 @@ class ProjectState(QObject):
         self._restore_selected_translation()
         self._register_legacy_tts()
         self._restore_selected_tts()
-        completed = len(self.results)
-        if completed < len(STEP_ORDER):
-            self.statuses[STEP_ORDER[completed]] = StepStatus.READY
+        self._restore_selected_sync()
+        for index, step in enumerate(STEP_ORDER):
+            if self.statuses[step] == StepStatus.DONE:
+                continue
+            if self.statuses[step] == StepStatus.PENDING and (
+                index == 0 or self.statuses[STEP_ORDER[index - 1]] == StepStatus.DONE
+            ):
+                self.statuses[step] = StepStatus.READY
+            break
         for step in STEP_ORDER:
             self.step_changed.emit(step.value)
         self.project_changed.emit()
@@ -153,6 +170,9 @@ class ProjectState(QObject):
         self.project.tts_candidates = [asdict(candidate) for candidate in self.tts_candidates.values()]
         self.project.selected_tts_candidate_id = self.selected_tts_candidate_id
         self.project.default_tts_candidate_id = self.default_tts_candidate_id
+        self.project.sync_candidates = [asdict(candidate) for candidate in self.sync_candidates.values()]
+        self.project.selected_sync_candidate_id = self.selected_sync_candidate_id
+        self.project.default_sync_candidate_id = self.default_sync_candidate_id
         self.project.pipeline = {
             step.value: self._serialize_result(result)
             for step, result in self.results.items()
@@ -174,6 +194,7 @@ class ProjectState(QObject):
                 asdict(candidate) for candidate in result.translation_candidates
             ],
             "tts_candidates": [asdict(candidate) for candidate in result.tts_candidates],
+            "sync_candidates": [asdict(candidate) for candidate in result.sync_candidates],
         }
 
     @staticmethod
@@ -192,6 +213,7 @@ class ProjectState(QObject):
                 TranslationCandidate(**item) for item in data.get("translation_candidates", [])
             ],
             tts_candidates=[TtsCandidate(**item) for item in data.get("tts_candidates", [])],
+            sync_candidates=[SyncCandidate(**item) for item in data.get("sync_candidates", [])],
         )
 
     def add_audio_candidate(self, candidate: AudioCandidate) -> None:
@@ -664,6 +686,9 @@ class ProjectState(QObject):
             return
         self.selected_tts_candidate_id = candidate.id
         self.default_tts_candidate_id = candidate.id
+        current = self.results.get(StepId.TTS)
+        if current and str(current.metadata.get("tts_candidate_id", "")) == candidate.id:
+            return
         self.results[StepId.TTS] = result
         self.statuses[StepId.TTS] = StepStatus.DONE
         for later in STEP_ORDER[STEP_ORDER.index(StepId.SYNC):]:
@@ -711,6 +736,157 @@ class ProjectState(QObject):
             metadata=metadata,
         )
 
+    def sync_candidate(self, candidate_id: str) -> SyncCandidate | None:
+        return self.sync_candidates.get(candidate_id)
+
+    def select_sync_candidate(self, candidate_id: str) -> bool:
+        result = self._result_from_sync(candidate_id)
+        if result is None or int(result.metadata.get("error_count", 0)) > 0:
+            return False
+        self.selected_sync_candidate_id = candidate_id
+        self.default_sync_candidate_id = candidate_id
+        self.results[StepId.SYNC] = result
+        self.statuses[StepId.SYNC] = StepStatus.DONE
+        self.invalidate_from(StepId.BUILD_AUDIO)
+        self.statuses[StepId.BUILD_AUDIO] = StepStatus.READY
+        self.step_changed.emit(StepId.SYNC.value)
+        self.step_changed.emit(StepId.BUILD_AUDIO.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def refresh_sync_candidate(self, candidate_id: str, activate_if_complete: bool = True) -> bool:
+        result = self._result_from_sync(candidate_id, allow_incomplete=True)
+        if result is None:
+            return False
+        candidate = self.sync_candidate(candidate_id)
+        error_count = int(result.metadata.get("error_count", 0))
+        if candidate:
+            candidate.error_count = error_count
+            candidate.summary = result.summary
+            candidate.metadata = dict(result.metadata)
+        self.results[StepId.SYNC] = result
+        self.statuses[StepId.SYNC] = StepStatus.ERROR if error_count else StepStatus.DONE
+        self.invalidate_from(StepId.BUILD_AUDIO)
+        if not error_count and activate_if_complete:
+            self.selected_sync_candidate_id = candidate_id
+            self.default_sync_candidate_id = candidate_id
+            self.statuses[StepId.BUILD_AUDIO] = StepStatus.READY
+            self.step_changed.emit(StepId.BUILD_AUDIO.value)
+        self.step_changed.emit(StepId.SYNC.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def remove_sync_candidate(self, candidate_id: str) -> None:
+        removed_selected = candidate_id == self.selected_sync_candidate_id
+        removed_default = candidate_id == self.default_sync_candidate_id
+        current = self.results.get(StepId.SYNC)
+        current_id = str(current.metadata.get("sync_candidate_id", "")) if current else ""
+        self.sync_candidates.pop(candidate_id, None)
+        fallback = self._latest_valid_sync_candidate()
+        if removed_default:
+            self.default_sync_candidate_id = fallback.id if fallback else ""
+        if removed_selected:
+            self.selected_sync_candidate_id = ""
+        if current_id == candidate_id or removed_selected:
+            if fallback and self.select_sync_candidate(fallback.id):
+                return
+            self.invalidate_from(StepId.SYNC)
+            if self.statuses[StepId.TTS] == StepStatus.DONE:
+                self.statuses[StepId.SYNC] = StepStatus.READY
+        self.step_changed.emit(StepId.SYNC.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _restore_selected_sync(self) -> None:
+        if StepId.TTS not in self.results:
+            return
+        current = self.results.get(StepId.SYNC)
+        current_id = str(current.metadata.get("sync_candidate_id", "")) if current else ""
+        if current_id and current_id in self.sync_candidates:
+            restored = self._result_from_sync(current_id, allow_incomplete=True)
+            if restored:
+                self.results[StepId.SYNC] = restored
+                self.statuses[StepId.SYNC] = (
+                    StepStatus.ERROR
+                    if int(restored.metadata.get("error_count", 0))
+                    else StepStatus.DONE
+                )
+                return
+        choices = (self.selected_sync_candidate_id, self.default_sync_candidate_id)
+        candidate = next(
+            (self.sync_candidate(item) for item in choices if item and self._result_from_sync(item)),
+            None,
+        )
+        candidate = candidate or self._latest_valid_sync_candidate()
+        if not candidate:
+            return
+        result = self._result_from_sync(candidate.id)
+        if result:
+            self.selected_sync_candidate_id = candidate.id
+            self.default_sync_candidate_id = candidate.id
+            self.results[StepId.SYNC] = result
+            self.statuses[StepId.SYNC] = StepStatus.DONE
+
+    def _latest_valid_sync_candidate(self) -> SyncCandidate | None:
+        valid = [item for item in self.sync_candidates.values() if self._result_from_sync(item.id)]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_sync(
+        self,
+        candidate_id: str,
+        allow_incomplete: bool = False,
+    ) -> StepResult | None:
+        candidate = self.sync_candidate(candidate_id)
+        if not candidate:
+            return None
+        path = Path(candidate.path)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            raw_segments = payload.get("segments", [])
+            segments = [
+                Segment(
+                    id=int(item.get("id", index)),
+                    start=float(item.get("start", 0.0)),
+                    end=float(item.get("end", 0.0)),
+                    source_text=str(item.get("source_text", "")),
+                    translated_text=str(item.get("translated_text", "")),
+                    audio_file=str(item.get("audio_file", "")),
+                    synced_audio_file=str(item.get("synced_audio_file", "")),
+                )
+                for index, item in enumerate(raw_segments, start=1)
+            ]
+        except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        error_count = int(payload.get("error_count", 0))
+        if not segments or (error_count and not allow_incomplete):
+            return None
+        ready_files = [Path(item.synced_audio_file) for item in segments if item.synced_audio_file]
+        expected_ready = len(segments) - error_count
+        if len(ready_files) != expected_ready or any(not item.is_file() for item in ready_files):
+            return None
+        metadata = {
+            **candidate.metadata,
+            **{key: value for key, value in payload.items() if key not in {"segments", "source_tts_settings"}},
+            "sync_candidate_id": candidate.id,
+        }
+        summary = (
+            f"Đã đồng bộ {len(segments) - error_count}/{len(segments)} segment · "
+            f"{error_count} segment cần sửa"
+            if error_count
+            else f"Đã đồng bộ thành công {len(segments)} segment"
+        )
+        return StepResult(
+            step=StepId.SYNC,
+            summary=summary,
+            artifacts={"sync_manifest": str(path), "synced_folder": str(Path(candidate.folder) / "segments")},
+            segments=segments,
+            metadata=metadata,
+        )
+
     def set_input_video(self, path: str) -> None:
         if path == self.input_video:
             return
@@ -744,6 +920,9 @@ class ProjectState(QObject):
         if step == StepId.TTS and self.default_tts_candidate_id:
             if self.select_tts_candidate(self.default_tts_candidate_id):
                 return
+        if step == StepId.SYNC and self.default_sync_candidate_id:
+            if self.select_sync_candidate(self.default_sync_candidate_id):
+                return
         self.statuses[step] = StepStatus.ERROR
         self.step_changed.emit(step.value)
 
@@ -776,14 +955,23 @@ class ProjectState(QObject):
         if tts_id and tts_id in self.tts_candidates:
             self.selected_tts_candidate_id = tts_id
             self.default_tts_candidate_id = tts_id
+        for candidate in result.sync_candidates:
+            self.sync_candidates[candidate.id] = candidate
+        sync_id = str(result.metadata.get("recommended_sync_candidate_id", ""))
+        if sync_id and sync_id in self.sync_candidates:
+            self.selected_sync_candidate_id = sync_id
+            self.default_sync_candidate_id = sync_id
         self.results[result.step] = result
-        self.statuses[result.step] = StepStatus.DONE
+        has_blocking_errors = (
+            result.step == StepId.SYNC and int(result.metadata.get("error_count", 0)) > 0
+        )
+        self.statuses[result.step] = StepStatus.ERROR if has_blocking_errors else StepStatus.DONE
         for later in STEP_ORDER[index + 1 :]:
             if later in self.results:
                 del self.results[later]
             self.statuses[later] = StepStatus.PENDING
             self.step_changed.emit(later.value)
-        if index + 1 < len(STEP_ORDER):
+        if index + 1 < len(STEP_ORDER) and not has_blocking_errors:
             self.statuses[STEP_ORDER[index + 1]] = StepStatus.READY
             self.step_changed.emit(STEP_ORDER[index + 1].value)
         self.step_changed.emit(result.step.value)

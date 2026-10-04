@@ -87,14 +87,14 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Bảng segment giữ ID xuyên suốt pipeline và cho phép chỉnh sửa nội dung.
 - Step 1 dùng FFmpeg để tạo Original Mix và có thể dùng MDX qua `audio-separator` để tạo `Voice` + `Background`.
 - MDX hỗ trợ `Auto`, `CPU` và `NVIDIA GPU (CUDA)`. Mỗi lần tách chạy trong một worker process riêng để có thể đổi thiết bị mà không cần khởi động lại ứng dụng. `Auto` chỉ chọn CUDA khi cả PyTorch và ONNX Runtime xác nhận backend CUDA hoạt động, nếu không sẽ dùng CPU.
-- Mỗi lần chạy MDX tạo một candidate riêng trong `audio_separation/`; output thành công mới nhất tự trở thành input mặc định cho Step 2. Người dùng vẫn có thể nghe, so sánh và chọn lại candidate cũ.
+- Mỗi lần chạy MDX tạo một candidate riêng trong `audio_separation/`; output thành công mới nhất tự trở thành input cho Step 2. Người dùng vẫn có thể nghe, so sánh và chọn lại candidate cũ bằng một thao tác duy nhất.
 - Demucs và RoFormer đã có vị trí trong danh sách provider nhưng được đánh dấu chưa triển khai.
 - Có thể tự tìm FFmpeg trong `PATH` hoặc chọn trực tiếp `ffmpeg.exe`; FFprobe trong cùng thư mục được dùng để tính tiến độ và thời lượng.
-- Chế độ chạy toàn pipeline tái sử dụng candidate mặc định còn hợp lệ; nếu chưa có thì chạy MDX mặc định.
+- Trạng thái project lưu output được người dùng chọn gần nhất ở mỗi step. Khi pipeline đầy đủ được triển khai, đó là input duy nhất được chuyển sang step kế tiếp.
 - Khi chạy lại Step 1, audio player được giải phóng trước; MDX tái sử dụng Original Mix có cấu hình phù hợp thay vì ghi đè file đang nghe.
 - Khi chạy MDX, ứng dụng tự đưa thư mục chứa FFmpeg/FFprobe đã chọn vào môi trường của provider; không bắt buộc cấu hình PATH toàn hệ thống.
-- Step 2 dùng Faster Whisper để nhận dạng audio đã chọn, giữ timestamp và segment ID. Mỗi lần chạy thành công tạo một candidate riêng tại `transcripts/<candidate-id>/transcript.json`; candidate mới nhất tự trở thành input mặc định cho Step 3.
-- Nếu một lần chạy tạo output bị lỗi, candidate không được đăng ký và lựa chọn mặc định thành công trước đó được giữ nguyên. Đây là quy ước artifact áp dụng cho các step tiếp theo khi được triển khai thật.
+- Step 2 dùng Faster Whisper để nhận dạng audio đã chọn, giữ timestamp và segment ID. Mỗi lần chạy thành công tạo một candidate riêng tại `transcripts/<candidate-id>/transcript.json`; candidate mới nhất tự trở thành input cho Step 3.
+- Nếu một lần chạy tạo output bị lỗi, candidate không được đăng ký và input thành công được chọn trước đó được giữ nguyên. Đây là quy ước artifact áp dụng cho các step tiếp theo khi được triển khai thật.
 - Faster Whisper hỗ trợ `small`, `medium`, `large-v3`, VAD và ba chế độ `Auto`, `CPU`, `GPU`. Model được lưu tại cache riêng của TransLanguage trong `%LOCALAPPDATA%`.
 - Profile CUDA khóa cuBLAS `12.6.4.1` và cuDNN `9.6.0.74` để tiếp tục hỗ trợ GPU Pascal như GTX 1060.
 - Lỗi provider được hiển thị theo nhóm nguyên nhân, kèm hướng xử lý và phần chi tiết kỹ thuật có thể mở rộng.

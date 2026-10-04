@@ -234,10 +234,9 @@ Candidate MDX hiển thị model và thiết bị thực tế, ví dụ:
 MDX · UVR-MDX-NET-Inst_HQ_4.onnx · NVIDIA GPU (CUDA)
 ```
 
-Các nhãn bổ sung:
-
-- `Step 2`: candidate/stem hiện đang được dùng làm đầu vào Step 02.
-- `Mặc định`: candidate/stem mặc định khi chạy toàn pipeline.
+Nhãn `Input Step 2` đánh dấu candidate/stem hiện đang được dùng làm đầu vào
+Step 02. Project chỉ có một lựa chọn input cho step kế tiếp, không tách riêng
+khái niệm “đang dùng” và “mặc định”.
 
 ### 7.2. Stem selector
 
@@ -274,9 +273,11 @@ Các component:
 
 ## 8. Các nút thao tác với candidate
 
-### Dùng cho Step 2
+### Dùng làm input Step 2
 
-Chọn candidate/stem hiện tại làm đầu vào cho Step 02.
+Chọn candidate/stem hiện tại làm đầu vào duy nhất cho Step 02 và lưu lựa chọn
+vào `project.json`. Nếu sau đó chọn một candidate cũ, candidate cũ đó trở thành
+input được chọn gần nhất và sẽ được pipeline sử dụng.
 
 Chỉ chấp nhận:
 
@@ -285,16 +286,9 @@ Chỉ chấp nhận:
 
 `Background` không thể làm input trực tiếp cho Step 02.
 
-### Đặt làm mặc định
-
-Đặt candidate/stem hiện tại làm đầu vào mặc định của pipeline. Khi chạy toàn bộ
-pipeline, tool ưu tiên tái sử dụng lựa chọn mặc định còn hợp lệ.
-
 Sau mỗi lần Step 01 chạy thành công, candidate vừa tạo tự động trở thành lựa
-chọn hiện tại và mặc định mới. Nếu lần chạy thất bại, mặc định thành công trước
-đó không thay đổi.
-
-Chỉ `Voice` hoặc `Original` có thể được đặt làm mặc định.
+chọn input mới. Nếu lần chạy thất bại, input thành công được chọn trước đó không
+thay đổi.
 
 ### Mở file
 
@@ -311,8 +305,8 @@ nhận.
 
 Candidate `Original Mix` không thể xóa vì đây là artifact cơ sở của Step 01.
 
-Nếu candidate bị xóa đang được dùng cho Step 02 hoặc làm mặc định, state của
-project sẽ loại bỏ tham chiếu không còn hợp lệ.
+Nếu candidate bị xóa đang được dùng cho Step 02, state của project sẽ loại bỏ
+tham chiếu không còn hợp lệ.
 
 ## 9. Nút Chạy step 01
 
@@ -324,9 +318,9 @@ Khi nhấn `Chạy step 01`:
 4. FFmpeg tạo hoặc tái sử dụng Original Mix.
 5. Nếu dùng MDX, tool tạo worker subprocess riêng cho lần chạy.
 6. Worker load runtime/model trên thiết bị đã chọn.
-7. Kết quả hợp lệ được thêm vào danh sách candidate và đặt làm mặc định.
+7. Kết quả hợp lệ được thêm vào danh sách candidate và chọn làm input Step 02.
 8. Project được cập nhật để các step sau có thể sử dụng output. Nếu xử lý lỗi,
-   candidate không được thêm và mặc định trước đó được giữ nguyên.
+   candidate không được thêm và input trước đó được giữ nguyên.
 
 Trong lúc step đang chạy, nút chạy bị vô hiệu hóa để tránh khởi động hai worker
 cùng lúc.
@@ -344,8 +338,7 @@ cùng lúc.
 7. Nhấn `Chạy step 01`.
 8. Chờ candidate mới xuất hiện.
 9. Chọn `Voice`, nghe thử và so sánh với Original Mix.
-10. Nhấn `Dùng cho Step 2`.
-11. Nếu muốn pipeline luôn dùng candidate này, nhấn `Đặt làm mặc định`.
+10. Nhấn `Dùng làm input Step 2`.
 
 ### Trường hợp không cần tách Voice
 
@@ -353,7 +346,7 @@ cùng lúc.
 2. Chọn sample rate và số kênh.
 3. Nhấn `Chạy step 01`.
 4. Chọn stem `Original`.
-5. Nhấn `Dùng cho Step 2` hoặc `Đặt làm mặc định`.
+5. Nhấn `Dùng làm input Step 2`.
 
 ## 11. Vị trí file trong project
 

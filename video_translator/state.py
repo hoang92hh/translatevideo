@@ -58,6 +58,22 @@ class ProjectState(QObject):
         self.selected_audio_stem = project.selected_audio_stem
         self.default_audio_candidate_id = project.default_audio_candidate_id
         self.default_audio_stem = project.default_audio_stem
+        selected_audio = self.audio_candidates.get(self.selected_audio_candidate_id)
+        default_audio = self.audio_candidates.get(self.default_audio_candidate_id)
+        if (
+            selected_audio
+            and self.selected_audio_stem in selected_audio.stems
+            and Path(selected_audio.stem_path(self.selected_audio_stem)).is_file()
+        ):
+            self.default_audio_candidate_id = self.selected_audio_candidate_id
+            self.default_audio_stem = self.selected_audio_stem
+        elif (
+            default_audio
+            and self.default_audio_stem in default_audio.stems
+            and Path(default_audio.stem_path(self.default_audio_stem)).is_file()
+        ):
+            self.selected_audio_candidate_id = self.default_audio_candidate_id
+            self.selected_audio_stem = self.default_audio_stem
         self.transcript_candidates = {
             item["id"]: TranscriptCandidate(**item)
             for item in project.transcript_candidates
@@ -149,28 +165,26 @@ class ProjectState(QObject):
         return candidate.stem_path(stem or self.selected_audio_stem)
 
     def select_audio_input(self, candidate_id: str, stem: str) -> None:
-        if candidate_id == self.selected_audio_candidate_id and stem == self.selected_audio_stem:
-            return
         candidate = self.candidate(candidate_id)
         if not candidate or stem not in candidate.stems:
             return
+        selection_changed = (
+            candidate_id != self.selected_audio_candidate_id
+            or stem != self.selected_audio_stem
+        )
         self.selected_audio_candidate_id = candidate_id
         self.selected_audio_stem = stem
+        self.default_audio_candidate_id = candidate_id
+        self.default_audio_stem = stem
+        if not selection_changed:
+            self.project_changed.emit()
+            self.save_project()
+            return
         self.invalidate_from(StepId.STT)
         if self.statuses[StepId.EXTRACT] == StepStatus.DONE:
             self.statuses[StepId.STT] = StepStatus.READY
             self.step_changed.emit(StepId.STT.value)
         self.project_changed.emit()
-        self.save_project()
-
-    def set_default_audio_input(self, candidate_id: str, stem: str) -> None:
-        candidate = self.candidate(candidate_id)
-        if not candidate or stem not in candidate.stems:
-            return
-        self.default_audio_candidate_id = candidate_id
-        self.default_audio_stem = stem
-        self.project_changed.emit()
-        self.step_changed.emit(StepId.EXTRACT.value)
         self.save_project()
 
     def remove_audio_candidate(self, candidate_id: str) -> None:
@@ -191,8 +205,8 @@ class ProjectState(QObject):
 
     def valid_default_audio_input(self) -> tuple[str, str] | None:
         choices = (
-            (self.default_audio_candidate_id, self.default_audio_stem),
             (self.selected_audio_candidate_id, self.selected_audio_stem),
+            (self.default_audio_candidate_id, self.default_audio_stem),
         )
         for candidate_id, stem in choices:
             path = self.audio_input_path(candidate_id, stem)
@@ -206,6 +220,8 @@ class ProjectState(QObject):
             return
         self.selected_audio_candidate_id = candidate_id
         self.selected_audio_stem = stem
+        self.default_audio_candidate_id = candidate_id
+        self.default_audio_stem = stem
         self.invalidate_from(StepId.STT)
         self.statuses[StepId.EXTRACT] = StepStatus.DONE
         self.statuses[StepId.STT] = StepStatus.READY
@@ -221,23 +237,25 @@ class ProjectState(QObject):
         result = self._result_from_transcript(candidate_id)
         if result is None:
             return False
+        current = self.results.get(StepId.STT)
+        current_path = current.artifacts.get("transcript", "") if current else ""
+        selection_changed = (
+            candidate_id != self.selected_transcript_candidate_id
+            or not current_path
+            or Path(current_path) != Path(result.artifacts["transcript"])
+        )
         self.selected_transcript_candidate_id = candidate_id
+        self.default_transcript_candidate_id = candidate_id
+        if not selection_changed:
+            self.project_changed.emit()
+            self.save_project()
+            return True
         self.results[StepId.STT] = result
         self.statuses[StepId.STT] = StepStatus.DONE
         self.invalidate_from(StepId.TRANSLATE)
         self.statuses[StepId.TRANSLATE] = StepStatus.READY
         self.step_changed.emit(StepId.STT.value)
         self.step_changed.emit(StepId.TRANSLATE.value)
-        self.project_changed.emit()
-        self.save_project()
-        return True
-
-    def set_default_transcript_candidate(self, candidate_id: str) -> bool:
-        candidate = self.transcript_candidate(candidate_id)
-        if not candidate or not Path(candidate.path).is_file():
-            return False
-        self.default_transcript_candidate_id = candidate_id
-        self.step_changed.emit(StepId.STT.value)
         self.project_changed.emit()
         self.save_project()
         return True
@@ -306,9 +324,7 @@ class ProjectState(QObject):
         if not candidate:
             return
         self.selected_transcript_candidate_id = candidate.id
-        default = self.transcript_candidate(self.default_transcript_candidate_id)
-        if not default or not Path(default.path).is_file():
-            self.default_transcript_candidate_id = candidate.id
+        self.default_transcript_candidate_id = candidate.id
         current = self.results.get(StepId.STT)
         current_path = current.artifacts.get("transcript", "") if current else ""
         if current and current_path and Path(current_path) == Path(candidate.path):

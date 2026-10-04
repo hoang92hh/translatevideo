@@ -92,10 +92,8 @@ class SpeechToTextStepPage(StepPage):
         layout.addWidget(self.transcript_info)
 
         actions = QHBoxLayout()
-        use_button = QPushButton("Dùng cho Step 3")
+        use_button = QPushButton("Dùng làm input Step 3")
         use_button.clicked.connect(self._select_for_step_three)
-        default_button = QPushButton("Đặt làm mặc định")
-        default_button.clicked.connect(self._set_default_transcript)
         open_file = QPushButton("Mở file")
         open_file.clicked.connect(self._open_transcript)
         open_folder = QPushButton("Mở thư mục")
@@ -103,7 +101,6 @@ class SpeechToTextStepPage(StepPage):
         delete_button = QPushButton("Xóa transcript")
         delete_button.clicked.connect(self._delete_transcript)
         actions.addWidget(use_button)
-        actions.addWidget(default_button)
         actions.addWidget(open_file)
         actions.addWidget(open_folder)
         actions.addWidget(delete_button)
@@ -116,12 +113,11 @@ class SpeechToTextStepPage(StepPage):
         self.transcript_combo.blockSignals(True)
         self.transcript_combo.clear()
         for candidate in self.state.transcript_candidates.values():
-            tags = []
-            if candidate.id == self.state.selected_transcript_candidate_id:
-                tags.append("Step 3")
-            if candidate.id == self.state.default_transcript_candidate_id:
-                tags.append("Mặc định")
-            suffix = f"  [{' · '.join(tags)}]" if tags else ""
+            suffix = (
+                "  [Input Step 3]"
+                if candidate.id == self.state.selected_transcript_candidate_id
+                else ""
+            )
             self.transcript_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
         target_id = self.state.selected_transcript_candidate_id if prefer_selected else current
         target = self.transcript_combo.findData(target_id or self.state.selected_transcript_candidate_id)
@@ -153,13 +149,6 @@ class SpeechToTextStepPage(StepPage):
             self._refresh_transcripts()
             return
         QMessageBox.information(self, "Không thể chọn", "File transcript không tồn tại hoặc không hợp lệ.")
-
-    def _set_default_transcript(self) -> None:
-        candidate = self._current_transcript()
-        if candidate and self.state.set_default_transcript_candidate(candidate.id):
-            self._refresh_transcripts()
-            return
-        QMessageBox.information(self, "Không thể đặt mặc định", "File transcript không tồn tại.")
 
     def _open_transcript(self) -> None:
         candidate = self._current_transcript()

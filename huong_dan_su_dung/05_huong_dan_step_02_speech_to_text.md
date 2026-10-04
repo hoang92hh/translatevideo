@@ -91,17 +91,17 @@ Transcript được ghi tại:
 Mỗi lần chạy thành công tạo một thư mục candidate mới và không ghi đè các lần
 trước. File chứa đường dẫn audio đầu vào, ngôn ngữ, model, thiết bị yêu cầu/thực
 tế, lý do Auto chọn thiết bị, compute type, thời lượng và danh sách segment.
-`project.json` lưu danh sách candidate, output đang dùng cho Step 03 và output
-mặc định để mở lại project và tiếp tục pipeline.
+`project.json` lưu danh sách candidate và output được người dùng chọn gần nhất
+làm input Step 03 để mở lại project và tiếp tục pipeline.
 
 Candidate mới nhất chỉ được đăng ký sau khi `transcript.json` đã ghi thành công;
-lúc đó nó tự trở thành input hiện tại và mặc định cho Step 03. Nếu nhận dạng hoặc
-ghi file thất bại, input mặc định thành công trước đó không thay đổi.
+lúc đó nó tự trở thành input Step 03. Nếu nhận dạng hoặc ghi file thất bại, input
+thành công được chọn trước đó không thay đổi.
 
 Khối **Chọn output transcript** cho phép:
 
-- Chọn một kết quả cũ và nhấn **Dùng cho Step 3**.
-- Đặt kết quả đang xem làm mặc định.
+- Chọn một kết quả cũ và nhấn **Dùng làm input Step 3**. Thao tác này đồng thời
+  lưu đây là lựa chọn mà pipeline sẽ sử dụng sau này.
 - Mở file, mở thư mục hoặc xóa riêng một candidate.
 
 Khi đổi transcript dùng cho Step 03, kết quả từ Step 03 trở về sau được đánh dấu

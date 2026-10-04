@@ -143,10 +143,8 @@ class ExtractStepPage(StepPage):
         layout.addLayout(transport)
 
         actions = QHBoxLayout()
-        select_button = QPushButton("Dùng cho Step 2")
+        select_button = QPushButton("Dùng làm input Step 2")
         select_button.clicked.connect(self._select_for_step_two)
-        default_button = QPushButton("Đặt làm mặc định")
-        default_button.clicked.connect(self._set_default)
         open_file = QPushButton("Mở file")
         open_file.clicked.connect(self._open_file)
         open_folder = QPushButton("Mở thư mục")
@@ -154,7 +152,6 @@ class ExtractStepPage(StepPage):
         delete_button = QPushButton("Xóa candidate")
         delete_button.clicked.connect(self._delete_candidate)
         actions.addWidget(select_button)
-        actions.addWidget(default_button)
         actions.addWidget(open_file)
         actions.addWidget(open_folder)
         actions.addWidget(delete_button)
@@ -167,12 +164,7 @@ class ExtractStepPage(StepPage):
         self.candidate_combo.blockSignals(True)
         self.candidate_combo.clear()
         for candidate in self.state.audio_candidates.values():
-            tags = []
-            if candidate.id == self.state.selected_audio_candidate_id:
-                tags.append("Step 2")
-            if candidate.id == self.state.default_audio_candidate_id:
-                tags.append("Mặc định")
-            suffix = f"  [{' · '.join(tags)}]" if tags else ""
+            suffix = "  [Input Step 2]" if candidate.id == self.state.selected_audio_candidate_id else ""
             self.candidate_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
         target_id = self.state.selected_audio_candidate_id if prefer_selected else current
         target = self.candidate_combo.findData(target_id or self.state.selected_audio_candidate_id)
@@ -256,19 +248,6 @@ class ExtractStepPage(StepPage):
             return
         if path and Path(path).is_file():
             self.state.select_audio_input(candidate_id, stem)
-            self._refresh_candidates()
-
-    def _set_default(self) -> None:
-        candidate_id, stem, path = self._current_selection()
-        if stem not in {"voice", "original"}:
-            QMessageBox.information(
-                self,
-                "Stem không phù hợp",
-                "Chỉ Voice hoặc Original Mix có thể làm input mặc định cho pipeline.",
-            )
-            return
-        if path and Path(path).is_file():
-            self.state.set_default_audio_input(candidate_id, stem)
             self._refresh_candidates()
 
     def _open_file(self) -> None:

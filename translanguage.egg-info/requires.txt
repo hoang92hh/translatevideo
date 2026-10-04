@@ -1,5 +1,7 @@
 audio-separator<1,>=0.47
 audioread<4,>=3.0.1
+av<19,>=11
+faster-whisper<2,>=1.2.1
 PySide6<7,>=6.7
 
 [cpu]
@@ -7,4 +9,6 @@ audio-separator[cpu]<1,>=0.47
 
 [cuda]
 audio-separator[gpu]<1,>=0.47
+nvidia-cublas-cu12==12.6.4.1
+nvidia-cudnn-cu12==9.6.0.74
 onnxruntime-gpu<1.21,>=1.20

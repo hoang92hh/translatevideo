@@ -1,6 +1,6 @@
 # TransLanguage
 
-Khung ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project, GUI theo từng step, luồng dữ liệu giữa các step và kiến trúc cấu hình provider; các tác vụ xử lý media/AI đang dùng dữ liệu mô phỏng.
+Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project, GUI theo từng step, xử lý audio thật ở Step 1 và nhận dạng lời nói bằng Faster Whisper ở Step 2. Các Step 3–7 vẫn dùng dữ liệu mô phỏng.
 
 ## Chạy ứng dụng
 
@@ -19,17 +19,32 @@ python -m pip install -e ".[cuda]"
 python main.py
 ```
 
-Profile CUDA cài ONNX Runtime GPU. Nếu `torch.cuda.is_available()` vẫn trả về
+Profile CUDA cài ONNX Runtime GPU cùng cuBLAS 12.6 và cuDNN 9.6 trong `.venv`.
+Nếu `torch.cuda.is_available()` vẫn trả về
 `False`, cài bản PyTorch CUDA phù hợp theo hướng dẫn chính thức của PyTorch.
 Không cài đồng thời `onnxruntime`, `onnxruntime-gpu` và
 `onnxruntime-directml` trong cùng environment. Khi đổi profile trên một máy đã
 cài dependency, nên dùng virtual environment mới để tránh giữ lại package ONNX
 Runtime của profile cũ.
 
+Profile `[cuda]` hiện ưu tiên khả năng tương thích rộng và đã được xác minh trên
+GTX 1060/Pascal. GTX 16xx thuộc Turing, không cùng kiến trúc với GTX 10xx; vì vậy
+không nên chọn runtime chỉ dựa vào tên `GTX` hoặc `RTX`. Bảng kiến trúc và hướng
+dẫn chọn phiên bản nằm trong
+[`03_cai_dat_va_chay_tool_tren_may_khac.md`](huong_dan_su_dung/03_cai_dat_va_chay_tool_tren_may_khac.md).
+
 Với GPU NVIDIA Pascal như GTX 10xx, profile `cuda` khóa ONNX Runtime ở dòng
 1.20.x để dùng CUDA 12.x. Worker chỉ báo `NVIDIA GPU (CUDA)` sau khi session của
 model thực sự kích hoạt `CUDAExecutionProvider`; việc provider chỉ xuất hiện
 trong danh sách khả dụng là chưa đủ.
+
+Faster Whisper dùng CTranslate2 độc lập với PyTorch và ONNX Runtime. Step 2 chạy
+được bằng CPU sau khi cài dependency cơ bản. Profile `[cuda]` cài cuBLAS/cuDNN
+vào `.venv`; worker tự đăng ký thư mục DLL nên không yêu cầu sửa `PATH` hệ thống.
+Chế độ `Auto` chỉ chọn GPU khi CTranslate2 nhìn thấy GPU và tải được đầy đủ
+runtime; nếu không sẽ chọn CPU. Trong lúc chạy, Auto chỉ fallback CPU với lỗi
+CUDA hoặc thiếu VRAM; lựa chọn `GPU` sẽ báo lỗi thay vì tự đổi thiết bị. Dự án
+khóa PyAV dưới phiên bản 19 để tương thích Faster Whisper 1.2.1.
 
 ## Pipeline trên giao diện
 
@@ -78,5 +93,8 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Chế độ chạy toàn pipeline tái sử dụng candidate mặc định còn hợp lệ; nếu chưa có thì chạy MDX mặc định.
 - Khi chạy lại Step 1, audio player được giải phóng trước; MDX tái sử dụng Original Mix có cấu hình phù hợp thay vì ghi đè file đang nghe.
 - Khi chạy MDX, ứng dụng tự đưa thư mục chứa FFmpeg/FFprobe đã chọn vào môi trường của provider; không bắt buộc cấu hình PATH toàn hệ thống.
+- Step 2 dùng Faster Whisper để nhận dạng audio đã chọn, giữ timestamp và segment ID, đồng thời ghi `transcripts/transcript.json`.
+- Faster Whisper hỗ trợ `small`, `medium`, `large-v3`, VAD và ba chế độ `Auto`, `CPU`, `GPU`. Model được lưu tại cache riêng của TransLanguage trong `%LOCALAPPDATA%`.
+- Profile CUDA khóa cuBLAS `12.6.4.1` và cuDNN `9.6.0.74` để tiếp tục hỗ trợ GPU Pascal như GTX 1060.
 - Lỗi provider được hiển thị theo nhóm nguyên nhân, kèm hướng xử lý và phần chi tiết kỹ thuật có thể mở rộng.
-- Step 2–7 hiện vẫn được mô phỏng; chưa gọi Faster Whisper, Gemini hoặc VieNeu-TTS.
+- Step 3–7 hiện vẫn được mô phỏng; chưa gọi Gemini hoặc VieNeu-TTS.

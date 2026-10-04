@@ -28,7 +28,9 @@ video_translator/pipeline/mock_steps/translation.py
 video_translator/services/__init__.py
 video_translator/services/audio_separator_service.py
 video_translator/services/audio_separator_worker.py
+video_translator/services/faster_whisper_worker.py
 video_translator/services/ffmpeg_service.py
+video_translator/services/speech_to_text_service.py
 video_translator/ui/__init__.py
 video_translator/ui/components.py
 video_translator/ui/main_window.py

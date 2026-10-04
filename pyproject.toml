@@ -6,6 +6,9 @@ requires-python = ">=3.11"
 dependencies = [
     "audio-separator>=0.47,<1",
     "audioread>=3.0.1,<4",
+    # Faster Whisper 1.2.1 còn truyền metadata_errors; PyAV 19 đã xóa tham số này.
+    "av>=11,<19",
+    "faster-whisper>=1.2.1,<2",
     "PySide6>=6.7,<7",
 ]
 
@@ -13,6 +16,9 @@ dependencies = [
 cpu = ["audio-separator[cpu]>=0.47,<1"]
 cuda = [
     "audio-separator[gpu]>=0.47,<1",
+    # GTX 10xx/Pascal cần nhánh cuDNN còn hỗ trợ compute capability 6.x.
+    "nvidia-cublas-cu12==12.6.4.1",
+    "nvidia-cudnn-cu12==9.6.0.74",
     # GTX 10xx/Pascal cần CUDA 12.x; ONNX Runtime >=1.27 trên PyPI dùng CUDA 13.
     "onnxruntime-gpu>=1.20,<1.21",
 ]

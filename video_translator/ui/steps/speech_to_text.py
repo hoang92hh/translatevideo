@@ -32,6 +32,7 @@ class SpeechToTextStepPage(StepPage):
         current = (self.state.selected_audio_candidate_id, self.state.selected_audio_stem)
         self.audio_input.blockSignals(True)
         self.audio_input.clear()
+        selected_index = -1
         for candidate in self.state.audio_candidates.values():
             for stem in candidate.stems:
                 if stem not in {"voice", "original"}:
@@ -40,14 +41,20 @@ class SpeechToTextStepPage(StepPage):
                     f"{candidate.label} · {stem.title()}",
                     (candidate.id, stem),
                 )
-        index = self.audio_input.findData(current)
-        self.audio_input.setCurrentIndex(index if index >= 0 else 0)
+                value = self.audio_input.itemData(self.audio_input.count() - 1)
+                if (
+                    isinstance(value, (tuple, list))
+                    and len(value) == 2
+                    and (str(value[0]), str(value[1])) == current
+                ):
+                    selected_index = self.audio_input.count() - 1
+        self.audio_input.setCurrentIndex(selected_index)
         self.audio_input.blockSignals(False)
 
     def _input_changed(self, *_: object) -> None:
         value = self.audio_input.currentData()
-        if value:
-            self.state.select_audio_input(value[0], value[1])
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            self.state.select_audio_input(str(value[0]), str(value[1]))
 
     def settings(self) -> dict[str, object]:
         values = super().settings()

@@ -13,6 +13,41 @@ Profile CUDA hiện được cấu hình cho CUDA 12.x và tương thích GPU Pa
 10xx. Không tự thay ONNX Runtime hoặc PyTorch bằng bản CUDA 13 trên những GPU
 này.
 
+### 1.1. Chọn runtime theo dòng GPU
+
+Không chọn dependency chỉ theo chữ `GTX` hoặc `RTX`. Ví dụ GTX 1060 là Pascal,
+nhưng GTX 1660 là Turing và có khả năng tương thích khác.
+
+| Dòng GPU phổ biến | Kiến trúc | Cách cài khuyến nghị | Ghi chú |
+|---|---|---|---|
+| GTX 9xx | Maxwell | Thử profile `[cuda]`; chuyển `[cpu]` nếu backend không khởi tạo | Phần cứng cũ, hiệu năng và khả năng hỗ trợ có thể hạn chế |
+| GTX 10xx | Pascal | Profile `[cuda]`: cuBLAS `12.6.4.1`, cuDNN `9.6.0.74` | Cấu hình GTX 1060 đã được xác minh bằng inference thực tế |
+| GTX 16xx, RTX 20xx | Turing | Profile `[cuda]` hiện tại | Có thể dùng runtime mới hơn, nhưng không bắt buộc |
+| RTX 30xx | Ampere | Profile `[cuda]` hiện tại | FP16 thường hiệu quả hơn Pascal |
+| RTX 40xx | Ada | Profile `[cuda]` hiện tại | Có thể cân nhắc runtime mới hơn sau khi kiểm tra support matrix |
+| RTX 50xx / GPU NVIDIA mới hơn | Blackwell hoặc mới hơn | Đối chiếu support matrix và dùng driver/cuDNN hỗ trợ đúng GPU | Profile Pascal hiện tại chưa được xác minh trên nhóm này |
+| NVIDIA Tesla/Quadro | Phụ thuộc model | Xác định kiến trúc/compute capability trước rồi đối chiếu hàng tương ứng | Tên thương mại không đủ để chọn runtime |
+| AMD hoặc Intel GPU | Không dùng CUDA | Profile `[cpu]` | CTranslate2 CUDA chỉ hỗ trợ NVIDIA |
+| Apple Silicon | Không áp dụng cho hướng dẫn Windows này | Dùng CPU hoặc xây dựng profile riêng | Chưa có profile Metal trong ứng dụng |
+
+Profile hiện tại là baseline an toàn cho máy đã được kiểm tra và nhiều GPU NVIDIA
+từ Turing đến Ada. Runtime mới nhất không luôn tốt hơn: các bản cuDNN mới có thể
+ngừng hỗ trợ kiến trúc cũ hoặc yêu cầu driver mới hơn.
+
+Nếu cần thay phiên bản cho một kiến trúc khác:
+
+1. Tra tên GPU và driver bằng `nvidia-smi`.
+2. Xác định kiến trúc và compute capability trên tài liệu NVIDIA.
+3. Đối chiếu cuDNN Support Matrix cho đúng CUDA, driver và compute capability.
+4. Sửa đồng thời hai dòng `nvidia-cublas-cu12` và `nvidia-cudnn-cu12` trong
+   nhóm `[project.optional-dependencies].cuda` của `pyproject.toml`.
+5. Tạo `.venv` mới rồi cài lại `.[cuda]`; không nâng riêng một package trong môi
+   trường đang dùng.
+6. Xác nhận bằng một inference ngắn trước khi xử lý toàn bộ video.
+
+Không thay hai phiên bản đã khóa nếu máy đang dùng GTX 1060/Pascal và pipeline
+đang hoạt động ổn định.
+
 ## 2. Cài công cụ nền
 
 Mở **Command Prompt** và chạy:
@@ -38,6 +73,9 @@ nvidia-smi
 
 Lệnh phải hiển thị tên GPU và phiên bản driver trước khi tiếp tục.
 
+`CUDA Version` trong `nvidia-smi` là mức CUDA tối đa mà driver hỗ trợ, không xác
+nhận cuBLAS/cuDNN đã được cài. Hai runtime đó được profile `[cuda]` cài vào `.venv`.
+
 ## 3. Chuẩn bị source code
 
 Sao chép hoặc clone repository sang máy mới. Không sao chép thư mục `.venv` từ
@@ -61,13 +99,20 @@ py -3.13 -m venv .venv
 .venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
 ```
 
-### 4.2. Cài TransLanguage và ONNX Runtime GPU
+### 4.2. Cài TransLanguage và runtime GPU
 
 ```cmd
 .venv\Scripts\python.exe -m pip install -e ".[cuda]"
 ```
 
-Profile này cài `onnxruntime-gpu 1.20.x`, tương thích CUDA 12.x.
+Profile này cài:
+
+- `onnxruntime-gpu 1.20.x` cho Step 01.
+- `nvidia-cublas-cu12 12.6.4.1` và `nvidia-cudnn-cu12 9.6.0.74` cho Step 02.
+
+Hai runtime NVIDIA của Step 02 nằm trong `.venv`. Worker tự đăng ký thư mục DLL,
+không cần thêm chúng vào `PATH` hệ thống. Các phiên bản được khóa để hỗ trợ GPU
+Pascal như GTX 1060.
 
 ### 4.3. Cài PyTorch CUDA 12.6
 
@@ -124,6 +169,31 @@ Kết quả mong đợi:
 No broken requirements found.
 ```
 
+### 4.7. Kiểm tra CUDA cho Faster Whisper
+
+Step 2 dùng CTranslate2, không dùng backend PyTorch hoặc ONNX Runtime của Step 1.
+Khi cài profile `[cuda]`, cuBLAS và cuDNN được cài trực tiếp vào `.venv` và được
+worker tìm tự động. Không cần cài toàn bộ CUDA Toolkit chỉ để chạy Step 2.
+
+Kiểm tra CTranslate2 nhìn thấy GPU:
+
+```cmd
+.venv\Scripts\python.exe -c "import ctranslate2; print('CUDA devices:', ctranslate2.get_cuda_device_count()); print('Compute types:', ctranslate2.get_supported_compute_types('cuda'))"
+```
+
+`CUDA devices` cần lớn hơn `0`. Có thể xác nhận thêm các package runtime:
+
+```cmd
+.venv\Scripts\python.exe -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12
+```
+
+Nếu thiếu package, cài lại profile CUDA bằng lệnh ở mục 4.2. Không tự nâng cuDNN
+lên bản mới nhất trên GTX 10xx vì các nhánh mới đã ngừng hỗ trợ Pascal.
+
+Để xác nhận GPU thực sự inference, chạy một đoạn audio ngắn và kiểm tra metadata
+`actual_device: NVIDIA GPU (CUDA)`. Task Manager cần chuyển biểu đồ từ `3D` sang
+`CUDA` hoặc `Compute_0`; có thể dùng `nvidia-smi` để theo dõi thêm.
+
 ## 5. Cài đặt cho máy chỉ dùng CPU
 
 Không chạy các lệnh cài PyTorch CUDA ở phần trên. Chạy:
@@ -155,6 +225,15 @@ Trong Step 01 — Audio Preparation:
 
 Khi chạy GPU thành công, kết quả/candidate hiển thị `NVIDIA GPU (CUDA)` và
 metadata ghi `execution_provider: CUDAExecutionProvider`.
+
+Trong Step 02 — Speech to Text:
+
+- `Auto`: chỉ chọn GPU khi CTranslate2 phát hiện GPU và tải được cuBLAS/cuDNN;
+  nếu cấu hình CUDA chưa đầy đủ thì chọn CPU ngay. Auto chỉ fallback trong lúc
+  chạy khi gặp lỗi CUDA hoặc thiếu VRAM.
+- `GPU`: bắt buộc dùng NVIDIA CUDA; lỗi CUDA sẽ được hiển thị và không fallback.
+- `CPU`: bắt buộc dùng CPU, không tự chuyển sang GPU.
+- Lần chạy đầu của mỗi model cần Internet để tải model vào cache của ứng dụng.
 
 ## 7. Những lần chạy sau
 

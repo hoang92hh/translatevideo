@@ -20,7 +20,7 @@ class MockPipeline:
         handler: Callable[[ProjectState, dict[str, Any]], StepResult] = HANDLERS[step]
         if progress:
             progress(0, "Đang bắt đầu xử lý…")
-        if step == StepId.EXTRACT:
+        if step in {StepId.EXTRACT, StepId.STT}:
             result = handler(state, settings, progress)
         else:
             result = handler(state, settings)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
-from ...models import Segment, StepId, StepResult
+from ...models import Segment, StepId, StepResult, TranscriptCandidate
 from ...services import SpeechToTextService
 from ...state import ProjectState
 
@@ -47,10 +49,14 @@ def execute(
         for index, item in enumerate(transcription.segments, start=1)
     ]
 
-    transcript_path = Path(state.workspace_path("transcripts", "transcript.json"))
-    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    candidate_id = f"stt-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+    transcript_path = Path(state.workspace_path("transcripts", candidate_id, "transcript.json"))
+    transcript_path.parent.mkdir(parents=True, exist_ok=False)
     payload = {
         "version": 1,
+        "candidate_id": candidate_id,
+        "created_at": now.isoformat(timespec="seconds"),
         "input_audio": str(input_audio.resolve()),
         "source_language": state.source_language,
         "language": transcription.language,
@@ -73,8 +79,16 @@ def execute(
         ],
     }
     temporary_path = transcript_path.with_suffix(f"{transcript_path.suffix}.part")
-    temporary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary_path.replace(transcript_path)
+    try:
+        temporary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary_path.replace(transcript_path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        try:
+            transcript_path.parent.rmdir()
+        except OSError:
+            pass
+        raise
 
     detected = transcription.language or "không xác định"
     probability = (
@@ -82,22 +96,36 @@ def execute(
         if transcription.language_probability is not None
         else ""
     )
+    summary = (
+        f"Đã nhận dạng {len(segments)} segment · ngôn ngữ {detected}{probability} · "
+        f"{model_name} · {transcription.actual_device}"
+    )
+    metadata = {
+        **settings,
+        "language": transcription.language,
+        "language_probability": transcription.language_probability,
+        "requested_device": requested_device,
+        "actual_device": transcription.actual_device,
+        "compute_type": transcription.compute_type,
+        "device_selection_reason": transcription.device_selection_reason,
+        "duration_seconds": transcription.duration_seconds,
+        "transcript_candidate_id": candidate_id,
+        "recommended_transcript_candidate_id": candidate_id,
+    }
+    candidate = TranscriptCandidate(
+        id=candidate_id,
+        label=f"{model_name} · {transcription.actual_device} · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
+        created_at=now.isoformat(timespec="seconds"),
+        path=str(transcript_path),
+        segment_count=len(segments),
+        summary=summary,
+        metadata=metadata,
+    )
     return StepResult(
         step=StepId.STT,
-        summary=(
-            f"Đã nhận dạng {len(segments)} segment · ngôn ngữ {detected}{probability} · "
-            f"{model_name} · {transcription.actual_device}"
-        ),
+        summary=summary,
         artifacts={"transcript": str(transcript_path)},
         segments=segments,
-        metadata={
-            **settings,
-            "language": transcription.language,
-            "language_probability": transcription.language_probability,
-            "requested_device": requested_device,
-            "actual_device": transcription.actual_device,
-            "compute_type": transcription.compute_type,
-            "device_selection_reason": transcription.device_selection_reason,
-            "duration_seconds": transcription.duration_seconds,
-        },
+        metadata=metadata,
+        transcript_candidates=[candidate],
     )

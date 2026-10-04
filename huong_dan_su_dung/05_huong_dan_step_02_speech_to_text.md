@@ -85,16 +85,37 @@ Mỗi dòng kết quả gồm:
 Transcript được ghi tại:
 
 ```text
-<project>\transcripts\transcript.json
+<project>\transcripts\stt-YYYYMMDD-HHMMSS-xxxxxx\transcript.json
 ```
 
-File chứa đường dẫn audio đầu vào, ngôn ngữ, model, thiết bị yêu cầu/thực tế,
-lý do Auto chọn thiết bị, compute type, thời lượng và danh sách segment. `project.json` cũng lưu kết quả để
-mở lại project và tiếp tục pipeline.
+Mỗi lần chạy thành công tạo một thư mục candidate mới và không ghi đè các lần
+trước. File chứa đường dẫn audio đầu vào, ngôn ngữ, model, thiết bị yêu cầu/thực
+tế, lý do Auto chọn thiết bị, compute type, thời lượng và danh sách segment.
+`project.json` lưu danh sách candidate, output đang dùng cho Step 03 và output
+mặc định để mở lại project và tiếp tục pipeline.
+
+Candidate mới nhất chỉ được đăng ký sau khi `transcript.json` đã ghi thành công;
+lúc đó nó tự trở thành input hiện tại và mặc định cho Step 03. Nếu nhận dạng hoặc
+ghi file thất bại, input mặc định thành công trước đó không thay đổi.
+
+Khối **Chọn output transcript** cho phép:
+
+- Chọn một kết quả cũ và nhấn **Dùng cho Step 3**.
+- Đặt kết quả đang xem làm mặc định.
+- Mở file, mở thư mục hoặc xóa riêng một candidate.
+
+Khi đổi transcript dùng cho Step 03, kết quả từ Step 03 trở về sau được đánh dấu
+cần chạy lại. Nếu xóa candidate đang dùng, ứng dụng chuyển sang candidate hợp lệ
+mới nhất còn lại; nếu không còn candidate thì Step 02 cần chạy lại.
 
 Có thể sửa nội dung cột `Source` trên giao diện trước khi chạy Step 03. Việc sửa
 sẽ cập nhật dữ liệu trong `project.json` và làm mất hiệu lực các step phía sau;
-file artifact `transcript.json` vẫn là kết quả gốc của lần nhận dạng gần nhất.
+file artifact `transcript.json` của candidate đó vẫn là kết quả gốc của lần nhận
+dạng tương ứng.
+
+File legacy `<project>\transcripts\transcript.json` từ phiên bản cũ được giữ
+nguyên và tự đăng ký thành candidate khi mở project; ứng dụng không tự di chuyển
+hoặc xóa file này.
 
 ## 5. Lỗi thường gặp
 

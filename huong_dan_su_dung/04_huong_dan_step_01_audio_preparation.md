@@ -290,6 +290,10 @@ Chỉ chấp nhận:
 Đặt candidate/stem hiện tại làm đầu vào mặc định của pipeline. Khi chạy toàn bộ
 pipeline, tool ưu tiên tái sử dụng lựa chọn mặc định còn hợp lệ.
 
+Sau mỗi lần Step 01 chạy thành công, candidate vừa tạo tự động trở thành lựa
+chọn hiện tại và mặc định mới. Nếu lần chạy thất bại, mặc định thành công trước
+đó không thay đổi.
+
 Chỉ `Voice` hoặc `Original` có thể được đặt làm mặc định.
 
 ### Mở file
@@ -320,8 +324,9 @@ Khi nhấn `Chạy step 01`:
 4. FFmpeg tạo hoặc tái sử dụng Original Mix.
 5. Nếu dùng MDX, tool tạo worker subprocess riêng cho lần chạy.
 6. Worker load runtime/model trên thiết bị đã chọn.
-7. Kết quả hợp lệ được thêm vào danh sách candidate.
-8. Project được cập nhật để các step sau có thể sử dụng output.
+7. Kết quả hợp lệ được thêm vào danh sách candidate và đặt làm mặc định.
+8. Project được cập nhật để các step sau có thể sử dụng output. Nếu xử lý lỗi,
+   candidate không được thêm và mặc định trước đó được giữ nguyên.
 
 Trong lúc step đang chạy, nút chạy bị vô hiệu hóa để tránh khởi động hai worker
 cùng lúc.

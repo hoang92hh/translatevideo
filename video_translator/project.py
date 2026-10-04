@@ -53,6 +53,9 @@ class VideoProject:
     selected_audio_stem: str = ""
     default_audio_candidate_id: str = ""
     default_audio_stem: str = ""
+    transcript_candidates: list[dict[str, Any]] = field(default_factory=list)
+    selected_transcript_candidate_id: str = ""
+    default_transcript_candidate_id: str = ""
 
     @property
     def root_path(self) -> Path:

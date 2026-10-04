@@ -86,7 +86,7 @@ class ExtractStepPage(StepPage):
         self._processing = busy
         super().set_busy(busy)
         if not busy and hasattr(self, "candidate_combo"):
-            self._refresh_candidates()
+            self._refresh_candidates(prefer_selected=True)
 
     def build_result_extra(self) -> QWidget:
         self.table.setVisible(False)
@@ -162,7 +162,7 @@ class ExtractStepPage(StepPage):
         layout.addLayout(actions)
         return container
 
-    def _refresh_candidates(self) -> None:
+    def _refresh_candidates(self, prefer_selected: bool = False) -> None:
         current = self.candidate_combo.currentData()
         self.candidate_combo.blockSignals(True)
         self.candidate_combo.clear()
@@ -174,7 +174,8 @@ class ExtractStepPage(StepPage):
                 tags.append("Mặc định")
             suffix = f"  [{' · '.join(tags)}]" if tags else ""
             self.candidate_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
-        target = self.candidate_combo.findData(current or self.state.selected_audio_candidate_id)
+        target_id = self.state.selected_audio_candidate_id if prefer_selected else current
+        target = self.candidate_combo.findData(target_id or self.state.selected_audio_candidate_id)
         self.candidate_combo.setCurrentIndex(target if target >= 0 else 0)
         self.candidate_combo.blockSignals(False)
         self._candidate_changed()

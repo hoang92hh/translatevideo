@@ -89,24 +89,7 @@ G:\workspace\translanguage
 
 Nếu repository nằm ở nơi khác, thay đường dẫn này bằng vị trí thực tế.
 
-## 4. Cài đặt cho máy NVIDIA GPU
-
-### 4.1. Tạo môi trường riêng
-
-```cmd
-cd /d G:\workspace\translanguage
-py -3.13 -m venv .venv
-.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
-```
-
-### 4.2. Cài TransLanguage và runtime GPU
-
-```cmd
-.venv\Scripts\python.exe -m pip install -e ".[cuda]"
-```
-
-Profile này cài:
-
+## 4. Cài đặt cho máy NVIDIA ư v
 - `onnxruntime-gpu 1.20.x` cho Step 01.
 - `nvidia-cublas-cu12 12.6.4.1` và `nvidia-cudnn-cu12 9.6.0.74` cho Step 02.
 

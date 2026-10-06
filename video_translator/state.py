@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, Signal
 from .models import (
     AudioCandidate,
     BuildAudioCandidate,
+    RenderCandidate,
     STEP_ORDER,
     Segment,
     StepId,
@@ -55,6 +56,8 @@ class ProjectState(QObject):
         self.build_audio_candidates: dict[str, BuildAudioCandidate] = {}
         self.selected_build_audio_candidate_id = ""
         self.default_build_audio_candidate_id = ""
+        self.render_candidates: dict[str, RenderCandidate] = {}
+        self.selected_render_candidate_id = ""
         self.results: dict[StepId, StepResult] = {}
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -125,6 +128,12 @@ class ProjectState(QObject):
         }
         self.selected_build_audio_candidate_id = project.selected_build_audio_candidate_id
         self.default_build_audio_candidate_id = project.default_build_audio_candidate_id
+        self.render_candidates = {
+            item["id"]: RenderCandidate(**item)
+            for item in project.render_candidates
+            if item.get("id")
+        }
+        self.selected_render_candidate_id = project.selected_render_candidate_id
         self.results.clear()
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -142,6 +151,7 @@ class ProjectState(QObject):
         self._restore_selected_tts()
         self._restore_selected_sync()
         self._restore_selected_build_audio()
+        self._restore_selected_render()
         for index, step in enumerate(STEP_ORDER):
             if self.statuses[step] == StepStatus.DONE:
                 continue
@@ -190,6 +200,10 @@ class ProjectState(QObject):
         ]
         self.project.selected_build_audio_candidate_id = self.selected_build_audio_candidate_id
         self.project.default_build_audio_candidate_id = self.default_build_audio_candidate_id
+        self.project.render_candidates = [
+            asdict(candidate) for candidate in self.render_candidates.values()
+        ]
+        self.project.selected_render_candidate_id = self.selected_render_candidate_id
         self.project.pipeline = {
             step.value: self._serialize_result(result)
             for step, result in self.results.items()
@@ -215,6 +229,7 @@ class ProjectState(QObject):
             "build_audio_candidates": [
                 asdict(candidate) for candidate in result.build_audio_candidates
             ],
+            "render_candidates": [asdict(candidate) for candidate in result.render_candidates],
         }
 
     @staticmethod
@@ -236,6 +251,9 @@ class ProjectState(QObject):
             sync_candidates=[SyncCandidate(**item) for item in data.get("sync_candidates", [])],
             build_audio_candidates=[
                 BuildAudioCandidate(**item) for item in data.get("build_audio_candidates", [])
+            ],
+            render_candidates=[
+                RenderCandidate(**item) for item in data.get("render_candidates", [])
             ],
         )
 
@@ -948,8 +966,11 @@ class ProjectState(QObject):
         result = self._result_from_build_audio(candidate_id)
         if result is None:
             return False
+        changed = candidate_id != self.selected_build_audio_candidate_id
         self.selected_build_audio_candidate_id = candidate_id
         self.default_build_audio_candidate_id = candidate_id
+        if changed:
+            self.selected_render_candidate_id = ""
         self.results[StepId.BUILD_AUDIO] = result
         self.statuses[StepId.BUILD_AUDIO] = StepStatus.DONE
         self.invalidate_from(StepId.RENDER)
@@ -1056,6 +1077,98 @@ class ProjectState(QObject):
             metadata=metadata,
         )
 
+    def render_candidate(self, candidate_id: str) -> RenderCandidate | None:
+        return self.render_candidates.get(candidate_id)
+
+    def remove_render_candidate(self, candidate_id: str) -> None:
+        current = self.results.get(StepId.RENDER)
+        current_id = str(current.metadata.get("render_candidate_id", "")) if current else ""
+        self.render_candidates.pop(candidate_id, None)
+        if candidate_id == self.selected_render_candidate_id:
+            self.selected_render_candidate_id = ""
+        if current_id == candidate_id:
+            fallback = self._latest_valid_render_candidate()
+            if fallback:
+                restored = self._result_from_render(fallback.id)
+                if restored:
+                    self.selected_render_candidate_id = fallback.id
+                    self.results[StepId.RENDER] = restored
+                    self.statuses[StepId.RENDER] = StepStatus.DONE
+            else:
+                self.results.pop(StepId.RENDER, None)
+                self.statuses[StepId.RENDER] = (
+                    StepStatus.READY
+                    if self.statuses[StepId.BUILD_AUDIO] == StepStatus.DONE
+                    else StepStatus.PENDING
+                )
+        self.step_changed.emit(StepId.RENDER.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _restore_selected_render(self) -> None:
+        if StepId.BUILD_AUDIO not in self.results:
+            return
+        current = self.results.get(StepId.RENDER)
+        current_id = str(current.metadata.get("render_candidate_id", "")) if current else ""
+        choices = (current_id, self.selected_render_candidate_id)
+        candidate = next(
+            (
+                self.render_candidate(item)
+                for item in choices
+                if item and self._result_from_render(item)
+            ),
+            None,
+        )
+        candidate = candidate or self._latest_valid_render_candidate()
+        if not candidate:
+            return
+        result = self._result_from_render(candidate.id)
+        if result:
+            self.selected_render_candidate_id = candidate.id
+            self.results[StepId.RENDER] = result
+            self.statuses[StepId.RENDER] = StepStatus.DONE
+
+    def _latest_valid_render_candidate(self) -> RenderCandidate | None:
+        valid = [
+            item for item in self.render_candidates.values() if self._result_from_render(item.id)
+        ]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_render(self, candidate_id: str) -> StepResult | None:
+        candidate = self.render_candidate(candidate_id)
+        if not candidate:
+            return None
+        manifest = Path(candidate.path)
+        video = Path(candidate.video_file)
+        if not manifest.is_file() or not video.is_file():
+            return None
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            duration = float(payload.get("duration_seconds", candidate.duration_seconds))
+            source_build_audio_id = str(payload.get("source_build_audio_candidate_id", ""))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if (
+            duration <= 0
+            or not source_build_audio_id
+            or source_build_audio_id != self.selected_build_audio_candidate_id
+        ):
+            return None
+        source = self.results.get(StepId.BUILD_AUDIO)
+        subtitle = Path(candidate.subtitle_file) if candidate.subtitle_file else None
+        artifacts = {
+            "output_video": str(video),
+            **({"subtitle": str(subtitle)} if subtitle and subtitle.is_file() else {}),
+            "render_manifest": str(manifest),
+        }
+        return StepResult(
+            step=StepId.RENDER,
+            summary=candidate.summary or f"{candidate.label} · {duration:.2f}s",
+            artifacts=artifacts,
+            segments=source.segments if source else [],
+            metadata={**candidate.metadata, **payload, "render_candidate_id": candidate.id},
+        )
+
     def set_input_video(self, path: str) -> None:
         if path == self.input_video:
             return
@@ -1094,6 +1207,14 @@ class ProjectState(QObject):
                 return
         if step == StepId.BUILD_AUDIO and self.default_build_audio_candidate_id:
             if self.select_build_audio_candidate(self.default_build_audio_candidate_id):
+                return
+        if step == StepId.RENDER and self.selected_render_candidate_id:
+            restored = self._result_from_render(self.selected_render_candidate_id)
+            if restored:
+                self.results[StepId.RENDER] = restored
+                self.statuses[StepId.RENDER] = StepStatus.DONE
+                self.step_changed.emit(StepId.RENDER.value)
+                self.save_project()
                 return
         self.statuses[step] = StepStatus.ERROR
         self.step_changed.emit(step.value)
@@ -1137,8 +1258,16 @@ class ProjectState(QObject):
             self.build_audio_candidates[candidate.id] = candidate
         build_audio_id = str(result.metadata.get("recommended_build_audio_candidate_id", ""))
         if build_audio_id and build_audio_id in self.build_audio_candidates:
+            changed = build_audio_id != self.selected_build_audio_candidate_id
             self.selected_build_audio_candidate_id = build_audio_id
             self.default_build_audio_candidate_id = build_audio_id
+            if changed:
+                self.selected_render_candidate_id = ""
+        for candidate in result.render_candidates:
+            self.render_candidates[candidate.id] = candidate
+        render_id = str(result.metadata.get("recommended_render_candidate_id", ""))
+        if render_id and render_id in self.render_candidates:
+            self.selected_render_candidate_id = render_id
         self.results[result.step] = result
         has_blocking_errors = (
             result.step == StepId.SYNC and int(result.metadata.get("error_count", 0)) > 0

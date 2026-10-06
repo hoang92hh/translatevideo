@@ -1,6 +1,6 @@
 # TransLanguage
 
-Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project, xử lý audio thật ở Step 1, nhận dạng lời nói bằng Faster Whisper ở Step 2, dịch bằng Google Gemini ở Step 3, tạo giọng nói thật ở Step 4, đồng bộ thời lượng bằng FFmpeg ở Step 5 và ghép audio timeline thật ở Step 6. Step 7 vẫn dùng dữ liệu mô phỏng.
+Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project và xử lý thật toàn bộ pipeline: chuẩn bị audio ở Step 1, nhận dạng lời nói bằng Faster Whisper ở Step 2, dịch bằng Google Gemini ở Step 3, tạo giọng nói ở Step 4, đồng bộ thời lượng bằng FFmpeg ở Step 5, ghép voice timeline ở Step 6 và render video hoàn chỉnh ở Step 7.
 
 ## Chạy ứng dụng
 
@@ -108,10 +108,12 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Với segment vẫn quá dài, popup sửa lỗi có nút **Vay thời gian lân cận** riêng. Nút này ưu tiên cân B+C; chỉ dùng A+B+C (hoặc A+B khi không có C) nếu thời gian phía sau chưa đủ. Các voice trong nhóm dùng cùng tốc độ tối đa đã cấu hình, giữ nguyên thứ tự, không chồng nhau, lệch tối đa 0,5 giây và không vay qua khoảng nghỉ lớn hơn 1 giây.
 - Segment không thể đặt vừa trong giới hạn tốc độ cùng segment liền trước/sau được đưa vào popup xử lý của Step 5. Mọi row đều có thể sửa tay hoặc chọn để Gemini chỉnh sửa. Checkbox đồng thời quyết định chính xác các row được tạo lại voice; kết quả cập nhật trực tiếp candidate Step 3, Step 4 và Step 5 hiện tại, không tạo candidate mới. Candidate Step 5 chỉ trở thành input Step 6 sau khi hết lỗi.
 - Step 6 đọc `adjusted_start`/`play_duration`, kiểm tra lại không chồng voice và ghép các segment thành một track WAV mono 48 kHz bằng FFmpeg. Mỗi lần chạy tạo một candidate riêng trong `built_audio/`; track được bù khoảng lặng để dài đúng bằng video gốc và có thể nghe thử trước khi chọn làm input Step 7. Step này chỉ xử lý voice, không trộn background hoặc video.
-- Local Model ở Step 3 được đánh dấu chưa triển khai. Step 7 hiện vẫn được mô phỏng.
+- Step 7 render MP4 H.264/AAC từ hình ảnh video gốc và voice track Step 6. Hai thành phần này luôn bắt buộc. Background tách ở Step 1 được chọn mặc định khi tồn tại, có thể tắt hoặc điều chỉnh âm lượng; `Original Mix` tuyệt đối không được trộn vào output. Subtitle SRT và burn subtitle là tùy chọn. Mỗi lần render tạo một candidate riêng trong `output/` để có thể mở, so sánh hoặc xóa độc lập.
+- Local Model ở Step 3 được đánh dấu chưa triển khai.
 
 Hướng dẫn chi tiết:
 
 - [`huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md`](huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md)
 - [`huong_dan_su_dung/08_huong_dan_step_05_audio_sync.md`](huong_dan_su_dung/08_huong_dan_step_05_audio_sync.md)
 - [`huong_dan_su_dung/09_huong_dan_step_06_build_audio.md`](huong_dan_su_dung/09_huong_dan_step_06_build_audio.md)
+- [`huong_dan_su_dung/10_huong_dan_step_07_render_export.md`](huong_dan_su_dung/10_huong_dan_step_07_render_export.md)

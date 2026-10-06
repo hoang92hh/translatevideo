@@ -69,6 +69,8 @@ class VideoProject:
     build_audio_candidates: list[dict[str, Any]] = field(default_factory=list)
     selected_build_audio_candidate_id: str = ""
     default_build_audio_candidate_id: str = ""
+    render_candidates: list[dict[str, Any]] = field(default_factory=list)
+    selected_render_candidate_id: str = ""
 
     @property
     def root_path(self) -> Path:

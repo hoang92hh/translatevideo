@@ -130,6 +130,22 @@ class BuildAudioCandidate:
 
 
 @dataclass(slots=True)
+class RenderCandidate:
+    id: str
+    label: str
+    created_at: str
+    path: str
+    folder: str
+    video_file: str
+    subtitle_file: str = ""
+    background_used: bool = False
+    burned_subtitle: bool = False
+    duration_seconds: float = 0.0
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class StepResult:
     step: StepId
     summary: str
@@ -142,3 +158,4 @@ class StepResult:
     tts_candidates: list[TtsCandidate] = field(default_factory=list)
     sync_candidates: list[SyncCandidate] = field(default_factory=list)
     build_audio_candidates: list[BuildAudioCandidate] = field(default_factory=list)
+    render_candidates: list[RenderCandidate] = field(default_factory=list)

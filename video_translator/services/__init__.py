@@ -1,6 +1,7 @@
 from .audio_separator_service import AudioSeparatorService
 from .audio_sync_service import AudioSyncService
 from .audio_timeline_service import AudioTimelineService
+from .video_render_service import VideoRenderService
 from .credential_service import CredentialService
 from .ffmpeg_service import FFmpegService
 from .google_translation_service import GoogleTranslationService
@@ -11,6 +12,7 @@ __all__ = [
     "AudioSeparatorService",
     "AudioSyncService",
     "AudioTimelineService",
+    "VideoRenderService",
     "CredentialService",
     "FFmpegService",
     "GoogleTranslationService",

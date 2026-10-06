@@ -44,6 +44,7 @@ class MainWindow(QMainWindow):
         self.state = ProjectState()
         self.pipeline = MockPipeline()
         self.running_all = False
+        self.continuing_pipeline = False
         self.active_workers: set[PipelineWorker] = set()
         self.pages: dict[StepId, StepPage] = {}
         self._loading_project = False
@@ -100,6 +101,11 @@ class MainWindow(QMainWindow):
         self.run_all_button.setObjectName("primaryButton")
         self.run_all_button.clicked.connect(self._run_all)
         top_layout.addWidget(self.run_all_button)
+        self.continue_button = QPushButton("Continue")
+        self.continue_button.setObjectName("primaryButton")
+        self.continue_button.clicked.connect(self._continue_pipeline)
+        self.continue_button.setVisible(False)
+        top_layout.addWidget(self.continue_button)
         root.addWidget(top)
 
         self.tabs = QTabWidget()
@@ -122,6 +128,7 @@ class MainWindow(QMainWindow):
     def _open_project(self, project: VideoProject) -> None:
         for page in self.pages.values():
             page.prepare_run()
+        self._reset_pipeline_buttons()
         self._loading_project = True
         try:
             self.state.bind_project(project)
@@ -360,7 +367,7 @@ class MainWindow(QMainWindow):
             return
         if not self.state.can_run(step):
             QMessageBox.information(self, "Chưa đủ đầu vào", "Hãy hoàn thành step trước trước khi chạy step này.")
-            self._stop_run_all()
+            self._stop_run_all(interrupted=continue_all)
             return
         page = self.pages[step]
         settings = page.settings()
@@ -368,6 +375,15 @@ class MainWindow(QMainWindow):
         page.prepare_run()
         self.state.mark_running(step)
         self.tabs.setCurrentWidget(page)
+        if continue_all:
+            if self.continuing_pipeline:
+                self.continue_button.setText(
+                    f"Đang tiếp tục Step {STEP_ORDER.index(step) + 1}/{len(STEP_ORDER)}…"
+                )
+            else:
+                self.run_all_button.setText(
+                    f"Đang chạy Step {STEP_ORDER.index(step) + 1}/{len(STEP_ORDER)}…"
+                )
         worker = PipelineWorker(self.pipeline, step, self.state, settings)
         outcome = {"success": False}
         self.active_workers.add(worker)
@@ -375,13 +391,22 @@ class MainWindow(QMainWindow):
 
         def succeeded(result: object) -> None:
             self.state.set_result(result)
-            outcome["success"] = True
-            page.set_progress(100, "Hoàn thành.")
+            outcome["success"] = self.state.statuses[step] == StepStatus.DONE
+            if outcome["success"]:
+                page.set_progress(100, "Hoàn thành.")
+            else:
+                page.set_progress(0, "Step còn lỗi cần xử lý trước khi tiếp tục.")
             page.set_busy(False)
             page.refresh()
+            if continue_all and not outcome["success"]:
+                QMessageBox.warning(
+                    self,
+                    f"Step {STEP_ORDER.index(step) + 1:02d} cần xử lý",
+                    "Pipeline đã dừng tại step này. Hãy xử lý các lỗi được hiển thị rồi nhấn Continue.",
+                )
 
         def failed(payload: object) -> None:
-            self.state.mark_error(step)
+            self.state.mark_error(step, restore_previous=not continue_all)
             page.set_progress(0, "Xử lý thất bại.")
             page.set_busy(False)
             page.refresh()
@@ -402,7 +427,7 @@ class MainWindow(QMainWindow):
             if technical_detail:
                 dialog.setDetailedText(technical_detail)
             dialog.exec()
-            self._stop_run_all()
+            self._stop_run_all(interrupted=continue_all)
 
         def finished() -> None:
             self.active_workers.discard(worker)
@@ -413,6 +438,8 @@ class MainWindow(QMainWindow):
                     self._execute_step(STEP_ORDER[next_index], continue_all=True)
                 else:
                     self._stop_run_all()
+            elif continue_all and self.running_all:
+                self._stop_run_all(interrupted=True)
 
         worker.succeeded.connect(succeeded)
         worker.failed.connect(failed)
@@ -424,7 +451,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Chưa có project", "Vui lòng tạo hoặc mở project trước.")
             self.stack.setCurrentWidget(self.project_manager)
             return
+        if self.active_workers:
+            QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ tác vụ hiện tại hoàn thành.")
+            return
         self.running_all = True
+        self.continuing_pipeline = False
+        self.continue_button.setVisible(False)
+        self.run_all_button.setVisible(True)
         self.run_all_button.setEnabled(False)
         self.run_all_button.setText("Pipeline đang chạy…")
         reusable = self.state.valid_default_audio_input()
@@ -434,8 +467,47 @@ class MainWindow(QMainWindow):
         else:
             self._execute_step(StepId.EXTRACT, continue_all=True)
 
-    def _stop_run_all(self) -> None:
+    def _continue_pipeline(self) -> None:
+        if not self.state.project:
+            QMessageBox.information(self, "Chưa có project", "Vui lòng tạo hoặc mở project trước.")
+            self.stack.setCurrentWidget(self.project_manager)
+            return
+        if self.active_workers:
+            QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ step hiện tại hoàn thành.")
+            return
+        next_step = next(
+            (step for step in STEP_ORDER if self.state.statuses[step] != StepStatus.DONE),
+            None,
+        )
+        if next_step is None:
+            self._stop_run_all()
+            return
+        self.running_all = True
+        self.continuing_pipeline = True
+        self.run_all_button.setVisible(False)
+        self.continue_button.setVisible(True)
+        self.continue_button.setEnabled(False)
+        self.continue_button.setText("Đang tiếp tục…")
+        self._execute_step(next_step, continue_all=True)
+
+    def _stop_run_all(self, interrupted: bool = False) -> None:
         self.running_all = False
+        self.continuing_pipeline = False
+        if interrupted:
+            self.run_all_button.setVisible(False)
+            self.continue_button.setVisible(True)
+            self.continue_button.setEnabled(True)
+            self.continue_button.setText("Continue")
+            return
+        self._reset_pipeline_buttons()
+
+    def _reset_pipeline_buttons(self) -> None:
+        self.running_all = False
+        self.continuing_pipeline = False
+        self.continue_button.setVisible(False)
+        self.continue_button.setEnabled(True)
+        self.continue_button.setText("Continue")
+        self.run_all_button.setVisible(True)
         self.run_all_button.setEnabled(True)
         self.run_all_button.setText("Chạy toàn bộ pipeline")
 
@@ -452,6 +524,8 @@ class MainWindow(QMainWindow):
     def _refresh_header(self) -> None:
         completed = sum(status == StepStatus.DONE for status in self.state.statuses.values())
         self.progress_label.setText(f"{completed} / {len(STEP_ORDER)} steps hoàn thành")
+        if completed == len(STEP_ORDER) and not self.running_all and self.continue_button.isVisible():
+            self._reset_pipeline_buttons()
         project = self.state.project
         if project:
             self.project_label.setText(

@@ -1192,23 +1192,23 @@ class ProjectState(QObject):
         self.step_changed.emit(step.value)
         self.save_project()
 
-    def mark_error(self, step: StepId) -> None:
-        if step == StepId.STT and self.default_transcript_candidate_id:
+    def mark_error(self, step: StepId, restore_previous: bool = True) -> None:
+        if restore_previous and step == StepId.STT and self.default_transcript_candidate_id:
             if self.select_transcript_candidate(self.default_transcript_candidate_id):
                 return
-        if step == StepId.TRANSLATE and self.default_translation_candidate_id:
+        if restore_previous and step == StepId.TRANSLATE and self.default_translation_candidate_id:
             if self.select_translation_candidate(self.default_translation_candidate_id):
                 return
-        if step == StepId.TTS and self.default_tts_candidate_id:
+        if restore_previous and step == StepId.TTS and self.default_tts_candidate_id:
             if self.select_tts_candidate(self.default_tts_candidate_id):
                 return
-        if step == StepId.SYNC and self.default_sync_candidate_id:
+        if restore_previous and step == StepId.SYNC and self.default_sync_candidate_id:
             if self.select_sync_candidate(self.default_sync_candidate_id):
                 return
-        if step == StepId.BUILD_AUDIO and self.default_build_audio_candidate_id:
+        if restore_previous and step == StepId.BUILD_AUDIO and self.default_build_audio_candidate_id:
             if self.select_build_audio_candidate(self.default_build_audio_candidate_id):
                 return
-        if step == StepId.RENDER and self.selected_render_candidate_id:
+        if restore_previous and step == StepId.RENDER and self.selected_render_candidate_id:
             restored = self._result_from_render(self.selected_render_candidate_id)
             if restored:
                 self.results[StepId.RENDER] = restored

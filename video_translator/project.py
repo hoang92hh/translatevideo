@@ -20,6 +20,7 @@ PROJECT_FOLDERS = (
     "translations",
     "generated_audio",
     "synchronized_audio",
+    "built_audio",
     "subtitles",
     "temp",
     "output",
@@ -65,6 +66,9 @@ class VideoProject:
     sync_candidates: list[dict[str, Any]] = field(default_factory=list)
     selected_sync_candidate_id: str = ""
     default_sync_candidate_id: str = ""
+    build_audio_candidates: list[dict[str, Any]] = field(default_factory=list)
+    selected_build_audio_candidate_id: str = ""
+    default_build_audio_candidate_id: str = ""
 
     @property
     def root_path(self) -> Path:

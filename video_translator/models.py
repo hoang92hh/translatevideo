@@ -115,6 +115,21 @@ class SyncCandidate:
 
 
 @dataclass(slots=True)
+class BuildAudioCandidate:
+    id: str
+    label: str
+    created_at: str
+    path: str
+    folder: str
+    audio_file: str
+    source_sync_candidate_id: str
+    duration_seconds: float = 0.0
+    segment_count: int = 0
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class StepResult:
     step: StepId
     summary: str
@@ -126,3 +141,4 @@ class StepResult:
     translation_candidates: list[TranslationCandidate] = field(default_factory=list)
     tts_candidates: list[TtsCandidate] = field(default_factory=list)
     sync_candidates: list[SyncCandidate] = field(default_factory=list)
+    build_audio_candidates: list[BuildAudioCandidate] = field(default_factory=list)

@@ -77,4 +77,4 @@ Candidate mới chỉ được tạo khi người dùng chạy lại toàn bộ 
 
 ## Kiểm tra trước khi sang Step 6
 
-Danh sách preview cho phép nghe cả **TTS gốc** và file **đã đồng bộ** của từng segment. Nên kiểm tra các đoạn có hệ số tăng tốc cao và các đoạn đã sử dụng khoảng trống trước khi chọn output cho Step 6.
+Step 5 hiển thị trạng thái đồng bộ và danh sách segment cần xử lý nhưng không phát lại từng file audio. Có thể nghe voice ở Step 4; sau khi Step 6 ghép xong, nghe toàn bộ voice track hoàn chỉnh tại Step 6 trước khi chọn output cho Step 7.

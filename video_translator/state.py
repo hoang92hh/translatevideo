@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 
 from .models import (
     AudioCandidate,
+    BuildAudioCandidate,
     STEP_ORDER,
     Segment,
     StepId,
@@ -51,6 +52,9 @@ class ProjectState(QObject):
         self.sync_candidates: dict[str, SyncCandidate] = {}
         self.selected_sync_candidate_id = ""
         self.default_sync_candidate_id = ""
+        self.build_audio_candidates: dict[str, BuildAudioCandidate] = {}
+        self.selected_build_audio_candidate_id = ""
+        self.default_build_audio_candidate_id = ""
         self.results: dict[StepId, StepResult] = {}
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -114,6 +118,13 @@ class ProjectState(QObject):
         }
         self.selected_sync_candidate_id = project.selected_sync_candidate_id
         self.default_sync_candidate_id = project.default_sync_candidate_id
+        self.build_audio_candidates = {
+            item["id"]: BuildAudioCandidate(**item)
+            for item in project.build_audio_candidates
+            if item.get("id")
+        }
+        self.selected_build_audio_candidate_id = project.selected_build_audio_candidate_id
+        self.default_build_audio_candidate_id = project.default_build_audio_candidate_id
         self.results.clear()
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -130,6 +141,7 @@ class ProjectState(QObject):
         self._register_legacy_tts()
         self._restore_selected_tts()
         self._restore_selected_sync()
+        self._restore_selected_build_audio()
         for index, step in enumerate(STEP_ORDER):
             if self.statuses[step] == StepStatus.DONE:
                 continue
@@ -173,6 +185,11 @@ class ProjectState(QObject):
         self.project.sync_candidates = [asdict(candidate) for candidate in self.sync_candidates.values()]
         self.project.selected_sync_candidate_id = self.selected_sync_candidate_id
         self.project.default_sync_candidate_id = self.default_sync_candidate_id
+        self.project.build_audio_candidates = [
+            asdict(candidate) for candidate in self.build_audio_candidates.values()
+        ]
+        self.project.selected_build_audio_candidate_id = self.selected_build_audio_candidate_id
+        self.project.default_build_audio_candidate_id = self.default_build_audio_candidate_id
         self.project.pipeline = {
             step.value: self._serialize_result(result)
             for step, result in self.results.items()
@@ -195,6 +212,9 @@ class ProjectState(QObject):
             ],
             "tts_candidates": [asdict(candidate) for candidate in result.tts_candidates],
             "sync_candidates": [asdict(candidate) for candidate in result.sync_candidates],
+            "build_audio_candidates": [
+                asdict(candidate) for candidate in result.build_audio_candidates
+            ],
         }
 
     @staticmethod
@@ -214,6 +234,9 @@ class ProjectState(QObject):
             ],
             tts_candidates=[TtsCandidate(**item) for item in data.get("tts_candidates", [])],
             sync_candidates=[SyncCandidate(**item) for item in data.get("sync_candidates", [])],
+            build_audio_candidates=[
+                BuildAudioCandidate(**item) for item in data.get("build_audio_candidates", [])
+            ],
         )
 
     def add_audio_candidate(self, candidate: AudioCandidate) -> None:
@@ -918,6 +941,121 @@ class ProjectState(QObject):
             metadata=metadata,
         )
 
+    def build_audio_candidate(self, candidate_id: str) -> BuildAudioCandidate | None:
+        return self.build_audio_candidates.get(candidate_id)
+
+    def select_build_audio_candidate(self, candidate_id: str) -> bool:
+        result = self._result_from_build_audio(candidate_id)
+        if result is None:
+            return False
+        self.selected_build_audio_candidate_id = candidate_id
+        self.default_build_audio_candidate_id = candidate_id
+        self.results[StepId.BUILD_AUDIO] = result
+        self.statuses[StepId.BUILD_AUDIO] = StepStatus.DONE
+        self.invalidate_from(StepId.RENDER)
+        self.statuses[StepId.RENDER] = StepStatus.READY
+        self.step_changed.emit(StepId.BUILD_AUDIO.value)
+        self.step_changed.emit(StepId.RENDER.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def remove_build_audio_candidate(self, candidate_id: str) -> None:
+        removed_selected = candidate_id == self.selected_build_audio_candidate_id
+        removed_default = candidate_id == self.default_build_audio_candidate_id
+        current = self.results.get(StepId.BUILD_AUDIO)
+        current_id = str(current.metadata.get("build_audio_candidate_id", "")) if current else ""
+        self.build_audio_candidates.pop(candidate_id, None)
+        fallback = self._latest_valid_build_audio_candidate()
+        if removed_default:
+            self.default_build_audio_candidate_id = fallback.id if fallback else ""
+        if removed_selected:
+            self.selected_build_audio_candidate_id = ""
+        if current_id == candidate_id or removed_selected:
+            if fallback and self.select_build_audio_candidate(fallback.id):
+                return
+            self.invalidate_from(StepId.BUILD_AUDIO)
+            if self.statuses[StepId.SYNC] == StepStatus.DONE:
+                self.statuses[StepId.BUILD_AUDIO] = StepStatus.READY
+        self.step_changed.emit(StepId.BUILD_AUDIO.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _restore_selected_build_audio(self) -> None:
+        if StepId.SYNC not in self.results:
+            return
+        current = self.results.get(StepId.BUILD_AUDIO)
+        current_id = str(current.metadata.get("build_audio_candidate_id", "")) if current else ""
+        if current_id and current_id in self.build_audio_candidates:
+            restored = self._result_from_build_audio(current_id)
+            if restored:
+                self.selected_build_audio_candidate_id = current_id
+                self.default_build_audio_candidate_id = current_id
+                self.results[StepId.BUILD_AUDIO] = restored
+                self.statuses[StepId.BUILD_AUDIO] = StepStatus.DONE
+                return
+        choices = (
+            self.selected_build_audio_candidate_id,
+            self.default_build_audio_candidate_id,
+        )
+        candidate = next(
+            (
+                self.build_audio_candidate(item)
+                for item in choices
+                if item and self._result_from_build_audio(item)
+            ),
+            None,
+        )
+        candidate = candidate or self._latest_valid_build_audio_candidate()
+        if not candidate:
+            return
+        result = self._result_from_build_audio(candidate.id)
+        if result:
+            self.selected_build_audio_candidate_id = candidate.id
+            self.default_build_audio_candidate_id = candidate.id
+            self.results[StepId.BUILD_AUDIO] = result
+            self.statuses[StepId.BUILD_AUDIO] = StepStatus.DONE
+
+    def _latest_valid_build_audio_candidate(self) -> BuildAudioCandidate | None:
+        valid = [
+            item
+            for item in self.build_audio_candidates.values()
+            if self._result_from_build_audio(item.id)
+        ]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_build_audio(self, candidate_id: str) -> StepResult | None:
+        candidate = self.build_audio_candidate(candidate_id)
+        if not candidate:
+            return None
+        manifest = Path(candidate.path)
+        audio = Path(candidate.audio_file)
+        if not manifest.is_file() or not audio.is_file():
+            return None
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            duration = float(payload.get("duration_seconds", candidate.duration_seconds))
+            source_sync_id = str(
+                payload.get("source_sync_candidate_id", candidate.source_sync_candidate_id)
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        source = self._result_from_sync(source_sync_id)
+        if duration <= 0 or source is None:
+            return None
+        metadata = {
+            **candidate.metadata,
+            **payload,
+            "build_audio_candidate_id": candidate.id,
+        }
+        return StepResult(
+            step=StepId.BUILD_AUDIO,
+            summary=candidate.summary or f"{candidate.label} · {duration:.2f}s",
+            artifacts={"voice_track": str(audio), "build_audio_manifest": str(manifest)},
+            segments=source.segments,
+            metadata=metadata,
+        )
+
     def set_input_video(self, path: str) -> None:
         if path == self.input_video:
             return
@@ -953,6 +1091,9 @@ class ProjectState(QObject):
                 return
         if step == StepId.SYNC and self.default_sync_candidate_id:
             if self.select_sync_candidate(self.default_sync_candidate_id):
+                return
+        if step == StepId.BUILD_AUDIO and self.default_build_audio_candidate_id:
+            if self.select_build_audio_candidate(self.default_build_audio_candidate_id):
                 return
         self.statuses[step] = StepStatus.ERROR
         self.step_changed.emit(step.value)
@@ -992,6 +1133,12 @@ class ProjectState(QObject):
         if sync_id and sync_id in self.sync_candidates:
             self.selected_sync_candidate_id = sync_id
             self.default_sync_candidate_id = sync_id
+        for candidate in result.build_audio_candidates:
+            self.build_audio_candidates[candidate.id] = candidate
+        build_audio_id = str(result.metadata.get("recommended_build_audio_candidate_id", ""))
+        if build_audio_id and build_audio_id in self.build_audio_candidates:
+            self.selected_build_audio_candidate_id = build_audio_id
+            self.default_build_audio_candidate_id = build_audio_id
         self.results[result.step] = result
         has_blocking_errors = (
             result.step == StepId.SYNC and int(result.metadata.get("error_count", 0)) > 0

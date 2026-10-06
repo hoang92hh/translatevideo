@@ -70,6 +70,8 @@ ffmpeg -version
 ffprobe -version
 ```
 
+Lệnh Winget cài phiên bản `Gyan.FFmpeg` mới nhất, không khóa một phiên bản cụ thể. Step 06 dùng `-filter_complex` và chia input thành các lô tối đa 40 segment để tương thích với FFmpeg 9, đồng thời tránh giới hạn độ dài câu lệnh trên Windows.
+
 Nếu dùng NVIDIA GPU, cài hoặc cập nhật NVIDIA Driver rồi kiểm tra:
 
 ```cmd

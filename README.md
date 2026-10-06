@@ -72,6 +72,7 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 ├── translations/
 ├── generated_audio/
 ├── synchronized_audio/
+├── built_audio/
 ├── subtitles/
 ├── temp/
 └── output/
@@ -106,10 +107,11 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Step 5 cắt khoảng lặng thừa, tận dụng khoảng trống trước segment kế tiếp, tăng tốc trong giới hạn người dùng chọn và chèn khoảng lặng khi audio ngắn hơn timestamp gốc. Mỗi lần chạy tạo candidate riêng trong `synchronized_audio/`.
 - Với segment vẫn quá dài, popup sửa lỗi có nút **Vay thời gian lân cận** riêng. Nút này ưu tiên cân B+C; chỉ dùng A+B+C (hoặc A+B khi không có C) nếu thời gian phía sau chưa đủ. Các voice trong nhóm dùng cùng tốc độ tối đa đã cấu hình, giữ nguyên thứ tự, không chồng nhau, lệch tối đa 0,5 giây và không vay qua khoảng nghỉ lớn hơn 1 giây.
 - Segment không thể đặt vừa trong giới hạn tốc độ cùng segment liền trước/sau được đưa vào popup xử lý của Step 5. Mọi row đều có thể sửa tay hoặc chọn để Gemini chỉnh sửa. Checkbox đồng thời quyết định chính xác các row được tạo lại voice; kết quả cập nhật trực tiếp candidate Step 3, Step 4 và Step 5 hiện tại, không tạo candidate mới. Candidate Step 5 chỉ trở thành input Step 6 sau khi hết lỗi.
-- Step 6 đọc `adjusted_start`/`play_duration`, kiểm tra lại không chồng voice và ghép các segment thành WAV hoặc AAC bằng FFmpeg.
+- Step 6 đọc `adjusted_start`/`play_duration`, kiểm tra lại không chồng voice và ghép các segment thành một track WAV mono 48 kHz bằng FFmpeg. Mỗi lần chạy tạo một candidate riêng trong `built_audio/`; track được bù khoảng lặng để dài đúng bằng video gốc và có thể nghe thử trước khi chọn làm input Step 7. Step này chỉ xử lý voice, không trộn background hoặc video.
 - Local Model ở Step 3 được đánh dấu chưa triển khai. Step 7 hiện vẫn được mô phỏng.
 
 Hướng dẫn chi tiết:
 
 - [`huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md`](huong_dan_su_dung/07_huong_dan_step_04_text_to_speech.md)
 - [`huong_dan_su_dung/08_huong_dan_step_05_audio_sync.md`](huong_dan_su_dung/08_huong_dan_step_05_audio_sync.md)
+- [`huong_dan_su_dung/09_huong_dan_step_06_build_audio.md`](huong_dan_su_dung/09_huong_dan_step_06_build_audio.md)

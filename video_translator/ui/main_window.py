@@ -21,7 +21,12 @@ from PySide6.QtWidgets import (
 from ..config.gemini import GEMINI_DEFAULT_MODEL
 from ..models import STEP_ORDER, StepId, StepStatus
 from ..pipeline import MockPipeline
-from ..pipeline.worker import AudioSyncAiRewriteWorker, AudioSyncBatchRepairWorker, PipelineWorker
+from ..pipeline.worker import (
+    AudioSyncAiRewriteWorker,
+    AudioSyncBatchRepairWorker,
+    AudioSyncNeighborBorrowWorker,
+    PipelineWorker,
+)
 from ..project import VideoProject
 from ..state import ProjectState
 from .project_manager import ProjectManagerPage
@@ -106,6 +111,8 @@ class MainWindow(QMainWindow):
                 page.ai_rewrite_requested.connect(self._rewrite_sync_segments)
             if hasattr(page, "batch_repair_requested"):
                 page.batch_repair_requested.connect(self._repair_sync_segments)
+            if hasattr(page, "neighbor_borrow_requested"):
+                page.neighbor_borrow_requested.connect(self._borrow_sync_neighbor_time)
             self.pages[page.spec.step] = page
             self.tabs.addTab(page, f"{page.spec.number}  {page.spec.title}")
         self.tabs.currentChanged.connect(self._tab_changed)
@@ -267,7 +274,7 @@ class MainWindow(QMainWindow):
             return
         page = self.pages[StepId.SYNC]
         page.prepare_run()
-        page.set_repair_busy(True, "Đang tạo lại voice và đồng bộ toàn bộ segment cần xử lý…")
+        page.set_repair_busy(True, "Đang tạo lại voice cho các segment đã chọn…")
         page.set_progress(0, "Đang chuẩn bị cập nhật Step 3 → Step 4 → Step 5…")
         worker = AudioSyncBatchRepairWorker(
             chain["sync_manifest"],
@@ -295,6 +302,48 @@ class MainWindow(QMainWindow):
         def failed(payload: object) -> None:
             page.set_repair_busy(False)
             self._show_worker_error(self, payload, "Không thể tạo lại voice")
+
+        def finished() -> None:
+            self.active_workers.discard(worker)
+            worker.deleteLater()
+
+        worker.succeeded.connect(succeeded)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        QTimer.singleShot(100, worker.start)
+
+    def _borrow_sync_neighbor_time(self, candidate_id: str) -> None:
+        if self.active_workers:
+            QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ tác vụ hiện tại hoàn thành.")
+            return
+        candidate = self.state.sync_candidate(candidate_id)
+        if not candidate or not Path(candidate.path).is_file():
+            QMessageBox.information(self, "Không tìm thấy output", "Manifest Step 5 không còn tồn tại.")
+            return
+        page = self.pages[StepId.SYNC]
+        page.prepare_run()
+        page.set_repair_busy(True, "Đang thử vay thời gian lân cận cho các segment chưa đạt…")
+        page.set_progress(0, "Đang chuẩn bị cân lại lịch phát A/B/C…")
+        worker = AudioSyncNeighborBorrowWorker(candidate.path)
+        self.active_workers.add(worker)
+        worker.progress_changed.connect(page.set_progress)
+
+        def succeeded(result: object) -> None:
+            data = result if isinstance(result, dict) else {}
+            refreshed = self.state.refresh_sync_candidate(candidate_id, activate_if_complete=True)
+            message = str(data.get("message") or "Đã hoàn tất vay thời gian lân cận.")
+            page.set_progress(100, message)
+            page.repair_finished(candidate_id)
+            if not refreshed:
+                QMessageBox.warning(
+                    self,
+                    "Không thể nạp lại output",
+                    "Manifest Step 5 đã cập nhật nhưng không thể nạp lại candidate.",
+                )
+
+        def failed(payload: object) -> None:
+            page.set_repair_busy(False)
+            self._show_worker_error(self, payload, "Không thể vay thời gian lân cận")
 
         def finished() -> None:
             self.active_workers.discard(worker)

@@ -4,14 +4,12 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +23,7 @@ from .base import StepPage
 class AudioSyncStepPage(StepPage):
     ai_rewrite_requested = Signal(str, object)
     batch_repair_requested = Signal(str, object)
+    neighbor_borrow_requested = Signal(str)
 
     SPEC = StepSpec(
         StepId.SYNC,
@@ -67,42 +66,10 @@ class AudioSyncStepPage(StepPage):
         self.sync_info.setWordWrap(True)
         layout.addWidget(self.sync_info)
 
-        self.preview_combo = QComboBox()
-        self.preview_combo.currentIndexChanged.connect(self._preview_changed)
-        layout.addWidget(self.preview_combo)
-        self.preview_info = QLabel("Chọn một segment để nghe kiểm tra")
-        self.preview_info.setObjectName("muted")
-        self.preview_info.setWordWrap(True)
-        layout.addWidget(self.preview_info)
-
-        self.audio_output = QAudioOutput(self)
-        self.audio_output.setVolume(0.8)
-        self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(self.audio_output)
-        self.player.positionChanged.connect(self._position_changed)
-        self.player.durationChanged.connect(self._duration_changed)
-        self.player.playbackStateChanged.connect(self._playback_changed)
-        transport = QHBoxLayout()
-        self.play_source_button = QPushButton("Nghe TTS gốc")
-        self.play_source_button.clicked.connect(lambda: self._play_selected("audio_file"))
-        self.play_synced_button = QPushButton("Nghe đã đồng bộ")
-        self.play_synced_button.clicked.connect(lambda: self._play_selected("synced_audio_file"))
-        self.pause_button = QPushButton("Dừng")
-        self.pause_button.clicked.connect(self.player.stop)
-        self.position_slider = QSlider(Qt.Orientation.Horizontal)
-        self.position_slider.sliderMoved.connect(self.player.setPosition)
-        self.time_label = QLabel("00:00 / 00:00")
-        transport.addWidget(self.play_source_button)
-        transport.addWidget(self.play_synced_button)
-        transport.addWidget(self.pause_button)
-        transport.addWidget(self.position_slider, 1)
-        transport.addWidget(self.time_label)
-        layout.addLayout(transport)
-
-        error_title = QLabel("Segment từng lỗi")
+        error_title = QLabel("Segment cần xử lý")
         error_title.setObjectName("cardTitle")
         layout.addWidget(error_title)
-        self.error_info = QLabel("Không có segment có seq > 0")
+        self.error_info = QLabel("Không có segment đang lỗi")
         self.error_info.setObjectName("muted")
         self.error_info.setWordWrap(True)
         layout.addWidget(self.error_info)
@@ -142,10 +109,6 @@ class AudioSyncStepPage(StepPage):
         if not busy and hasattr(self, "sync_combo"):
             self._refresh_candidates(prefer_current=True)
 
-    def prepare_run(self) -> None:
-        self.player.stop()
-        self.player.setSource(QUrl())
-
     def _refresh_candidates(self, prefer_current: bool = False) -> None:
         current = self.sync_combo.currentData()
         result = self.state.results.get(StepId.SYNC)
@@ -167,9 +130,6 @@ class AudioSyncStepPage(StepPage):
         return self.state.sync_candidate(str(self.sync_combo.currentData() or ""))
 
     def _candidate_changed(self, *_: object) -> None:
-        self.player.stop()
-        if not self.player.source().isEmpty():
-            self.player.setSource(QUrl())
         candidate = self._current_candidate()
         if not candidate:
             self._candidate_payload = {}
@@ -203,65 +163,20 @@ class AudioSyncStepPage(StepPage):
 
     def _fill_segments(self, segments: list[object]) -> None:
         valid = [item for item in segments if isinstance(item, dict)]
-        self.preview_combo.blockSignals(True)
-        self.preview_combo.clear()
-        for index, item in enumerate(valid):
-            segment_id = int(item.get("id", index + 1))
-            label = f"#{segment_id:04d} · {float(item.get('start', 0)):.2f}s–{float(item.get('end', 0)):.2f}s"
-            self.preview_combo.addItem(label, index)
-        self.preview_combo.blockSignals(False)
-        if self.preview_combo.count():
-            self.preview_combo.setCurrentIndex(0)
-            self._preview_changed()
-        else:
-            self.preview_info.setText("Candidate không có segment hợp lệ")
-        tracked = [
-            item
-            for item in valid
-            if int(item.get("seq", 1 if item.get("status") != "ready" or item.get("corrected_in_step_5") else 0)) > 0
-        ]
-        unresolved = sum(1 for item in tracked if item.get("status") != "ready")
-        if tracked:
+        errors = [item for item in valid if item.get("status") != "ready"]
+        if errors:
             self.error_info.setText(
-                f"{len(tracked)} segment có seq > 0 · {unresolved} chưa xử lý xong. "
+                f"{len(errors)} segment đang lỗi. "
                 "Mở popup để AI chỉnh sửa theo checkbox hoặc sửa nội dung thủ công."
             )
             self.repair_button.setEnabled(not self._repairing)
         else:
-            self.error_info.setText("Không có segment có seq > 0.")
+            self.error_info.setText("Không có segment đang lỗi.")
             self.repair_button.setEnabled(False)
 
     def _segments(self) -> list[dict[str, object]]:
         raw = self._candidate_payload.get("segments", [])
         return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
-
-    def _preview_changed(self, *_: object) -> None:
-        index = self.preview_combo.currentData()
-        segments = self._segments()
-        if not isinstance(index, int) or index >= len(segments):
-            return
-        item = segments[index]
-        source_exists = Path(str(item.get("audio_file", ""))).is_file()
-        synced_exists = Path(str(item.get("synced_audio_file", ""))).is_file()
-        self.play_source_button.setEnabled(source_exists)
-        self.play_synced_button.setEnabled(synced_exists)
-        self.preview_info.setText(
-            f"Audio {float(item.get('prepared_duration', 0)):.2f}s · "
-            f"khung {float(item.get('target_duration', 0)):.2f}s · "
-            f"cho phép {float(item.get('allowed_duration', 0)):.2f}s · "
-            f"tốc độ {float(item.get('speed_factor', 1)):.2f}x\n"
-            f"{item.get('translated_text', '')}"
-        )
-
-    def _play_selected(self, key: str) -> None:
-        index = self.preview_combo.currentData()
-        segments = self._segments()
-        if not isinstance(index, int) or index >= len(segments):
-            return
-        path = Path(str(segments[index].get(key, "")))
-        if path.is_file():
-            self.player.setSource(QUrl.fromLocalFile(str(path)))
-            self.player.play()
 
     def _open_repair_dialog(self) -> None:
         candidate = self._current_candidate()
@@ -274,6 +189,7 @@ class AudioSyncStepPage(StepPage):
         dialog = SyncRepairDialog(candidate.id, dict(self._candidate_payload), self)
         dialog.ai_requested.connect(lambda texts: self.ai_rewrite_requested.emit(candidate.id, texts))
         dialog.process_requested.connect(lambda texts: self.batch_repair_requested.emit(candidate.id, texts))
+        dialog.borrow_requested.connect(lambda: self.neighbor_borrow_requested.emit(candidate.id))
         dialog.drafts_changed.connect(lambda texts: self._save_repair_drafts(candidate.id, texts))
         dialog.finished.connect(lambda *_: setattr(self, "_repair_dialog", None))
         self._repair_dialog = dialog
@@ -294,8 +210,6 @@ class AudioSyncStepPage(StepPage):
                     continue
                 segment_id = int(item.get("id", -1))
                 if segment_id not in texts:
-                    continue
-                if item.get("status") == "ready":
                     continue
                 text = texts[segment_id].strip()
                 previous = str(item.get("draft_text") or item.get("translated_text", "")).strip()
@@ -318,7 +232,7 @@ class AudioSyncStepPage(StepPage):
     def set_repair_busy(self, busy: bool, message: str = "") -> None:
         self._repairing = busy
         self.repair_button.setEnabled(not busy and any(
-            int(item.get("seq", 1 if item.get("status") != "ready" or item.get("corrected_in_step_5") else 0)) > 0
+            item.get("status") != "ready"
             for item in self._segments()
         ))
         self.repair_button.setText("Đang xử lý…" if busy else "Mở danh sách xử lý segment")
@@ -381,7 +295,6 @@ class AudioSyncStepPage(StepPage):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.player.stop()
         target = Path(candidate.folder).resolve()
         if self.state.project:
             root = self.state.project.path("synchronized_audio").resolve()
@@ -389,31 +302,3 @@ class AudioSyncStepPage(StepPage):
                 shutil.rmtree(target)
         self.state.remove_sync_candidate(candidate.id)
         self._refresh_candidates()
-
-    def _duration_changed(self, duration: int) -> None:
-        self.position_slider.setRange(0, duration)
-        self._update_time(self.player.position(), duration)
-
-    def _position_changed(self, position: int) -> None:
-        if not self.position_slider.isSliderDown():
-            self.position_slider.setValue(position)
-        self._update_time(position, self.player.duration())
-
-    def _playback_changed(self, state: QMediaPlayer.PlaybackState) -> None:
-        self.pause_button.setText(
-            "Tạm dừng" if state == QMediaPlayer.PlaybackState.PlayingState else "Dừng"
-        )
-        if state == QMediaPlayer.PlaybackState.PlayingState:
-            self.pause_button.clicked.disconnect()
-            self.pause_button.clicked.connect(self.player.pause)
-        else:
-            self.pause_button.clicked.disconnect()
-            self.pause_button.clicked.connect(self.player.stop)
-
-    def _update_time(self, position: int, duration: int) -> None:
-        self.time_label.setText(f"{self._format_ms(position)} / {self._format_ms(duration)}")
-
-    @staticmethod
-    def _format_ms(value: int) -> str:
-        seconds = max(0, value // 1000)
-        return f"{seconds // 60:02d}:{seconds % 60:02d}"

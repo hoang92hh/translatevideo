@@ -8,6 +8,7 @@ from ..errors import error_payload
 from ..models import StepId
 from ..state import ProjectState
 from ..services.audio_sync_service import (
+    borrow_neighbor_time,
     repair_sync_segments,
     rewrite_sync_drafts,
 )
@@ -110,6 +111,27 @@ class AudioSyncBatchRepairWorker(QThread):
                 self.translation_manifest_path,
                 self.edited_texts,
                 self.target_language,
+                self.progress_changed.emit,
+            )
+        except Exception as exc:
+            self.failed.emit(error_payload(exc))
+            return
+        self.succeeded.emit(result)
+
+
+class AudioSyncNeighborBorrowWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    progress_changed = Signal(int, str)
+
+    def __init__(self, manifest_path: str) -> None:
+        super().__init__()
+        self.manifest_path = manifest_path
+
+    def run(self) -> None:
+        try:
+            result = borrow_neighbor_time(
+                self.manifest_path,
                 self.progress_changed.emit,
             )
         except Exception as exc:

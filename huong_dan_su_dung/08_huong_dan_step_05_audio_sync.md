@@ -12,6 +12,8 @@ Với mỗi segment, Step 5 thực hiện theo thứ tự:
 4. Nếu audio vẫn dài, tăng tốc nhưng không vượt quá **Tốc độ tối đa**.
 5. Nếu audio ngắn hơn khung gốc, chèn khoảng lặng ở cuối.
 
+Luồng chạy Step 5 thông thường không tự động cân lại các hàng xóm. Nếu một segment vẫn quá dài, có thể dùng nút **Vay thời gian lân cận** riêng trong popup sửa lỗi. Mỗi segment lỗi B được thử với C trước; chỉ khi B+C chưa đủ mới thử A+B+C, hoặc A+B nếu không có C. Mọi voice trong nhóm được tạo lại từ audio Step 4 với cùng **Tốc độ tối đa**, phát lần lượt và không chồng nhau. Mỗi segment chỉ được lệch tối đa 0,5 giây; khoảng nghỉ lớn hơn 1 giây là ranh giới không vay qua.
+
 Output được chuẩn hóa thành WAV mono PCM 48 kHz.
 
 ## Candidate và input Step 6
@@ -39,13 +41,16 @@ Khi audio cần tốc độ cao hơn giới hạn đã chọn, Step 5 không c�
 Để sửa:
 
 1. Chọn candidate có nhãn **Cần sửa** và mở **Danh sách xử lý segment**.
-2. Popup chỉ hiển thị các segment có `seq > 0`. Checkbox dùng riêng để chọn những câu cần Gemini rút gọn.
-   Có thể dùng **Chọn tất cả** hoặc **Bỏ chọn tất cả** để thay đổi nhanh checkbox AI. Row **Đã xử lý** được giữ để theo dõi nhưng bị khóa, không được chọn AI hoặc tạo voice lại.
+2. Popup chỉ lấy các segment đang lỗi (`status` khác `ready`) cùng segment liền trước và liền sau của từng lỗi. Các segment đã xử lý không còn được giữ lại chỉ vì có `seq > 0`; row lân cận vẫn xuất hiện kể cả khi đang không lỗi.
+   Tất cả row đều có thể sửa nội dung và chọn checkbox. Có thể dùng **Chọn tất cả** hoặc **Bỏ chọn tất cả** để thay đổi nhanh lựa chọn.
 3. Bấm **AI chỉnh sửa các segment đã chọn**. Nếu chưa chọn checkbox nào, ứng dụng chỉ hiện thông báo và không gọi API.
-4. Xem nội dung AI trả về ngay trong grid. Các row không chọn có thể sửa tay tại cột nội dung hiện tại.
-5. Bấm **Tạo lại voice và đồng bộ** để xử lý toàn bộ row chưa đạt hoặc vừa được thay đổi.
+4. Xem nội dung AI trả về ngay trong grid. Checkbox của các row AI vừa sửa được giữ nguyên; các row khác có thể sửa tay tại cột nội dung hiện tại.
+5. Bấm **Tạo lại voice và đồng bộ** để xử lý đúng các row được chọn, kể cả segment đang lỗi, đã xử lý hoặc segment lân cận bình thường. Nếu chưa chọn checkbox, ứng dụng không gọi TTS.
+6. Với các row vẫn quá dài và không thể rút gọn thêm, bấm **Vay thời gian lân cận**. Nút này xử lý toàn bộ row chưa đạt trong danh sách, không phụ thuộc checkbox và không gọi AI/TTS.
 
-Nút AI chỉ cập nhật nội dung nháp, chưa tạo audio. Nút tạo voice sử dụng lại provider, giọng, tốc độ và thiết bị của candidate Step 4, sau đó cập nhật trực tiếp segment tương ứng trong candidate Step 3, Step 4 và Step 5 hiện tại. Thao tác sửa lỗi không tạo candidate mới. Nếu audio mới vẫn quá dài, segment giữ trạng thái chưa đạt để tiếp tục sửa.
+Nút AI chỉ cập nhật nội dung nháp, chưa tạo audio. Nút tạo voice sử dụng lại provider, giọng, tốc độ và thiết bị của candidate Step 4, sau đó cập nhật trực tiếp segment được chọn trong candidate Step 3, Step 4 và Step 5 hiện tại. Nếu một segment lân cận vốn bình thường có voice mới quá dài, nó trở thành segment lỗi và `seq` tăng. Nút vay thời gian render lại cả segment lỗi B và segment lân cận cần dùng (B+C, A+B+C hoặc A+B) từ voice mới nhất ở Step 4. Thao tác sửa lỗi không tạo candidate mới.
+
+Nếu còn bất kỳ row nào ở trạng thái **Chờ tạo voice**, ứng dụng yêu cầu tạo voice trước khi vay thời gian để tránh sử dụng nhầm voice cũ.
 
 `seq` ghi nhận số lần đồng bộ không đạt của từng segment:
 
@@ -55,6 +60,8 @@ Nút AI chỉ cập nhật nội dung nháp, chưa tạo audio. Nút tạo voice
 - Khi xử lý thành công, giữ nguyên `seq`; row được đánh dấu **Đã xử lý** và vẫn còn trong popup.
 
 Khi lỗi cuối cùng được xử lý xong, candidate tự động hoàn thành và trở thành input Step 6.
+
+Các trường `adjusted_start`, `adjusted_end`, `play_duration`, `borrowed_before`, `borrowed_after` và `sync_strategy` trong manifest mô tả lịch phát đã cân. Step 6 chỉ ghép audio theo lịch này và kiểm tra lại điều kiện không chồng voice.
 
 ## Phạm vi của bản sửa
 

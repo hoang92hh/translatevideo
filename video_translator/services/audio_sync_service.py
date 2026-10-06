@@ -182,6 +182,370 @@ class AudioSyncService:
         finally:
             prepared.unlink(missing_ok=True)
 
+    def prepare_timeline_file(
+        self,
+        source_path: str | Path,
+        output_path: str | Path,
+        speed_factor: float,
+        trim_silence: bool,
+    ) -> float:
+        filters: list[str] = []
+        if trim_silence:
+            filters.append(
+                "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-45dB:"
+                "stop_periods=1:stop_duration=0.10:stop_threshold=-45dB"
+            )
+        atempo = self._atempo_filter(max(1.0, speed_factor))
+        if atempo:
+            filters.append(atempo)
+        self._run_ffmpeg(Path(source_path), Path(output_path), filters)
+        measured = self.ffmpeg.probe_duration(output_path)
+        if not measured or measured <= 0:
+            raise AudioSyncError(
+                "Không đọc được audio sau khi cân timeline",
+                str(output_path),
+                "Kiểm tra file TTS nguồn và FFprobe.",
+            )
+        return measured
+
+
+NEIGHBOR_MAX_SHIFT = 0.5
+NEIGHBOR_GAP_LIMIT = 1.0
+
+
+def _timeline_schedule(
+    items: list[dict[str, Any]],
+    durations: list[float],
+) -> list[float] | None:
+    if not items or len(items) != len(durations):
+        return None
+    group_start = float(items[0].get("start", 0.0))
+    group_end = float(items[-1].get("end", group_start))
+    lower: list[float] = []
+    upper: list[float] = []
+    for item, duration in zip(items, durations, strict=True):
+        start = float(item.get("start", 0.0))
+        lower.append(max(group_start, start - NEIGHBOR_MAX_SHIFT))
+        upper.append(min(start + NEIGHBOR_MAX_SHIFT, group_end - duration))
+
+    earliest: list[float] = []
+    for index, duration in enumerate(durations):
+        value = lower[index]
+        if index:
+            value = max(value, earliest[index - 1] + durations[index - 1])
+        earliest.append(value)
+    latest = [0.0] * len(items)
+    for index in range(len(items) - 1, -1, -1):
+        value = upper[index]
+        if index < len(items) - 1:
+            value = min(value, latest[index + 1] - durations[index])
+        latest[index] = value
+    if any(earliest[index] > latest[index] + 0.0001 for index in range(len(items))):
+        return None
+
+    starts: list[float] = []
+    for index, item in enumerate(items):
+        preferred = float(item.get("start", 0.0))
+        if index:
+            preferred = max(preferred, starts[index - 1] + durations[index - 1])
+        starts.append(min(latest[index], max(earliest[index], preferred)))
+    return starts
+
+
+def _borrow_groups(segments: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    error_indexes = [index for index, item in enumerate(segments) if item.get("status") != "ready"]
+    raw_groups: list[tuple[int, int]] = []
+    cursor = 0
+    while cursor < len(error_indexes):
+        first_error = error_indexes[cursor]
+        last_error = first_error
+        while cursor + 1 < len(error_indexes) and error_indexes[cursor + 1] == last_error + 1:
+            cursor += 1
+            last_error = error_indexes[cursor]
+        first = first_error
+        last = last_error
+        if first_error > 0:
+            gap = float(segments[first_error].get("start", 0.0)) - float(segments[first_error - 1].get("end", 0.0))
+            if gap <= NEIGHBOR_GAP_LIMIT:
+                first -= 1
+        if last_error + 1 < len(segments):
+            gap = float(segments[last_error + 1].get("start", 0.0)) - float(segments[last_error].get("end", 0.0))
+            if gap <= NEIGHBOR_GAP_LIMIT:
+                last += 1
+        raw_groups.append((first, last))
+        cursor += 1
+
+    merged: list[tuple[int, int]] = []
+    for first, last in raw_groups:
+        if merged and first <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], last))
+        else:
+            merged.append((first, last))
+    return merged
+
+
+def apply_neighbor_borrow(
+    segments: list[dict[str, Any]],
+    max_speed: float,
+    trim_silence: bool,
+) -> int:
+    """Cân timeline cho các nhóm có lỗi, chỉ dùng tối đa một hàng xóm mỗi phía."""
+    for item in segments:
+        prepared = max(0.01, float(item.get("prepared_duration", item.get("input_duration", 0.01))))
+        speed = max(1.0, float(item.get("speed_factor", 1.0)))
+        item.setdefault("play_duration", prepared / speed)
+        item.setdefault("adjusted_start", float(item.get("start", 0.0)))
+        item.setdefault("adjusted_end", float(item.get("adjusted_start", 0.0)) + float(item["play_duration"]))
+        item.setdefault("sync_strategy", "local")
+        item.setdefault("borrowed_before", 0.0)
+        item.setdefault("borrowed_after", 0.0)
+
+    service: AudioSyncService | None = None
+    for first, last in _borrow_groups(segments):
+        group = segments[first : last + 1]
+        error_positions = [index for index, item in enumerate(group) if item.get("status") != "ready"]
+        if not error_positions:
+            continue
+
+        def durations_for(speed: float) -> list[float]:
+            values: list[float] = []
+            for index, item in enumerate(group):
+                prepared = max(0.01, float(item.get("prepared_duration", item.get("input_duration", 0.01))))
+                if index in error_positions:
+                    values.append(prepared / speed)
+                else:
+                    values.append(max(0.01, float(item.get("play_duration", prepared))))
+            return values
+
+        low = 1.0
+        high = max(1.0, max_speed)
+        schedule = _timeline_schedule(group, durations_for(low))
+        chosen_speed = low
+        if schedule is None:
+            schedule = _timeline_schedule(group, durations_for(high))
+            if schedule is None:
+                continue
+            for _ in range(18):
+                middle = (low + high) / 2
+                candidate = _timeline_schedule(group, durations_for(middle))
+                if candidate is None:
+                    low = middle
+                else:
+                    high = middle
+                    schedule = candidate
+            chosen_speed = high
+        durations = durations_for(chosen_speed)
+        schedule = _timeline_schedule(group, durations)
+        if schedule is None:
+            continue
+
+        service = service or AudioSyncService()
+        render_failed = False
+        for position in error_positions:
+            item = group[position]
+            source_value = str(item.get("audio_file", "")).strip()
+            output_value = str(item.get("timeline_output_file") or item.get("sync_output_file") or "").strip()
+            source = Path(source_value)
+            output = Path(output_value) if output_value else Path("__missing_timeline_output__")
+            if not source_value or not source.is_file() or not output_value:
+                render_failed = True
+                break
+            try:
+                measured = service.prepare_timeline_file(source, output, chosen_speed, trim_silence)
+            except Exception:
+                render_failed = True
+                break
+            durations[position] = measured
+        if render_failed:
+            continue
+        schedule = _timeline_schedule(group, durations)
+        if schedule is None:
+            continue
+
+        for position, item in enumerate(group):
+            adjusted_start = schedule[position]
+            adjusted_end = adjusted_start + durations[position]
+            original_start = float(item.get("start", 0.0))
+            original_end = float(item.get("end", original_start))
+            item["adjusted_start"] = round(adjusted_start, 6)
+            item["adjusted_end"] = round(adjusted_end, 6)
+            item["play_duration"] = round(durations[position], 6)
+            item["borrowed_before"] = round(max(0.0, original_start - adjusted_start), 6)
+            item["borrowed_after"] = round(max(0.0, adjusted_end - original_end), 6)
+            if position in error_positions:
+                output = str(item.get("timeline_output_file") or item.get("sync_output_file") or "")
+                item["synced_audio_file"] = output
+                item["output_duration"] = durations[position]
+                item["speed_factor"] = chosen_speed
+                item["status"] = "ready"
+                item["repair_status"] = "resolved"
+                item["sync_strategy"] = "neighbor_borrow"
+                item["error"] = ""
+            elif abs(adjusted_start - original_start) > 0.0001:
+                item["sync_strategy"] = "neighbor_donor"
+
+    return sum(1 for item in segments if item.get("status") != "ready")
+
+
+def borrow_neighbor_time(
+    manifest_path: str,
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    manifest, payload = _read_manifest(manifest_path, "Step 5")
+    raw_segments = payload.get("segments", [])
+    segments = [item for item in raw_segments if isinstance(item, dict)] if isinstance(raw_segments, list) else []
+    pending_voice = [
+        item for item in segments if item.get("repair_status") == "awaiting_voice"
+    ]
+    if pending_voice:
+        raise AudioSyncError(
+            "Segment đang chờ tạo voice",
+            "Vẫn còn nội dung mới chưa được tạo voice: "
+            + ", ".join(f"#{int(item.get('id', 0)):04d}" for item in pending_voice),
+            "Chọn các row này và bấm “Tạo lại voice và đồng bộ” trước khi vay thời gian.",
+        )
+    unresolved_indexes = [index for index, item in enumerate(segments) if item.get("status") != "ready"]
+    if not unresolved_indexes:
+        raise AudioSyncError("Không còn segment lỗi", "Tất cả segment trong candidate đã được xử lý.")
+    error_indexes = unresolved_indexes
+
+    max_speed = max(1.0, float(payload.get("max_speed", 1.35)))
+    trim_silence = bool(payload.get("trim_silence", True))
+    service = AudioSyncService()
+    attempt_folder = manifest.parent / "repairs" / f"borrow-{uuid4().hex[:8]}"
+    attempt_folder.mkdir(parents=True, exist_ok=False)
+    claimed: set[int] = set()
+    staged: dict[int, tuple[Path, float]] = {}
+    resolved_count = 0
+
+    def eligible_neighbor(index: int, error_index: int) -> bool:
+        if index < 0 or index >= len(segments) or index in claimed:
+            return False
+        neighbor = segments[index]
+        if neighbor.get("status") != "ready":
+            return False
+        if index < error_index:
+            gap = float(segments[error_index].get("start", 0.0)) - float(neighbor.get("end", 0.0))
+        else:
+            gap = float(neighbor.get("start", 0.0)) - float(segments[error_index].get("end", 0.0))
+        return gap <= NEIGHBOR_GAP_LIMIT
+
+    def prepare(index: int) -> tuple[Path, float]:
+        if index in staged:
+            return staged[index]
+        item = segments[index]
+        source = Path(str(item.get("audio_file", "")))
+        if not source.is_file():
+            raise AudioSyncError(
+                "Thiếu audio Step 4",
+                f"Không tìm thấy audio của segment #{int(item.get('id', 0)):04d}: {source}",
+            )
+        output = attempt_folder / f"segment_{int(item.get('id', index + 1)):04d}.wav"
+        measured = service.prepare_timeline_file(source, output, max_speed, trim_silence)
+        staged[index] = (output, measured)
+        return output, measured
+
+    for order, error_index in enumerate(error_indexes, start=1):
+        error_item = segments[error_index]
+        if error_item.get("status") == "ready" or error_index in claimed:
+            continue
+        if progress:
+            progress(
+                round((order - 1) / max(1, len(error_indexes)) * 90),
+                f"Đang thử vay thời gian cho segment #{int(error_item.get('id', 0)):04d}…",
+            )
+        has_next = eligible_neighbor(error_index + 1, error_index)
+        has_previous = eligible_neighbor(error_index - 1, error_index)
+        options: list[list[int]] = []
+        if has_next:
+            options.append([error_index, error_index + 1])
+        if has_previous:
+            if has_next:
+                options.append([error_index - 1, error_index, error_index + 1])
+            else:
+                options.append([error_index - 1, error_index])
+
+        selected_group: list[int] | None = None
+        selected_starts: list[float] | None = None
+        selected_durations: list[float] | None = None
+        last_error = "Không có segment A/C hợp lệ để cho vay thời gian."
+        for indexes in options:
+            group = [segments[index] for index in indexes]
+            estimated = [
+                max(0.01, float(item.get("prepared_duration", item.get("input_duration", 0.01)))) / max_speed
+                for item in group
+            ]
+            if _timeline_schedule(group, estimated) is None:
+                last_error = "Thời gian của hàng xóm vẫn không đủ ở tốc độ tối đa."
+                continue
+            try:
+                prepared = [prepare(index) for index in indexes]
+            except Exception as exc:
+                last_error = str(exc) or exc.__class__.__name__
+                continue
+            durations = [duration for _, duration in prepared]
+            starts = _timeline_schedule(group, durations)
+            if starts is None:
+                last_error = "Audio đo lại không thể xếp tuần tự trong khung A/B/C."
+                continue
+            selected_group = indexes
+            selected_starts = starts
+            selected_durations = durations
+            break
+
+        if selected_group is None or selected_starts is None or selected_durations is None:
+            error_item["seq"] = int(error_item.get("seq", 1)) + 1
+            error_item["repair_status"] = "too_long"
+            error_item["error"] = last_error
+            continue
+
+        for position, index in enumerate(selected_group):
+            item = segments[index]
+            staged_file, measured = staged[index]
+            segment_id = int(item.get("id", index + 1))
+            target_value = str(item.get("sync_output_file") or item.get("timeline_output_file") or "").strip()
+            target = Path(target_value) if target_value else manifest.parent / "segments" / f"segment_{segment_id:04d}.wav"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(f".{target.stem}.borrow{target.suffix}")
+            shutil.copy2(staged_file, temporary)
+            temporary.replace(target)
+            adjusted_start = selected_starts[position]
+            adjusted_end = adjusted_start + measured
+            original_start = float(item.get("start", 0.0))
+            original_end = float(item.get("end", original_start))
+            item["synced_audio_file"] = str(target)
+            item["sync_output_file"] = str(target)
+            item["timeline_output_file"] = str(target)
+            item["adjusted_start"] = round(adjusted_start, 6)
+            item["adjusted_end"] = round(adjusted_end, 6)
+            item["play_duration"] = round(measured, 6)
+            item["output_duration"] = round(measured, 6)
+            item["speed_factor"] = max_speed
+            item["borrowed_before"] = round(max(0.0, original_start - adjusted_start), 6)
+            item["borrowed_after"] = round(max(0.0, adjusted_end - original_end), 6)
+            item["sync_strategy"] = "neighbor_borrow" if index == error_index else "neighbor_donor"
+            if index == error_index:
+                item["status"] = "ready"
+                item["repair_status"] = "resolved"
+                item["error"] = ""
+        claimed.update(selected_group)
+        resolved_count += 1
+
+    error_count = sum(1 for item in segments if item.get("status") != "ready")
+    payload["error_count"] = error_count
+    payload["status"] = "completed" if error_count == 0 else "needs_edit"
+    payload["repair_revision"] = int(payload.get("repair_revision", 0)) + 1
+    _write_manifest(manifest, payload)
+    if progress:
+        progress(100, f"Đã xử lý vay thời gian: {resolved_count}/{len(error_indexes)} segment đạt.")
+    return {
+        "candidate_id": str(payload.get("candidate_id", "")),
+        "processed_count": len(error_indexes),
+        "resolved_count": resolved_count,
+        "error_count": error_count,
+        "message": f"Đã vay thời gian cho {resolved_count}/{len(error_indexes)} segment lỗi.",
+    }
+
 
 def _read_manifest(path: str | Path, step_name: str) -> tuple[Path, dict[str, Any]]:
     manifest = Path(path)
@@ -240,8 +604,6 @@ def rewrite_sync_drafts(
         segment = segments.get(segment_id)
         if segment is None:
             raise AudioSyncError("Không tìm thấy segment", f"Segment #{segment_id:04d} không có trong Step 5.")
-        if segment.get("status") == "ready":
-            continue
         current_text = selected_text.strip()
         if not current_text:
             raise AudioSyncError("Nội dung đang trống", f"Segment #{segment_id:04d} chưa có nội dung để AI chỉnh sửa.")
@@ -263,7 +625,7 @@ def rewrite_sync_drafts(
     if not chosen:
         raise AudioSyncError(
             "Không có segment cần AI chỉnh sửa",
-            "Các segment đã chọn đều có trạng thái Đã xử lý.",
+            "Không có dữ liệu hợp lệ trong các segment đã chọn.",
         )
     response = GoogleTranslationService(model_name, source_language, target_language).rewrite_for_timing(
         chosen,
@@ -306,16 +668,11 @@ def repair_sync_segments(
             "Nội dung sửa đang trống",
             "Các segment chưa có nội dung: " + ", ".join(f"#{item:04d}" for item in empty_ids),
         )
-    target_ids = [
-        segment_id
-        for segment_id in normalized
-        if segment_id in sync_segments
-        and sync_segments[segment_id].get("status") != "ready"
-    ]
+    target_ids = [segment_id for segment_id in normalized if segment_id in sync_segments]
     if not target_ids:
         raise AudioSyncError(
-            "Không có nội dung cần xử lý",
-            "Tất cả segment trong danh sách đã được xử lý và chưa có thay đổi mới.",
+            "Chưa chọn segment",
+            "Bạn chưa đánh dấu checkbox cho segment nào cần tạo lại voice.",
         )
     missing = [
         segment_id
@@ -394,9 +751,11 @@ def repair_sync_segments(
         sync_segment["draft_text"] = text
         sync_segment["translated_text"] = text
         sync_segment["audio_file"] = str(target_audio)
+        sync_segment["sync_output_file"] = str(synced_audio)
+        sync_segment["timeline_output_file"] = str(synced_audio)
         sync_segment["repair_attempts"] = int(sync_segment.get("repair_attempts", 0)) + 1
         sync_segment["corrected_in_step_5"] = True
-        sync_segment["initial_sync_error"] = True
+        sync_segment.setdefault("initial_sync_error", sync_segment.get("status") != "ready")
         legacy_seq = 1 if sync_segment.get("status") != "ready" or sync_segment.get("corrected_in_step_5") else 0
         current_seq = int(sync_segment.get("seq", legacy_seq))
         sync_segment["seq"] = current_seq
@@ -417,6 +776,16 @@ def repair_sync_segments(
             sync_segment["prepared_duration"] = outcome.prepared_duration
             sync_segment["output_duration"] = outcome.output_duration
             sync_segment["speed_factor"] = outcome.speed_factor
+            sync_segment["play_duration"] = (
+                outcome.prepared_duration / max(1.0, outcome.speed_factor)
+            )
+            sync_segment["adjusted_start"] = float(sync_segment.get("start", 0.0))
+            sync_segment["adjusted_end"] = (
+                float(sync_segment.get("start", 0.0)) + sync_segment["play_duration"]
+            )
+            sync_segment["sync_strategy"] = "local"
+            sync_segment["borrowed_before"] = 0.0
+            sync_segment["borrowed_after"] = 0.0
             sync_segment["used_gap"] = outcome.used_gap
 
     error_count = sum(1 for item in sync_segments.values() if item.get("status") != "ready")

@@ -82,12 +82,24 @@ def execute(
                     "translated_text": segment.translated_text,
                     "audio_file": segment.audio_file,
                     "synced_audio_file": segment.synced_audio_file,
+                    "sync_output_file": str(output),
+                    "timeline_output_file": str(output),
                     "target_duration": target_duration,
                     "allowed_duration": allowed_duration,
                     "input_duration": outcome.input_duration,
                     "prepared_duration": outcome.prepared_duration,
                     "output_duration": outcome.output_duration,
                     "speed_factor": outcome.speed_factor,
+                    "play_duration": (
+                        outcome.prepared_duration / max(1.0, outcome.speed_factor)
+                    ),
+                    "adjusted_start": segment.start,
+                    "adjusted_end": segment.start + (
+                        outcome.prepared_duration / max(1.0, outcome.speed_factor)
+                    ),
+                    "sync_strategy": "local",
+                    "borrowed_before": 0.0,
+                    "borrowed_after": 0.0,
                     "used_gap": outcome.used_gap,
                     "status": "ready" if outcome.success else "needs_edit",
                     "initial_sync_error": not outcome.success,

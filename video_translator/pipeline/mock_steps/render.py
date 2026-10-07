@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,18 +22,75 @@ def _srt_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
-def _write_subtitle(path: Path, segments) -> None:
+def _split_text_by_ratio(text: str, ratios: list[float]) -> list[str]:
+    if len(ratios) <= 1:
+        return [text.strip()]
+    spaced = bool(re.search(r"\s", text.strip()))
+    units = re.findall(r"\S+", text) if spaced else list(text.strip())
+    if not units:
+        return [""] * len(ratios)
+    boundaries = [0]
+    cumulative = 0.0
+    count = len(units)
+    for index, ratio in enumerate(ratios[:-1]):
+        cumulative += max(0.0, ratio)
+        target = round(count * cumulative)
+        remaining_parts = len(ratios) - index - 1
+        if count >= len(ratios):
+            target = max(boundaries[-1] + 1, min(target, count - remaining_parts))
+        else:
+            target = max(boundaries[-1], min(target, count))
+        boundaries.append(target)
+    boundaries.append(count)
+    separator = " " if spaced else ""
+    return [
+        separator.join(units[boundaries[index] : boundaries[index + 1]]).strip()
+        for index in range(len(ratios))
+    ]
+
+
+def _subtitle_cues(segment, timing: dict[str, object] | None) -> list[tuple[float, float, str]]:
+    parts = [part for part in segment.merge_parts if isinstance(part, dict)]
+    text = segment.translated_text.strip()
+    if not parts:
+        return [(segment.start, max(segment.end, segment.start + 0.05), text)]
+    ratios = [max(0.0, float(part.get("ratio", 0.0))) for part in parts]
+    ratio_total = sum(ratios)
+    if ratio_total <= 0:
+        ratios = [1.0 / len(parts)] * len(parts)
+    else:
+        ratios = [value / ratio_total for value in ratios]
+    chunks = _split_text_by_ratio(text, ratios)
+    start = float((timing or {}).get("adjusted_start", segment.start))
+    duration = float((timing or {}).get("play_duration", segment.duration))
+    duration = max(0.05, duration)
+    cues: list[tuple[float, float, str]] = []
+    cursor = start
+    cumulative = 0.0
+    for index, (ratio, chunk) in enumerate(zip(ratios, chunks, strict=True)):
+        cumulative += ratio
+        end = start + duration if index == len(ratios) - 1 else start + duration * cumulative
+        if chunk:
+            cues.append((cursor, max(end, cursor + 0.05), chunk))
+        cursor = end
+    return cues
+
+
+def _write_subtitle(
+    path: Path,
+    segments,
+    timings: dict[int, dict[str, object]] | None = None,
+) -> None:
     blocks: list[str] = []
     subtitle_index = 1
     for segment in segments:
-        text = segment.translated_text.strip()
-        if not text:
-            continue
-        end = max(segment.end, segment.start + 0.05)
-        blocks.append(
-            f"{subtitle_index}\n{_srt_timestamp(segment.start)} --> {_srt_timestamp(end)}\n{text}"
-        )
-        subtitle_index += 1
+        for start, end, text in _subtitle_cues(segment, (timings or {}).get(segment.id)):
+            if not text:
+                continue
+            blocks.append(
+                f"{subtitle_index}\n{_srt_timestamp(start)} --> {_srt_timestamp(end)}\n{text}"
+            )
+            subtitle_index += 1
     if not blocks:
         raise RuntimeError("Không có nội dung bản dịch để tạo subtitle.")
     path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8-sig")
@@ -67,7 +125,17 @@ def execute(
     candidate_folder.mkdir(parents=True, exist_ok=False)
     try:
         if create_subtitle:
-            _write_subtitle(subtitle_output, segments)
+            timings: dict[int, dict[str, object]] = {}
+            sync_id = build_candidate.source_sync_candidate_id
+            sync_candidate = state.sync_candidate(sync_id)
+            if sync_candidate and Path(sync_candidate.path).is_file():
+                sync_payload = json.loads(Path(sync_candidate.path).read_text(encoding="utf-8"))
+                timings = {
+                    int(item.get("id", 0)): item
+                    for item in sync_payload.get("segments", [])
+                    if isinstance(item, dict)
+                }
+            _write_subtitle(subtitle_output, segments, timings)
         result = VideoRenderService().render(
             state.input_video,
             build_candidate.audio_file,

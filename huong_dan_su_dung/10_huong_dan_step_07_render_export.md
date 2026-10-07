@@ -12,7 +12,9 @@ Hai thành phần luôn bắt buộc và không thể tắt:
 Các thành phần tùy chọn:
 
 - **Âm thanh nền gốc (Background)**: stem `Background` được tách ở Step 01. Thành phần này được chọn mặc định khi file còn tồn tại và có thanh điều chỉnh âm lượng từ 0% đến 100%.
-- **Subtitle SRT**: tạo file phụ đề rời từ bản dịch và timestamp của các segment.
+- **Subtitle SRT**: tạo file phụ đề rời từ bản dịch. Với segment đã gộp, nội dung
+  được chia offline theo tỷ lệ thời lượng trong `merge_parts` và đặt lên timeline
+  voice đã căn chỉnh của Step 05.
 - **Burn subtitle vào video**: ghi trực tiếp subtitle lên hình ảnh; tùy chọn này chỉ bật được khi đã chọn tạo subtitle SRT.
 
 `Original Mix` không được sử dụng trong Step 07. Nếu candidate Step 01 không có file `Background`, checkbox Background bị khóa, ứng dụng hiển thị cảnh báo và vẫn cho phép render hình ảnh cùng voice mới.
@@ -38,6 +40,10 @@ Mỗi lần render thành công tạo một candidate riêng:
 ```
 
 Video dùng H.264, audio dùng AAC 48 kHz. Track audio được bù hoặc cắt theo đúng thời lượng video nguồn. Audio gốc nằm trong video nguồn không được map sang output.
+
+Việc chia text dùng tỷ lệ thời lượng làm mục tiêu và ưu tiên ranh giới từ. Vì vậy
+subtitle không cắt giữa một từ, nhưng số ký tự thực tế của mỗi cue có thể lệch nhẹ
+so với tỷ lệ để giữ khả năng đọc. Đây là xử lý local, không gọi thêm API.
 
 Danh sách **Các video đã render** cho phép mở video, mở subtitle, mở thư mục hoặc xóa toàn bộ candidate. Output mới nhất được đánh dấu để dễ nhận biết. Nếu lần render mới gặp lỗi, output thành công gần nhất vẫn được giữ lại.
 

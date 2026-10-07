@@ -37,6 +37,7 @@ def execute(
         device=requested_device,
         language=LANGUAGE_CODES.get(state.source_language),
         vad_filter=bool(settings.get("vad", True)),
+        diarization=bool(settings.get("diarization", True)),
     )
     transcription = service.transcribe(input_audio, progress)
     segments = [
@@ -44,6 +45,8 @@ def execute(
             id=index,
             start=item.start,
             end=item.end,
+            speaker_id=item.speaker_id,
+            merge_parts=[dict(part) for part in item.merge_parts],
             source_text=item.text,
         )
         for index, item in enumerate(transcription.segments, start=1)
@@ -54,7 +57,7 @@ def execute(
     transcript_path = Path(state.workspace_path("transcripts", candidate_id, "transcript.json"))
     transcript_path.parent.mkdir(parents=True, exist_ok=False)
     payload = {
-        "version": 1,
+        "version": 2,
         "candidate_id": candidate_id,
         "created_at": now.isoformat(timespec="seconds"),
         "input_audio": str(input_audio.resolve()),
@@ -67,12 +70,17 @@ def execute(
         "compute_type": transcription.compute_type,
         "device_selection_reason": transcription.device_selection_reason,
         "vad_filter": bool(settings.get("vad", True)),
+        "diarization": bool(settings.get("diarization", True)),
+        "diarization_model": transcription.diarization_model,
+        "diarization_device": transcription.diarization_device,
         "duration_seconds": transcription.duration_seconds,
         "segments": [
             {
                 "id": segment.id,
                 "start": segment.start,
                 "end": segment.end,
+                "speaker_id": segment.speaker_id,
+                "merge_parts": segment.merge_parts,
                 "text": segment.source_text,
             }
             for segment in segments
@@ -98,6 +106,7 @@ def execute(
     )
     summary = (
         f"Đã nhận dạng {len(segments)} segment · ngôn ngữ {detected}{probability} · "
+        f"{len({segment.speaker_id for segment in segments if segment.speaker_id})} speaker · "
         f"{model_name} · {transcription.actual_device}"
     )
     metadata = {
@@ -109,6 +118,9 @@ def execute(
         "compute_type": transcription.compute_type,
         "device_selection_reason": transcription.device_selection_reason,
         "duration_seconds": transcription.duration_seconds,
+        "diarization": bool(settings.get("diarization", True)),
+        "diarization_model": transcription.diarization_model,
+        "diarization_device": transcription.diarization_device,
         "transcript_candidate_id": candidate_id,
         "recommended_transcript_candidate_id": candidate_id,
     }

@@ -30,6 +30,7 @@ class SpeechToTextStepPage(StepPage):
                 FieldSpec("model", "Model", "choice", "medium", ("small", "medium", "large-v3")),
                 DEVICE_FIELD,
                 FieldSpec("vad", "Voice activity detection", "bool", True),
+                FieldSpec("diarization", "Speaker diarization", "bool", True),
             )),
             ProviderSpec("Provider khác (sắp có)", available=False),
         ),

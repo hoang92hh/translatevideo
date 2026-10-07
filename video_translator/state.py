@@ -465,6 +465,10 @@ class ProjectState(QObject):
                     id=int(item.get("id", index)),
                     start=float(item.get("start", 0.0)),
                     end=float(item.get("end", 0.0)),
+                    speaker_id=str(item.get("speaker_id", "")),
+                    merge_parts=[
+                        dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
+                    ],
                     source_text=str(item.get("text", item.get("source_text", ""))),
                     translated_text=str(item.get("translated_text", "")),
                     audio_file=str(item.get("audio_file", "")),
@@ -618,6 +622,10 @@ class ProjectState(QObject):
                     id=int(item.get("id", index)),
                     start=float(item.get("start", 0.0)),
                     end=float(item.get("end", 0.0)),
+                    speaker_id=str(item.get("speaker_id", "")),
+                    merge_parts=[
+                        dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
+                    ],
                     source_text=str(item.get("source_text", "")),
                     translated_text=str(item.get("translated_text", "")),
                     audio_file=str(item.get("audio_file", "")),
@@ -754,6 +762,10 @@ class ProjectState(QObject):
                     id=int(item.get("id", index)),
                     start=float(item.get("start", 0.0)),
                     end=float(item.get("end", 0.0)),
+                    speaker_id=str(item.get("speaker_id", "")),
+                    merge_parts=[
+                        dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
+                    ],
                     source_text=str(item.get("source_text", "")),
                     translated_text=str(item.get("translated_text", "")),
                     audio_file=str(item.get("audio_file", "")),
@@ -924,6 +936,10 @@ class ProjectState(QObject):
                     id=int(item.get("id", index)),
                     start=float(item.get("start", 0.0)),
                     end=float(item.get("end", 0.0)),
+                    speaker_id=str(item.get("speaker_id", "")),
+                    merge_parts=[
+                        dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
+                    ],
                     source_text=str(item.get("source_text", "")),
                     translated_text=str(item.get("translated_text", "")),
                     audio_file=str(item.get("audio_file", "")),

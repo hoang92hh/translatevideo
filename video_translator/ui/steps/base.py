@@ -103,11 +103,13 @@ class StepPage(QWidget):
         self.progress_bar.setVisible(False)
         output_card.content_layout.addWidget(self.progress_message)
         output_card.content_layout.addWidget(self.progress_bar)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["ID", "Start", "End", "Source", "Translation", "Audio"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(
+            ["ID", "Speaker", "Start", "End", "Source", "Translation", "Audio"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setMinimumHeight(260)
@@ -195,6 +197,7 @@ class StepPage(QWidget):
         for row, segment in enumerate(result.segments):
             values = (
                 str(segment.id),
+                segment.speaker_id,
                 f"{segment.start:.2f}",
                 f"{segment.end:.2f}",
                 segment.source_text,
@@ -203,19 +206,19 @@ class StepPage(QWidget):
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if column not in (3, 4):
+                if column not in (4, 5):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
         self._updating_table = False
 
     def _table_cell_changed(self, row: int, column: int) -> None:
-        if self._updating_table or column not in (3, 4):
+        if self._updating_table or column not in (4, 5):
             return
         result = self.state.results.get(self.spec.step)
         if not result or row >= len(result.segments):
             return
         text = self.table.item(row, column).text()
-        if column == 3:
+        if column == 4:
             result.segments[row].source_text = text
         else:
             result.segments[row].translated_text = text

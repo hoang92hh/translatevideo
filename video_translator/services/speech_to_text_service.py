@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from ..config.diarization import configured_model_path, missing_model_files
 from ..errors import UserFacingError
 
 ProgressCallback = Callable[[int, str], None]
@@ -23,6 +24,8 @@ class TranscriptSegment:
     start: float
     end: float
     text: str
+    speaker_id: str = ""
+    merge_parts: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +38,8 @@ class Transcription:
     actual_device: str
     compute_type: str
     device_selection_reason: str
+    diarization_model: str = ""
+    diarization_device: str = ""
 
 
 class SpeechToTextService:
@@ -44,11 +49,13 @@ class SpeechToTextService:
         device: str,
         language: str | None,
         vad_filter: bool,
+        diarization: bool = True,
     ) -> None:
         self.model_name = model_name
         self.device = device
         self.language = language
         self.vad_filter = vad_filter
+        self.diarization = diarization
 
     @staticmethod
     def model_cache_dir() -> Path:
@@ -78,7 +85,12 @@ class SpeechToTextService:
             "language": self.language,
             "vad_filter": self.vad_filter,
         }
-        result = self._run_worker(request, progress)
+        stt_progress = (
+            (lambda value, message: progress(round(value * 0.58), message))
+            if progress and self.diarization
+            else progress
+        )
+        result = self._run_worker(request, stt_progress)
         raw_segments = result.get("segments")
         if not isinstance(raw_segments, list):
             raise SpeechToTextError(
@@ -87,16 +99,16 @@ class SpeechToTextService:
                 "Mở chi tiết kỹ thuật để kiểm tra dữ liệu worker.",
                 repr(raw_segments),
             )
-        segments: list[TranscriptSegment] = []
         try:
-            for item in raw_segments:
-                segments.append(
-                    TranscriptSegment(
-                        start=float(item["start"]),
-                        end=float(item["end"]),
-                        text=str(item["text"]).strip(),
-                    )
-                )
+            normalized = [
+                {
+                    "start": float(item["start"]),
+                    "end": float(item["end"]),
+                    "text": str(item["text"]).strip(),
+                    "words": list(item.get("words", [])),
+                }
+                for item in raw_segments
+            ]
         except (KeyError, TypeError, ValueError) as exc:
             raise SpeechToTextError(
                 "Kết quả Faster Whisper không hợp lệ",
@@ -104,12 +116,70 @@ class SpeechToTextService:
                 "Mở chi tiết kỹ thuật để kiểm tra dữ liệu worker.",
                 repr(raw_segments),
             ) from exc
-        if not segments:
+        if not normalized:
             raise SpeechToTextError(
                 "Không phát hiện lời nói",
                 "Faster Whisper đã xử lý xong nhưng không tạo được segment nào.",
                 "Thử chọn Original Mix, tắt Voice activity detection hoặc kiểm tra lại audio từ Step 1.",
             )
+        diarization_model = ""
+        diarization_device = ""
+        if self.diarization:
+            model_path = configured_model_path().resolve()
+            missing = missing_model_files(model_path)
+            if missing:
+                raise SpeechToTextError(
+                    "Model speaker diarization chưa sẵn sàng",
+                    f"Không thể dùng model local tại: {model_path}",
+                    "Mở Cài đặt → API & Providers → Speaker diarization — Local để chọn đúng thư mục model.",
+                    "Thiếu hoặc không hợp lệ:\n" + "\n".join(missing),
+                )
+            if progress:
+                progress(60, "Đang chuẩn bị speaker diarization…")
+            diarization_device = "GPU" if "GPU" in str(result.get("actual_device", "")) else "CPU"
+            diarization_progress = (
+                (lambda value, message: progress(60 + round(value * 0.38), message))
+                if progress
+                else None
+            )
+            try:
+                diarization_result = self._run_diarization_worker(
+                    source,
+                    model_path,
+                    diarization_device,
+                    diarization_progress,
+                )
+            except SpeechToTextError:
+                if self.device != "Auto" or diarization_device != "GPU":
+                    raise
+                if progress:
+                    progress(60, "Diarization GPU lỗi; Auto đang thử lại bằng CPU…")
+                diarization_result = self._run_diarization_worker(
+                    source,
+                    model_path,
+                    "CPU",
+                    diarization_progress,
+                )
+            turns = diarization_result.get("turns")
+            if not isinstance(turns, list) or not turns:
+                raise SpeechToTextError(
+                    "Không xác định được người nói",
+                    "Speaker diarization không trả về khoảng lời nói hợp lệ.",
+                    "Kiểm tra file Voice và thư mục model local rồi chạy lại Step 2.",
+                )
+            segments = self._segments_with_speakers(normalized, turns)
+            diarization_model = str(diarization_result.get("model", ""))
+            diarization_device = str(diarization_result.get("actual_device", ""))
+        else:
+            segments = [
+                TranscriptSegment(
+                    start=float(item["start"]),
+                    end=float(item["end"]),
+                    text=str(item["text"]),
+                )
+                for item in normalized
+            ]
+
         probability = result.get("language_probability")
         duration = result.get("duration_seconds")
         return Transcription(
@@ -121,7 +191,202 @@ class SpeechToTextService:
             actual_device=str(result.get("actual_device", "")),
             compute_type=str(result.get("compute_type", "default")),
             device_selection_reason=str(result.get("device_selection_reason", "")),
+            diarization_model=diarization_model,
+            diarization_device=diarization_device,
         )
+
+    @staticmethod
+    def _speaker_for_interval(start: float, end: float, turns: list[dict[str, object]]) -> str:
+        best_speaker = ""
+        best_overlap = 0.0
+        midpoint = (start + end) / 2.0
+        for turn in turns:
+            turn_start = float(turn.get("start", 0.0))
+            turn_end = float(turn.get("end", turn_start))
+            overlap = max(0.0, min(end, turn_end) - max(start, turn_start))
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = str(turn.get("speaker_id", ""))
+            elif not best_speaker and turn_start <= midpoint <= turn_end:
+                best_speaker = str(turn.get("speaker_id", ""))
+        return best_speaker or "SPEAKER_UNKNOWN"
+
+    @staticmethod
+    def _join_text(left: str, right: str) -> str:
+        if not left:
+            return right.strip()
+        if not right:
+            return left.strip()
+        left_char = left.rstrip()[-1]
+        right_char = right.lstrip()[0]
+        cjk = lambda char: "\u3400" <= char <= "\u9fff"
+        separator = "" if cjk(left_char) and cjk(right_char) else " "
+        return f"{left.rstrip()}{separator}{right.lstrip()}"
+
+    @classmethod
+    def _segments_with_speakers(
+        cls,
+        raw_segments: list[dict[str, object]],
+        turns: list[dict[str, object]],
+    ) -> list[TranscriptSegment]:
+        atomic: list[dict[str, object]] = []
+        for raw in raw_segments:
+            words = raw.get("words")
+            if not isinstance(words, list) or not words:
+                atomic.append(
+                    {
+                        "start": float(raw["start"]),
+                        "end": float(raw["end"]),
+                        "text": str(raw["text"]),
+                        "speaker_id": cls._speaker_for_interval(
+                            float(raw["start"]), float(raw["end"]), turns
+                        ),
+                    }
+                )
+                continue
+
+            current: dict[str, object] | None = None
+            for word in words:
+                if not isinstance(word, dict):
+                    continue
+                start = float(word.get("start", raw["start"]))
+                end = float(word.get("end", start))
+                text = str(word.get("word", ""))
+                speaker_id = cls._speaker_for_interval(start, end, turns)
+                if current is None or current["speaker_id"] != speaker_id:
+                    if current is not None:
+                        atomic.append(current)
+                    current = {
+                        "start": start,
+                        "end": end,
+                        "text": text.strip(),
+                        "speaker_id": speaker_id,
+                    }
+                else:
+                    current["end"] = end
+                    current["text"] = cls._join_text(str(current["text"]), text)
+            if current is not None:
+                atomic.append(current)
+
+        merged: list[dict[str, object]] = []
+        for source_id, item in enumerate(atomic, start=1):
+            start = round(float(item["start"]), 3)
+            end = round(float(item["end"]), 3)
+            part = {
+                "source_id": source_id,
+                "start": start,
+                "end": end,
+                "duration": round(max(0.0, end - start), 3),
+                "text": str(item["text"]).strip(),
+            }
+            if (
+                merged
+                and merged[-1]["speaker_id"] == item["speaker_id"]
+                and abs(start - float(merged[-1]["end"])) < 0.01
+            ):
+                merged[-1]["end"] = end
+                merged[-1]["text"] = cls._join_text(
+                    str(merged[-1]["text"]), str(item["text"])
+                )
+                parts = merged[-1]["merge_parts"]
+                assert isinstance(parts, list)
+                parts.append(part)
+            else:
+                merged.append(
+                    {
+                        "start": start,
+                        "end": end,
+                        "text": str(item["text"]).strip(),
+                        "speaker_id": str(item["speaker_id"]),
+                        "merge_parts": [part],
+                    }
+                )
+
+        result: list[TranscriptSegment] = []
+        for item in merged:
+            parts = item["merge_parts"]
+            assert isinstance(parts, list)
+            total = sum(float(part["duration"]) for part in parts)
+            ratios: list[float]
+            if total > 0:
+                ratios = [float(part["duration"]) / total for part in parts]
+            else:
+                ratios = [1.0 / len(parts)] * len(parts)
+            rounded = [round(value, 8) for value in ratios]
+            rounded[-1] = round(1.0 - sum(rounded[:-1]), 8)
+            for part, ratio in zip(parts, rounded, strict=True):
+                part["ratio"] = ratio
+            result.append(
+                TranscriptSegment(
+                    start=float(item["start"]),
+                    end=float(item["end"]),
+                    text=str(item["text"]),
+                    speaker_id=str(item["speaker_id"]),
+                    merge_parts=tuple(parts),
+                )
+            )
+        return result
+
+    def _run_diarization_worker(
+        self,
+        source: Path,
+        model_path: Path,
+        device: str,
+        progress: ProgressCallback | None,
+    ) -> dict[str, object]:
+        request = {
+            "input_audio": str(source.resolve()),
+            "model_path": str(model_path),
+            "device": device,
+        }
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "utf-8"
+        command = [sys.executable, "-m", "video_translator.services.speaker_diarization_worker"]
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        completed: dict[str, object] | None = None
+        worker_error: dict[str, object] | None = None
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=environment,
+                creationflags=creation_flags,
+            )
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            process.stdin.close()
+            for raw_line in process.stdout:
+                try:
+                    event = json.loads(raw_line.strip())
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") == "progress" and progress:
+                    progress(int(event.get("value", 0)), str(event.get("message", "")))
+                elif event.get("type") == "result":
+                    completed = event
+                elif event.get("type") == "error":
+                    worker_error = event
+            return_code = process.wait()
+            stderr_file.seek(0)
+            stderr = stderr_file.read().strip()
+        if worker_error or return_code != 0 or completed is None:
+            detail = str((worker_error or {}).get("technical_detail", ""))
+            if stderr:
+                detail = f"{detail}\n\nWorker stderr:\n{stderr}".strip()
+            message = str((worker_error or {}).get("message", "Worker kết thúc bất thường."))
+            raise SpeechToTextError(
+                "Speaker diarization thất bại",
+                message,
+                "Kiểm tra thư mục model local, FFmpeg và cấu hình GPU rồi thử lại.",
+                detail,
+            )
+        return completed
 
     def _run_worker(
         self,

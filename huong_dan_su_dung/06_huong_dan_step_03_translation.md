@@ -1,7 +1,8 @@
 # Hướng dẫn Step 03 — Translation
 
-Step 03 dùng Google Gemini để dịch các segment được chọn ở Step 02. ID, timestamp
-và source text được giữ nguyên; chỉ trường `translated_text` được bổ sung.
+Step 03 dùng Google Gemini để dịch các segment được chọn ở Step 02. ID, timestamp,
+`speaker_id`, `merge_parts` và source text được giữ nguyên; chỉ trường
+`translated_text` được bổ sung.
 
 ## 1. Thiết lập Google API key
 

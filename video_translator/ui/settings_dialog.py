@@ -4,6 +4,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -15,6 +16,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..config.gemini import GEMINI_CONNECTION_TEST_MODEL
+from ..config.diarization import (
+    DIARIZATION_MODEL_ENV,
+    bundled_model_path,
+    configured_model_path,
+    missing_model_files,
+    set_configured_model_path,
+)
 from ..errors import UserFacingError
 from ..services.credential_service import GOOGLE_GEMINI, CredentialService
 from ..services.google_translation_service import GoogleTranslationService
@@ -81,9 +89,44 @@ class ProviderSettingsDialog(QDialog):
         card.content_layout.addLayout(actions)
         root.addWidget(card)
 
+        diarization_card = Card(
+            "Speaker diarization — Local",
+            "Step 2 chỉ nạp model từ ổ đĩa và không gửi audio hoặc gọi Hugging Face.",
+        )
+        diarization_form = QFormLayout()
+        self.diarization_status = QLabel()
+        self.diarization_status.setWordWrap(True)
+        diarization_form.addRow("Trạng thái", self.diarization_status)
+        self.diarization_path = QLineEdit()
+        self.diarization_path.setReadOnly(True)
+        diarization_form.addRow("Thư mục model", self.diarization_path)
+        diarization_card.content_layout.addLayout(diarization_form)
+        diarization_actions = QHBoxLayout()
+        choose_model = QPushButton("Chọn thư mục…")
+        choose_model.clicked.connect(self._choose_diarization_model)
+        use_default = QPushButton("Dùng thư mục mặc định")
+        use_default.clicked.connect(self._use_default_diarization_model)
+        refresh_model = QPushButton("Kiểm tra lại")
+        refresh_model.clicked.connect(self._refresh_diarization_status)
+        diarization_actions.addWidget(choose_model)
+        diarization_actions.addWidget(use_default)
+        diarization_actions.addWidget(refresh_model)
+        diarization_actions.addStretch()
+        diarization_card.content_layout.addLayout(diarization_actions)
+        diarization_note = QLabel(
+            "Khi chuyển máy, sao chép toàn bộ thư mục model vào "
+            "<thư mục ứng dụng>\\models\\pyannote-speaker-diarization-community-1, "
+            f"chọn thư mục tại đây hoặc đặt biến môi trường {DIARIZATION_MODEL_ENV}. "
+            "Không cần sao chép token."
+        )
+        diarization_note.setObjectName("muted")
+        diarization_note.setWordWrap(True)
+        diarization_card.content_layout.addWidget(diarization_note)
+        root.addWidget(diarization_card)
+
         note = QLabel(
             "Nếu không có key trong Windows Credential Locker, ứng dụng sẽ kiểm tra "
-            "GEMINI_API_KEY rồi GOOGLE_API_KEY. Xóa key đã lưu không thể xóa biến môi trường."
+            "GEMINI_API_KEY rồi GOOGLE_API_KEY. Xóa credential đã lưu không thể xóa biến môi trường."
         )
         note.setObjectName("muted")
         note.setWordWrap(True)
@@ -101,6 +144,7 @@ class ProviderSettingsDialog(QDialog):
             self.status.setText(f"Không thể kiểm tra · {exc.error_message.message}")
             self.delete_button.setEnabled(False)
             self.test_button.setEnabled(False)
+            self._refresh_diarization_status()
             return
         if info.configured:
             self.status.setText(f"Đã cấu hình · {info.source}")
@@ -108,6 +152,41 @@ class ProviderSettingsDialog(QDialog):
             self.status.setText("Chưa cấu hình")
         self.delete_button.setEnabled(info.source == "Windows Credential Locker")
         self.test_button.setEnabled(info.configured and self._test_worker is None)
+        self._refresh_diarization_status()
+
+    def _refresh_diarization_status(self) -> None:
+        path = configured_model_path().resolve()
+        missing = missing_model_files(path)
+        self.diarization_path.setText(str(path))
+        if missing:
+            self.diarization_status.setText(
+                "Chưa sẵn sàng · thiếu hoặc không hợp lệ: " + ", ".join(missing)
+            )
+        else:
+            self.diarization_status.setText("Sẵn sàng · model local đầy đủ")
+
+    def _choose_diarization_model(self) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Chọn thư mục pyannote Community-1",
+            str(configured_model_path()),
+        )
+        if not selected:
+            return
+        set_configured_model_path(selected)
+        self._refresh_diarization_status()
+        self.credentials_changed.emit()
+
+    def _use_default_diarization_model(self) -> None:
+        set_configured_model_path(None)
+        self._refresh_diarization_status()
+        self.credentials_changed.emit()
+        if configured_model_path().resolve() != bundled_model_path().resolve():
+            QMessageBox.information(
+                self,
+                "Biến môi trường đang được áp dụng",
+                f"{DIARIZATION_MODEL_ENV} đang ghi đè thư mục mặc định.",
+            )
 
     def _save(self) -> None:
         try:

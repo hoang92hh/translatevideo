@@ -92,6 +92,7 @@ class GoogleTranslationService:
                             "start_seconds": round(segment.start, 3),
                             "end_seconds": round(segment.end, 3),
                             "duration_seconds": round(segment.duration, 3),
+                            "speaker_id": segment.speaker_id,
                             "text": segment.source_text,
                         }
                         for segment in batch

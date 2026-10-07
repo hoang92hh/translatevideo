@@ -183,6 +183,7 @@ def run(request: dict[str, Any]) -> None:
             task="transcribe",
             beam_size=5,
             vad_filter=bool(request.get("vad_filter", True)),
+            word_timestamps=True,
         )
         duration = float(info.duration) if info.duration is not None else None
         segments: list[dict[str, object]] = []
@@ -194,6 +195,16 @@ def run(request: dict[str, Any]) -> None:
                         "start": round(float(segment.start), 3),
                         "end": round(float(segment.end), 3),
                         "text": text,
+                        "words": [
+                            {
+                                "start": round(float(word.start), 3),
+                                "end": round(float(word.end), 3),
+                                "word": word.word,
+                                "probability": round(float(word.probability or 0.0), 6),
+                            }
+                            for word in (segment.words or [])
+                            if word.start is not None and word.end is not None
+                        ],
                     }
                 )
             if duration and duration > 0:

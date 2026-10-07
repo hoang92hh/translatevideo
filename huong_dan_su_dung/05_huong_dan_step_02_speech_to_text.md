@@ -1,7 +1,8 @@
 # Hướng dẫn Step 02 — Speech to Text
 
-Step 02 dùng Faster Whisper để chuyển audio từ Step 01 thành các đoạn văn bản có
-timestamp. Kết quả được lưu trong project và trở thành đầu vào của Step 03.
+Step 02 dùng Faster Whisper để tạo văn bản/word timestamp và pyannote Community-1
+chạy local để xác định người nói. Kết quả được gắn `speaker_id`, gộp theo quy tắc
+liền kề, lưu trong project và trở thành đầu vào của Step 03.
 
 Dự án sử dụng PyAV 18.x vì Faster Whisper 1.2.1 chưa tương thích với thay đổi API
 giải mã audio trong PyAV 19.
@@ -64,6 +65,30 @@ VAD lọc các khoảng im lặng trước khi nhận dạng. Nên bật trong h
 Nếu Step 02 báo không phát hiện lời nói dù audio có giọng nói, thử tắt VAD hoặc
 chọn `Original` thay cho `Voice`.
 
+### Speaker diarization
+
+- Bật mặc định và dùng model Community-1 đã tải sẵn trên ổ đĩa.
+- Mặc định ứng dụng tìm model tại
+  `<thư mục ứng dụng>\models\pyannote-speaker-diarization-community-1`.
+- Có thể vào **Cài đặt → API & Providers → Speaker diarization — Local** để chọn
+  thư mục khác, hoặc đặt biến môi trường `TRANSLANGUAGE_DIARIZATION_MODEL`.
+- Step 2 không yêu cầu Hugging Face token, không tự tải model và không gọi mạng.
+- Khi chuyển máy, sao chép nguyên thư mục model; không sao chép token.
+- Giao diện cài đặt kiểm tra `config.yaml`, model embedding/segmentation và hai file
+  PLDA. Git LFS pointer chưa tải dữ liệu thật được xem là không hợp lệ.
+- Ứng dụng tắt telemetry pyannote trong worker.
+- Faster Whisper và diarization dùng cùng lựa chọn thiết bị của Step 02 khi CUDA
+  khả dụng. Worker đọc WAV bằng SoundFile và truyền waveform trong bộ nhớ cho
+  pyannote, không phụ thuộc TorchCodec/FFmpeg để giải mã audio ở bước diarization.
+
+Sau khi gắn speaker ở cấp từ, Step 02 gộp hai đoạn liền kề khi chúng có cùng
+`speaker_id` và `abs(next.start - current.end) < 0,01` giây. Độ lệch đúng `0,01`
+giây trở lên tạo segment mới. Segment mới được đánh lại ID từ `1`.
+
+Mỗi segment gộp lưu `merge_parts`. Mỗi phần gồm `source_id`, `start`, `end`,
+`duration`, `text` và `ratio`; `ratio` được chuẩn hóa theo thời lượng để tổng bằng
+`1.0`. Dữ liệu này được giữ qua các step sau và dùng để chia subtitle.
+
 ## 3. Chạy nhận dạng
 
 1. Kiểm tra audio đang chọn trong **Audio input**.
@@ -79,6 +104,7 @@ dài audio, model và thiết bị.
 Mỗi dòng kết quả gồm:
 
 - ID tăng dần từ `1`.
+- `speaker_id` như `SPEAKER_00`, `SPEAKER_01`.
 - Thời điểm bắt đầu và kết thúc theo giây.
 - Nội dung nhận dạng ở cột `Source`.
 

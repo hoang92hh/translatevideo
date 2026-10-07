@@ -40,6 +40,8 @@ class Segment:
     id: int
     start: float
     end: float
+    speaker_id: str = ""
+    merge_parts: list[dict[str, Any]] = field(default_factory=list)
     source_text: str = ""
     translated_text: str = ""
     audio_file: str = ""

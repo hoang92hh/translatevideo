@@ -49,6 +49,8 @@ def execute(
                 "id": segment.id,
                 "start": segment.start,
                 "end": segment.end,
+                "speaker_id": segment.speaker_id,
+                "merge_parts": segment.merge_parts,
                 "source_text": segment.source_text,
                 "translated_text": segment.translated_text,
             }

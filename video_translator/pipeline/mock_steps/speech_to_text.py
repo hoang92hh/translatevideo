@@ -8,6 +8,10 @@ from uuid import uuid4
 
 from ...models import Segment, StepId, StepResult, TranscriptCandidate
 from ...services import SpeechToTextService
+from ...services.speech_to_text_service import (
+    SPEAKER_CHANGE_MIN_DURATION_SECONDS,
+    SPEAKER_CHANGE_MIN_WORDS,
+)
 from ...state import ProjectState
 
 
@@ -57,7 +61,7 @@ def execute(
     transcript_path = Path(state.workspace_path("transcripts", candidate_id, "transcript.json"))
     transcript_path.parent.mkdir(parents=True, exist_ok=False)
     payload = {
-        "version": 2,
+        "version": 3,
         "candidate_id": candidate_id,
         "created_at": now.isoformat(timespec="seconds"),
         "input_audio": str(input_audio.resolve()),
@@ -73,6 +77,11 @@ def execute(
         "diarization": bool(settings.get("diarization", True)),
         "diarization_model": transcription.diarization_model,
         "diarization_device": transcription.diarization_device,
+        "diarization_turns": [dict(turn) for turn in transcription.diarization_turns],
+        "diarization_smoothing": {
+            "min_duration_seconds": SPEAKER_CHANGE_MIN_DURATION_SECONDS,
+            "min_words": SPEAKER_CHANGE_MIN_WORDS,
+        },
         "duration_seconds": transcription.duration_seconds,
         "segments": [
             {
@@ -121,6 +130,10 @@ def execute(
         "diarization": bool(settings.get("diarization", True)),
         "diarization_model": transcription.diarization_model,
         "diarization_device": transcription.diarization_device,
+        "diarization_smoothing": {
+            "min_duration_seconds": SPEAKER_CHANGE_MIN_DURATION_SECONDS,
+            "min_words": SPEAKER_CHANGE_MIN_WORDS,
+        },
         "transcript_candidate_id": candidate_id,
         "recommended_transcript_candidate_id": candidate_id,
     }

@@ -20,12 +20,24 @@ class TextToSpeechError(UserFacingError):
 
 
 @dataclass(frozen=True, slots=True)
+class SegmentSynthesisResult:
+    id: int
+    speaker_id: str
+    provider: str
+    model: str
+    voice: str
+    reference_voice: str
+    actual_device: str
+
+
+@dataclass(frozen=True, slots=True)
 class SynthesisResult:
     files: list[str]
     requested_device: str
     actual_device: str
     model: str
     voice: str
+    segments: list[SegmentSynthesisResult]
 
 
 class TextToSpeechService:
@@ -132,11 +144,39 @@ class TextToSpeechService:
                 "Số file âm thanh tạo được không khớp số segment.",
                 "Output cũ vẫn được giữ làm mặc định; kiểm tra provider rồi chạy lại.",
             )
+        raw_segment_results = result.get("segment_results", [])
+        if not isinstance(raw_segment_results, list) or len(raw_segment_results) != len(segments):
+            raw_segment_results = [
+                {
+                    "id": item.get("id", index),
+                    "speaker_id": item.get("speaker_id", ""),
+                    "provider": self.provider,
+                    "model": result.get("model", ""),
+                    "voice": result.get("voice", ""),
+                    "reference_voice": self.settings.get("reference_voice", ""),
+                    "actual_device": result.get("actual_device", ""),
+                }
+                for index, item in enumerate(segments, start=1)
+            ]
+        segment_results = [
+            SegmentSynthesisResult(
+                id=int(item.get("id", index)),
+                speaker_id=str(item.get("speaker_id", "")),
+                provider=str(item.get("provider", self.provider)),
+                model=str(item.get("model", result.get("model", ""))),
+                voice=str(item.get("voice", result.get("voice", ""))),
+                reference_voice=str(item.get("reference_voice", "")),
+                actual_device=str(item.get("actual_device", result.get("actual_device", ""))),
+            )
+            for index, item in enumerate(raw_segment_results, start=1)
+            if isinstance(item, dict)
+        ]
         return SynthesisResult(
             files=files,
             requested_device=str(result.get("requested_device", self.settings.get("device", "Auto"))),
             actual_device=str(result.get("actual_device", "")),
             model=str(result.get("model", "")),
             voice=str(result.get("voice", "")),
+            segments=segment_results,
         )
 

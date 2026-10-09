@@ -769,6 +769,11 @@ class ProjectState(QObject):
                     source_text=str(item.get("source_text", "")),
                     translated_text=str(item.get("translated_text", "")),
                     audio_file=str(item.get("audio_file", "")),
+                    tts_provider=str(item.get("tts_provider", "")),
+                    tts_model=str(item.get("tts_model", "")),
+                    tts_voice=str(item.get("tts_voice", "")),
+                    tts_reference_voice=str(item.get("tts_reference_voice", "")),
+                    tts_actual_device=str(item.get("tts_actual_device", "")),
                 )
                 for index, item in enumerate(payload.get("segments", []), start=1)
             ]
@@ -944,6 +949,11 @@ class ProjectState(QObject):
                     translated_text=str(item.get("translated_text", "")),
                     audio_file=str(item.get("audio_file", "")),
                     synced_audio_file=str(item.get("synced_audio_file", "")),
+                    tts_provider=str(item.get("tts_provider", "")),
+                    tts_model=str(item.get("tts_model", "")),
+                    tts_voice=str(item.get("tts_voice", "")),
+                    tts_reference_voice=str(item.get("tts_reference_voice", "")),
+                    tts_actual_device=str(item.get("tts_actual_device", "")),
                 )
                 for index, item in enumerate(raw_segments, start=1)
             ]

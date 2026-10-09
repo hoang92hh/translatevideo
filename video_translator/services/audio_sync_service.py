@@ -699,7 +699,18 @@ def repair_sync_segments(
     if progress:
         progress(3, f"Đang tạo lại voice cho {len(target_ids)} segment…")
     synthesis = TextToSpeechService(provider, settings).synthesize(
-        [{"id": segment_id, "text": normalized[segment_id]} for segment_id in target_ids],
+        [
+            {
+                "id": segment_id,
+                "text": normalized[segment_id],
+                "speaker_id": str(
+                    tts_segments[segment_id].get(
+                        "speaker_id", sync_segments[segment_id].get("speaker_id", "")
+                    )
+                ),
+            }
+            for segment_id in target_ids
+        ],
         repair_root,
         target_language,
         (lambda value, message: progress(min(55, 3 + value // 2), message)) if progress else None,
@@ -707,7 +718,9 @@ def repair_sync_segments(
     service = AudioSyncService()
     outcomes: dict[int, SyncOutcome | None] = {}
     errors: dict[int, str] = {}
-    for index, (segment_id, generated_path) in enumerate(zip(target_ids, synthesis.files, strict=True), start=1):
+    for index, (segment_id, generated_path, segment_result) in enumerate(
+        zip(target_ids, synthesis.files, synthesis.segments, strict=True), start=1
+    ):
         sync_segment = sync_segments[segment_id]
         tts_segment = tts_segments[segment_id]
         text = normalized[segment_id]
@@ -743,6 +756,11 @@ def repair_sync_segments(
         translation_segment["updated_in_step_5"] = True
         tts_segment["translated_text"] = text
         tts_segment["audio_file"] = str(target_audio)
+        tts_segment["tts_provider"] = segment_result.provider
+        tts_segment["tts_model"] = segment_result.model
+        tts_segment["tts_voice"] = segment_result.voice
+        tts_segment["tts_reference_voice"] = segment_result.reference_voice
+        tts_segment["tts_actual_device"] = segment_result.actual_device
         tts_segment["updated_in_step_5"] = True
         sync_segment.setdefault("original_translated_text", str(sync_segment.get("translated_text", "")))
         previous_draft = str(sync_segment.get("draft_text") or sync_segment.get("translated_text", "")).strip()
@@ -751,6 +769,11 @@ def repair_sync_segments(
         sync_segment["draft_text"] = text
         sync_segment["translated_text"] = text
         sync_segment["audio_file"] = str(target_audio)
+        sync_segment["tts_provider"] = segment_result.provider
+        sync_segment["tts_model"] = segment_result.model
+        sync_segment["tts_voice"] = segment_result.voice
+        sync_segment["tts_reference_voice"] = segment_result.reference_voice
+        sync_segment["tts_actual_device"] = segment_result.actual_device
         sync_segment["sync_output_file"] = str(synced_audio)
         sync_segment["timeline_output_file"] = str(synced_audio)
         sync_segment["repair_attempts"] = int(sync_segment.get("repair_attempts", 0)) + 1

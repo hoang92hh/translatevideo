@@ -18,6 +18,18 @@ Chọn một output TTS, sau đó chọn segment trong danh sách hoặc bấm t
 
 Việc nghe thử hoặc chuyển qua lại giữa các output không thay đổi pipeline. Chỉ nút **Dùng làm input Step 5** mới đặt output đang xem thành đầu vào của bước kế tiếp. Nếu chất lượng chưa đạt, có thể đổi model, giọng, tốc độ hoặc thiết bị rồi chạy lại Step 4; output thành công cũ vẫn được giữ để so sánh.
 
+## Ánh xạ giọng theo speaker
+
+Step 4 đọc `speaker_id` từ candidate Step 3 và hiển thị cấu hình giọng cho các speaker thực sự xuất hiện:
+
+- `SPEAKER_00`, `SPEAKER_01`, `SPEAKER_02` dùng ba cấu hình riêng.
+- `SPEAKER_03` trở đi, `SPEAKER_UNKNOWN` và speaker khác định dạng dùng chung cấu hình **SPEAKER_03 trở đi / khác**.
+- VieNeu-TTS và MeloTTS/OpenVoice yêu cầu file giọng tham chiếu cho mỗi cấu hình đang được sử dụng.
+- Edge TTS không dùng file tham chiếu; mỗi cấu hình chọn một voice preset.
+- Tốc độ và thiết bị vẫn áp dụng chung cho toàn candidate.
+
+Một speaker luôn dùng cùng cấu hình trong toàn bộ candidate. Manifest phiên bản 2 lưu `speaker_profiles` ở cấp candidate và các trường `tts_provider`, `tts_model`, `tts_voice`, `tts_reference_voice`, `tts_actual_device` trên từng segment. Candidate cũ chỉ có một `reference_voice` vẫn được hỗ trợ.
+
 ## Ba provider đã triển khai
 
 ### VieNeu-TTS — Local
@@ -60,4 +72,4 @@ XTTS-v2 chỉ xuất hiện dưới dạng provider bị khóa: **chưa triển 
 
 ## Clone/chuyển giọng
 
-Khi chọn audio tham chiếu, phải đánh dấu **Tôi có quyền sử dụng giọng**. Xác nhận này chỉ là chốt an toàn trên giao diện; người dùng vẫn chịu trách nhiệm lưu bằng chứng đồng ý và tuân thủ pháp luật/quyền hình ảnh, giọng nói tại nơi phát hành.
+Khi chọn một hoặc nhiều audio tham chiếu, phải đánh dấu **Tôi có quyền sử dụng giọng**. Xác nhận này áp dụng cho toàn bộ file đã chọn và chỉ là chốt an toàn trên giao diện; người dùng vẫn chịu trách nhiệm lưu bằng chứng đồng ý và tuân thủ pháp luật/quyền hình ảnh, giọng nói tại nơi phát hành.

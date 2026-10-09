@@ -22,6 +22,10 @@ def _tts_settings(metadata: dict[str, Any]) -> dict[str, Any]:
         "device": str(metadata.get("requested_device", "Auto")),
         "reference_voice": str(metadata.get("reference_voice", "")),
         "voice_consent": bool(metadata.get("voice_rights_confirmed", False)),
+        "speaker_profiles": dict(
+            metadata.get("requested_speaker_profiles", metadata.get("speaker_profiles", {}))
+        ),
+        "shared_speaker_profile": dict(metadata.get("shared_speaker_profile", {})),
     }
 
 
@@ -83,6 +87,11 @@ def execute(
                     "original_translated_text": segment.translated_text,
                     "translated_text": segment.translated_text,
                     "audio_file": segment.audio_file,
+                    "tts_provider": segment.tts_provider,
+                    "tts_model": segment.tts_model,
+                    "tts_voice": segment.tts_voice,
+                    "tts_reference_voice": segment.tts_reference_voice,
+                    "tts_actual_device": segment.tts_actual_device,
                     "synced_audio_file": segment.synced_audio_file,
                     "sync_output_file": str(output),
                     "timeline_output_file": str(output),

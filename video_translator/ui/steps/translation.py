@@ -102,6 +102,8 @@ class TranslationStepPage(StepPage):
     def set_busy(self, busy: bool) -> None:
         self._processing = busy
         super().set_busy(busy)
+        if hasattr(self, "save_changes_button"):
+            self.save_changes_button.setDisabled(busy)
         if not busy and hasattr(self, "translation_combo"):
             self._refresh_translations(prefer_selected=True)
 
@@ -131,10 +133,13 @@ class TranslationStepPage(StepPage):
         open_folder.clicked.connect(self._open_translation_folder)
         delete_button = QPushButton("Xóa bản dịch")
         delete_button.clicked.connect(self._delete_translation)
+        self.save_changes_button = QPushButton("Lưu thay đổi")
+        self.save_changes_button.clicked.connect(self._save_translation_changes)
         actions.addWidget(use_button)
         actions.addWidget(open_file)
         actions.addWidget(open_folder)
         actions.addWidget(delete_button)
+        actions.addWidget(self.save_changes_button)
         actions.addStretch()
         layout.addLayout(actions)
         return container
@@ -166,6 +171,7 @@ class TranslationStepPage(StepPage):
         candidate = self._current_translation()
         if not candidate:
             self.translation_info.setText("Chưa có bản dịch")
+            self.save_changes_button.setEnabled(False)
             return
         status = "Sẵn sàng" if Path(candidate.path).is_file() else "File không tồn tại"
         model = str(candidate.metadata.get("model", ""))
@@ -180,6 +186,18 @@ class TranslationStepPage(StepPage):
             if value
         )
         self.translation_info.setText(f"{details}\n{candidate.path}")
+        is_selected_input = candidate.id == self.state.selected_translation_candidate_id
+        can_save = (
+            is_selected_input
+            and Path(candidate.path).is_file()
+            and not getattr(self, "_processing", False)
+        )
+        self.save_changes_button.setEnabled(can_save)
+        self.save_changes_button.setToolTip(
+            ""
+            if is_selected_input
+            else "Chọn candidate này làm input Step 4 trước khi chỉnh sửa và lưu."
+        )
 
     def _current_translation(self):
         return self.state.translation_candidate(str(self.translation_combo.currentData() or ""))
@@ -200,6 +218,60 @@ class TranslationStepPage(StepPage):
         candidate = self._current_translation()
         if candidate:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(candidate.path).parent)))
+
+    def _save_translation_changes(self) -> None:
+        candidate = self._current_translation()
+        if not candidate or candidate.id != self.state.selected_translation_candidate_id:
+            QMessageBox.information(
+                self,
+                "Chưa chọn đúng bản dịch",
+                "Hãy nhấn “Dùng làm input Step 4” cho candidate cần sửa trước khi lưu.",
+            )
+            return
+        updates: dict[int, dict[str, str]] = {}
+        for row in range(self.table.rowCount()):
+            id_item = self.table.item(row, 0)
+            source_item = self.table.item(row, 4)
+            translation_item = self.table.item(row, 5)
+            if not id_item or not source_item or not translation_item:
+                QMessageBox.warning(
+                    self,
+                    "Bảng dữ liệu không hợp lệ",
+                    "Không thể đọc đầy đủ ID, Source hoặc Translation từ bảng.",
+                )
+                return
+            try:
+                segment_id = int(id_item.text())
+            except ValueError:
+                QMessageBox.warning(self, "ID không hợp lệ", f"Dòng {row + 1} có ID không hợp lệ.")
+                return
+            if segment_id in updates:
+                QMessageBox.warning(self, "ID bị trùng", f"Segment ID {segment_id} xuất hiện nhiều lần.")
+                return
+            updates[segment_id] = {
+                "source_text": source_item.text(),
+                "translated_text": translation_item.text(),
+            }
+        try:
+            self.state.save_translation_candidate_edits(candidate.id, updates)
+        except UserFacingError as exc:
+            message = exc.error_message
+            details = f"\n\n{message.suggestion}" if message.suggestion else ""
+            QMessageBox.warning(self, message.title, f"{message.message}{details}")
+            return
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Không thể lưu bản dịch",
+                f"Không thể ghi translated_segments.json.\n\n{exc}",
+            )
+            return
+        self._refresh_translations(prefer_selected=True)
+        QMessageBox.information(
+            self,
+            "Đã lưu thay đổi",
+            "Bản dịch đã được cập nhật. Step 4 đã sẵn sàng để chạy lại.",
+        )
 
     def _delete_translation(self) -> None:
         candidate = self._current_translation()

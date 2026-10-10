@@ -8,6 +8,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
+from .errors import UserFacingError
 from .models import (
     AudioCandidate,
     BuildAudioCandidate,
@@ -518,6 +519,112 @@ class ProjectState(QObject):
         self.project_changed.emit()
         self.save_project()
         return True
+
+    def save_translation_candidate_edits(
+        self,
+        candidate_id: str,
+        updates: dict[int, dict[str, str]],
+    ) -> None:
+        candidate = self.translation_candidate(candidate_id)
+        if not candidate or candidate_id != self.selected_translation_candidate_id:
+            raise UserFacingError(
+                "Chưa chọn đúng bản dịch",
+                "Chỉ có thể lưu candidate đang được dùng làm input Step 4.",
+                "Nhấn “Dùng làm input Step 4”, sửa nội dung rồi lưu lại.",
+            )
+        result = self.results.get(StepId.TRANSLATE)
+        path = Path(candidate.path)
+        if not result or not path.is_file():
+            raise UserFacingError(
+                "Không tìm thấy bản dịch cần lưu",
+                "Candidate hoặc file translated_segments.json không còn tồn tại.",
+                "Chọn lại một output hợp lệ của Step 3.",
+            )
+
+        expected_ids = {segment.id for segment in result.segments}
+        if set(updates) != expected_ids:
+            raise UserFacingError(
+                "Danh sách segment đã thay đổi",
+                "Bảng chỉnh sửa không còn khớp với candidate hiện tại.",
+                "Tải lại Step 3 rồi thực hiện chỉnh sửa lại.",
+            )
+        empty_ids = sorted(
+            segment.id
+            for segment in result.segments
+            if segment.duration > 0
+            and not str(updates[segment.id].get("translated_text", "")).strip()
+        )
+        if empty_ids:
+            raise UserFacingError(
+                "Bản dịch còn trống",
+                f"Các segment chưa có nội dung dịch: {empty_ids}",
+                "Nhập nội dung Translation cho mọi segment có thời lượng rồi lưu lại.",
+            )
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise TypeError("manifest không phải object")
+            raw_segments = payload.get("segments", [])
+            if not isinstance(raw_segments, list):
+                raise TypeError("segments không phải danh sách")
+            manifest_segments = {
+                int(item["id"]): item
+                for item in raw_segments
+                if isinstance(item, dict) and "id" in item
+            }
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise UserFacingError(
+                "File bản dịch không hợp lệ",
+                "Không thể đọc cấu trúc translated_segments.json để lưu thay đổi.",
+                "Mở file để kiểm tra hoặc chạy lại Step 3.",
+                repr(exc),
+            ) from exc
+        if set(manifest_segments) != expected_ids or len(raw_segments) != len(expected_ids):
+            raise UserFacingError(
+                "File bản dịch không khớp",
+                "Danh sách ID trong translated_segments.json khác với bảng đang hiển thị.",
+                "Chọn lại candidate hoặc chạy lại Step 3.",
+            )
+
+        for segment in result.segments:
+            update = updates[segment.id]
+            source_text = str(update.get("source_text", ""))
+            translated_text = str(update.get("translated_text", "")).strip()
+            segment.source_text = source_text
+            segment.translated_text = translated_text
+            manifest_segments[segment.id]["source_text"] = source_text
+            manifest_segments[segment.id]["translated_text"] = translated_text
+
+        edited_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            previous_edit_count = int(payload.get("manual_edit_count", 0) or 0)
+        except (TypeError, ValueError):
+            previous_edit_count = 0
+        edit_count = previous_edit_count + 1
+        payload["manually_edited_at"] = edited_at
+        payload["manual_edit_count"] = edit_count
+        temporary_path = path.with_suffix(f"{path.suffix}.part")
+        try:
+            temporary_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+        candidate.metadata["manually_edited_at"] = edited_at
+        candidate.metadata["manual_edit_count"] = edit_count
+        result.metadata["manually_edited_at"] = edited_at
+        result.metadata["manual_edit_count"] = edit_count
+        self.statuses[StepId.TRANSLATE] = StepStatus.DONE
+        self.invalidate_from(StepId.TTS)
+        self.statuses[StepId.TTS] = StepStatus.READY
+        self.step_changed.emit(StepId.TRANSLATE.value)
+        self.step_changed.emit(StepId.TTS.value)
+        self.project_changed.emit()
+        self.save_project()
 
     def remove_translation_candidate(self, candidate_id: str) -> None:
         removed_selected = candidate_id == self.selected_translation_candidate_id

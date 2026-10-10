@@ -128,8 +128,14 @@ trống.
 Output mới tự động trở thành input Step 04. Khối **Chọn output bản dịch** cho phép:
 
 - Chọn bản dịch cũ và nhấn **Dùng làm input Step 4**.
+- Sửa trực tiếp cột **Source** hoặc **Translation** của candidate đang dùng, sau đó
+  nhấn **Lưu thay đổi**. Ứng dụng ghi lại `translated_segments.json`, xóa kết quả cũ
+  từ Step 04 trở đi và đưa Step 04 về trạng thái sẵn sàng để tạo voice từ nội dung mới.
 - Mở file hoặc thư mục chứa file.
 - Xóa riêng một candidate.
+
+Nút **Lưu thay đổi** chỉ hoạt động với candidate có nhãn `[Input Step 4]`. Nếu đang
+xem candidate khác, cần nhấn **Dùng làm input Step 4** trước rồi mới chỉnh sửa và lưu.
 
 Manifest phiên bản 3 lưu thêm `dialogue_profile`, `proper_name_policy`, trạng thái
 `context_consistency`, chiến lược dịch, số request của từng giai đoạn và danh sách lỗi

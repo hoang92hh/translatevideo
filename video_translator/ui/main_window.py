@@ -33,6 +33,7 @@ from .project_manager import ProjectManagerPage
 from .settings_dialog import ProviderSettingsDialog
 from .steps import STEP_PAGE_TYPES
 from .steps.base import StepPage
+from .voice_library_dialog import VoiceLibraryDialog
 
 
 class MainWindow(QMainWindow):
@@ -89,11 +90,14 @@ class MainWindow(QMainWindow):
         save_button.clicked.connect(self.state.save_project)
         settings_button = QPushButton("Cài đặt")
         settings_button.clicked.connect(self._open_provider_settings)
+        voice_library_button = QPushButton("Giọng tham chiếu")
+        voice_library_button.clicked.connect(self._open_voice_library)
         top_layout.addWidget(project_button)
         top_layout.addWidget(new_button)
         top_layout.addWidget(open_button)
         top_layout.addWidget(save_button)
         top_layout.addWidget(settings_button)
+        top_layout.addWidget(voice_library_button)
         self.progress_label = QLabel("0 / 7 steps hoàn thành")
         self.progress_label.setObjectName("progressLabel")
         top_layout.addWidget(self.progress_label)
@@ -165,6 +169,9 @@ class MainWindow(QMainWindow):
         dialog.credentials_changed.connect(self._refresh_provider_pages)
         dialog.exec()
         self._refresh_provider_pages()
+
+    def _open_voice_library(self) -> None:
+        VoiceLibraryDialog(self).exec()
 
     def _refresh_provider_pages(self) -> None:
         page = self.pages.get(StepId.TRANSLATE)

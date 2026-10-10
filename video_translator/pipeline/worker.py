@@ -57,6 +57,7 @@ class AudioSyncAiRewriteWorker(QThread):
         manifest_path: str,
         selected_texts: dict[int, str],
         model_name: str,
+        provider_name: str,
         source_language: str,
         target_language: str,
     ) -> None:
@@ -64,6 +65,7 @@ class AudioSyncAiRewriteWorker(QThread):
         self.manifest_path = manifest_path
         self.selected_texts = selected_texts
         self.model_name = model_name
+        self.provider_name = provider_name
         self.source_language = source_language
         self.target_language = target_language
 
@@ -76,6 +78,7 @@ class AudioSyncAiRewriteWorker(QThread):
                 self.source_language,
                 self.target_language,
                 self.progress_changed.emit,
+                self.provider_name,
             )
         except Exception as exc:
             self.failed.emit(error_payload(exc))

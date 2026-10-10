@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Callable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from ..config.gemini import GEMINI_RECOMMENDED_MODEL_IDS
+from ..config.gemini import GEMINI_PROVIDER_NAME, GEMINI_RECOMMENDED_MODEL_IDS
 from ..errors import UserFacingError
 from ..models import Segment
 from .credential_service import GOOGLE_GEMINI, CredentialService
+from .translation_provider import (
+    DialogueAnalysisResponse,
+    TranslationResponse,
+    TranslationReviewResponse,
+    register_translation_provider,
+)
 
 
 ProgressCallback = Callable[[int, str], None]
@@ -20,10 +25,60 @@ class TranslationItem(BaseModel):
     translated_text: str
 
 
-@dataclass(frozen=True, slots=True)
-class TranslationResponse:
-    translations: dict[int, str]
-    credential_source: str
+class SpeakerGuidance(BaseModel):
+    speaker_id: str
+    character_name: str = ""
+    story_role: str
+    gender: str = "unknown"
+    age_group: str = "unknown"
+    personality: str = ""
+    default_self_reference: str
+    speech_style: str = ""
+    voice_description: str = ""
+    confidence: str = "low"
+    notes: str = ""
+
+
+class AddressingRule(BaseModel):
+    from_speaker: str
+    to_speaker: str
+    from_segment: int = 0
+    to_segment: int = 0
+    relationship: str = ""
+    self_reference: str
+    direct_address: str
+    third_person_reference: str
+    confidence: str = "low"
+
+
+class TerminologyGuidance(BaseModel):
+    source_term: str
+    preferred_translation: str
+
+
+class ProperNameGuidance(BaseModel):
+    source_name: str
+    name_type: str
+    canonical_name: str
+    confidence: str = "low"
+    notes: str = ""
+
+
+class DialogueProfileOutput(BaseModel):
+    story_summary: str = ""
+    global_style: str = "natural spoken dialogue"
+    speakers: list[SpeakerGuidance] = Field(default_factory=list)
+    addressing_rules: list[AddressingRule] = Field(default_factory=list)
+    terminology: list[TerminologyGuidance] = Field(default_factory=list)
+    names: list[ProperNameGuidance] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+
+
+class TranslationCorrection(BaseModel):
+    id: int
+    corrected_text: str
+    issue_type: str
+    reason: str = ""
 
 
 class GoogleTranslationService:
@@ -62,6 +117,242 @@ class GoogleTranslationService:
         finally:
             cls._close(client)
         return credential.source
+
+    @staticmethod
+    def _segment_payload(segment: Segment, include_translation: bool = False) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "id": segment.id,
+            "start_seconds": round(segment.start, 3),
+            "end_seconds": round(segment.end, 3),
+            "duration_seconds": round(segment.duration, 3),
+            "speaker_id": segment.speaker_id,
+            "source_text": segment.source_text,
+        }
+        if include_translation:
+            payload["current_translation"] = segment.translated_text
+        return payload
+
+    def _generate_structured(
+        self,
+        content: object,
+        system_instruction: str,
+        response_schema: object,
+        temperature: float,
+    ) -> tuple[object, str]:
+        client, credential = self._client()
+        try:
+            from google.genai import types
+
+            response = client.models.generate_content(
+                model=self.model_name,
+                contents=json.dumps(content, ensure_ascii=False),
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    response_mime_type="application/json",
+                    response_schema=response_schema,
+                    temperature=temperature,
+                ),
+            )
+            if response.parsed is None:
+                raise ValueError("Gemini không trả về structured output.")
+            return response.parsed, credential.source
+        except UserFacingError:
+            raise
+        except Exception as exc:
+            raise self._friendly_error(exc, credential.value) from exc
+        finally:
+            self._close(client)
+
+    @staticmethod
+    def _translation_map(parsed: object) -> dict[int, str]:
+        if not isinstance(parsed, list):
+            raise ValueError("Provider không trả về danh sách bản dịch.")
+        result: dict[int, str] = {}
+        for item in parsed:
+            value = item if isinstance(item, TranslationItem) else TranslationItem.model_validate(item)
+            text = value.translated_text.strip()
+            if value.id in result or not text:
+                raise ValueError(f"ID trùng hoặc bản dịch trống: {value.id}")
+            result[value.id] = text
+        return result
+
+    @staticmethod
+    def _full_transcript(segments: list[Segment], include_translation: bool = False) -> str:
+        lines: list[str] = []
+        for segment in segments:
+            speaker_id = segment.speaker_id.strip() or "SPEAKER_UNKNOWN"
+            line = f"[{segment.id:04d}] {speaker_id}: {segment.source_text.strip()}"
+            if include_translation:
+                line += f"\n         TRANSLATION: {segment.translated_text.strip()}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _speaker_context(
+        segments: list[Segment],
+        dialogue_profile: dict[str, object],
+    ) -> list[dict[str, object]]:
+        raw_speakers = dialogue_profile.get("speakers")
+        speakers = raw_speakers if isinstance(raw_speakers, list) else []
+        by_id = {
+            str(item.get("speaker_id", "")): item
+            for item in speakers
+            if isinstance(item, dict)
+        }
+        raw_rules = dialogue_profile.get("addressing_rules")
+        rules = raw_rules if isinstance(raw_rules, list) else []
+        return [
+            {
+                "id": segment.id,
+                "speaker_id": segment.speaker_id.strip() or "SPEAKER_UNKNOWN",
+                "speaker_profile": by_id.get(
+                    segment.speaker_id.strip() or "SPEAKER_UNKNOWN",
+                    {},
+                ),
+                "addressing_rules": [
+                    rule
+                    for rule in rules
+                    if isinstance(rule, dict)
+                    and str(rule.get("from_speaker", ""))
+                    == (segment.speaker_id.strip() or "SPEAKER_UNKNOWN")
+                    and (
+                        int(rule.get("from_segment", 0) or 0) <= segment.id
+                        and (
+                            int(rule.get("to_segment", 0) or 0) == 0
+                            or segment.id <= int(rule.get("to_segment", 0) or 0)
+                        )
+                    )
+                ],
+            }
+            for segment in segments
+        ]
+
+    def analyze_dialogue(
+        self,
+        segments: list[Segment],
+        proper_name_policy: dict[str, object],
+    ) -> DialogueAnalysisResponse:
+        content = {
+            "source_language": self.source_language,
+            "target_language": self.target_language,
+            "proper_name_policy": proper_name_policy,
+            "full_transcript": self._full_transcript(segments),
+        }
+        parsed, credential_source = self._generate_structured(
+            content,
+            (
+                "Read full_transcript from beginning to end as one complete story before answering. Every line "
+                "has [segment ID] SPEAKER_ID: source dialogue. Return exactly one speakers entry for every "
+                "distinct SPEAKER_ID, with that character's identity, role in the whole story, personality, "
+                "speech style, provider-neutral voice_description, and an exact default_self_reference written "
+                "in target_language. Describe only voice traits supported by the dialogue (such as perceived "
+                "age, pitch, energy, pace, and tone); do not choose a provider-specific voice or model. Infer directed "
+                "addressing_rules only from story evidence. Every self_reference, direct_address, and "
+                "third_person_reference must be an exact expression in target_language, never source-language "
+                "text or an explanation in parentheses. Use from_segment/to_segment when a relationship or form "
+                "of address changes during the story; zero means the entire story. Record uncertainty instead "
+                "of inventing gender, age, status, or relationships. Build a stable terminology guide. "
+                "Build one cumulative names list for people, places, organizations, and other proper names. "
+                "For each source name, choose exactly one canonical_name by following proper_name_policy. "
+                "Chinese personal names use Sino-Vietnamese readings only when the policy requests them; use "
+                "Pinyin when requested. Restore a foreign name represented in Chinese characters only when "
+                "confident, and record uncertainty otherwise. The profile will be the binding role and pronoun "
+                "reference for all later translation batches, so make it complete and internally consistent."
+            ),
+            DialogueProfileOutput,
+            0.1,
+        )
+        profile = (
+            parsed.model_dump(mode="json")
+            if isinstance(parsed, DialogueProfileOutput)
+            else DialogueProfileOutput.model_validate(parsed).model_dump(mode="json")
+        )
+        return DialogueAnalysisResponse(profile, credential_source)
+
+    def translate_batch(
+        self,
+        segments: list[Segment],
+        dialogue_profile: dict[str, object],
+        context_before: list[Segment],
+        context_after: list[Segment],
+        previous_translations: dict[int, str],
+        proper_name_policy: dict[str, object],
+    ) -> TranslationResponse:
+        content = {
+            "dialogue_profile": dialogue_profile,
+            "proper_name_policy": proper_name_policy,
+            "speaker_context_for_targets": self._speaker_context(segments, dialogue_profile),
+            "context_before": [self._segment_payload(segment) for segment in context_before],
+            "segments_to_translate": [self._segment_payload(segment) for segment in segments],
+            "context_after": [self._segment_payload(segment) for segment in context_after],
+            "previous_translations": previous_translations,
+        }
+        parsed, credential_source = self._generate_structured(
+            content,
+            (
+                "You are a professional audiovisual subtitle translator. Translate only segments_to_translate "
+                f"from {self.source_language} to {self.target_language}. For each target ID, read its exact "
+                "speaker_profile and applicable addressing_rules in speaker_context_for_targets before writing. "
+                "Treat those roles and target-language forms of address as binding. Follow dialogue_profile "
+                "consistently for pronouns, relationships, speech style, names, and "
+                "terminology. For every proper name present in dialogue_profile.names, copy its canonical_name "
+                "exactly and never romanize, translate, or reinterpret that name again inside a batch. For an "
+                "unlisted proper name, follow proper_name_policy consistently. Use context_before, context_after, "
+                "and previous_translations only as context. "
+                "Treat duration_seconds as a soft timing target: prefer concise, natural spoken phrasing, but "
+                "never lose essential meaning, negation, intent, names, numbers, or cause-and-effect. Do not "
+                "invent a relationship when the profile marks it uncertain. Return every target ID exactly once. "
+                "Do not return context IDs and do not merge, split, omit, explain, or add IDs."
+            ),
+            list[TranslationItem],
+            0.2,
+        )
+        return TranslationResponse(self._translation_map(parsed), credential_source)
+
+    def review_translation(
+        self,
+        segments: list[Segment],
+        dialogue_profile: dict[str, object],
+        proper_name_policy: dict[str, object],
+    ) -> TranslationReviewResponse:
+        content = {
+            "dialogue_profile": dialogue_profile,
+            "proper_name_policy": proper_name_policy,
+            "speaker_context": self._speaker_context(segments, dialogue_profile),
+            "full_translation": self._full_transcript(segments, include_translation=True),
+        }
+        parsed, credential_source = self._generate_structured(
+            content,
+            (
+                "You are the final consistency auditor for a complete audiovisual translation. Read "
+                "full_translation from beginning to end, compare every line with dialogue_profile and its "
+                "speaker_context, and find only real errors in role, self-reference, direct address, third-person "
+                "reference, names, terminology, meaning, or batch continuity. Return corrections only for IDs "
+                "that must change; return an empty JSON list when no correction is needed. Do not rewrite correct "
+                f"lines merely for style. Every corrected_text must be natural spoken {self.target_language} and "
+                "preserve the source meaning and timing awareness. "
+                "Replace every proper-name variant with the exact canonical_name from dialogue_profile.names; "
+                "do not independently transliterate a listed name. Use proper_name_policy only for names that "
+                "are not yet listed. Never add an ID that is absent from full_translation."
+            ),
+            list[TranslationCorrection],
+            0.1,
+        )
+        if not isinstance(parsed, list):
+            raise ValueError("Provider không trả về danh sách correction.")
+        corrections: dict[int, str] = {}
+        issues: list[dict[str, object]] = []
+        for item in parsed:
+            value = (
+                item
+                if isinstance(item, TranslationCorrection)
+                else TranslationCorrection.model_validate(item)
+            )
+            if value.id in corrections or not value.corrected_text.strip():
+                raise ValueError(f"Correction trùng hoặc trống: {value.id}")
+            corrections[value.id] = value.corrected_text.strip()
+            issues.append(value.model_dump(mode="json"))
+        return TranslationReviewResponse(corrections, issues, credential_source)
 
     def translate(
         self,
@@ -334,3 +625,13 @@ class GoogleTranslationService:
             "Mở chi tiết kỹ thuật, kiểm tra cấu hình provider rồi thử lại.",
             detail,
         )
+
+
+register_translation_provider(
+    GEMINI_PROVIDER_NAME,
+    lambda model_name, source_language, target_language: GoogleTranslationService(
+        model_name,
+        source_language,
+        target_language,
+    ),
+)

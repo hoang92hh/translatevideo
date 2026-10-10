@@ -11,6 +11,7 @@ from ...config.gemini import (
     GEMINI_PROVIDER_NAME,
     gemini_model_note,
 )
+from ...config.translation import PROPER_NAME_MODE_AUTO, PROPER_NAME_MODES
 from ...errors import UserFacingError
 from ...models import StepId
 from ...services.credential_service import GOOGLE_GEMINI, CredentialService
@@ -30,6 +31,19 @@ class TranslationStepPage(StepPage):
             ProviderSpec(GEMINI_PROVIDER_NAME, (
                 FieldSpec("model", "Model", "choice", GEMINI_DEFAULT_MODEL, GEMINI_MODEL_IDS),
                 FieldSpec("batch_size", "Segments / batch", "int", 30),
+                FieldSpec(
+                    "proper_name_mode",
+                    "Quy tắc tên riêng",
+                    "choice",
+                    PROPER_NAME_MODE_AUTO,
+                    PROPER_NAME_MODES,
+                ),
+                FieldSpec(
+                    "context_consistency",
+                    "Chế độ chất lượng — phân tích toàn truyện và kiểm duyệt",
+                    "bool",
+                    True,
+                ),
             )),
             ProviderSpec("Local Model — Chưa triển khai", available=False),
             ProviderSpec("Provider khác (sắp có)", available=False),
@@ -155,8 +169,15 @@ class TranslationStepPage(StepPage):
             return
         status = "Sẵn sàng" if Path(candidate.path).is_file() else "File không tồn tại"
         model = str(candidate.metadata.get("model", ""))
+        quality_mode = (
+            "Chất lượng: phân tích toàn truyện"
+            if candidate.metadata.get("context_consistency", False)
+            else "Nhanh: dịch một lượt"
+        )
         details = " · ".join(
-            value for value in (model, f"{candidate.segment_count} segment", status) if value
+            value
+            for value in (model, f"{candidate.segment_count} segment", quality_mode, status)
+            if value
         )
         self.translation_info.setText(f"{details}\n{candidate.path}")
 

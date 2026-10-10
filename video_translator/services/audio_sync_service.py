@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from ..config.gemini import GEMINI_PROVIDER_NAME
 from ..errors import UserFacingError
 from .ffmpeg_service import FFmpegError, FFmpegService
-from .google_translation_service import GoogleTranslationService
 from .text_to_speech_service import TextToSpeechService
+from .translation_provider import create_translation_provider
 
 
 ProgressCallback = Callable[[int, str], None]
@@ -718,6 +719,7 @@ def rewrite_sync_drafts(
     source_language: str,
     target_language: str,
     progress: ProgressCallback | None = None,
+    provider_name: str = GEMINI_PROVIDER_NAME,
 ) -> dict[str, Any]:
     manifest, payload = _read_manifest(manifest_path, "Step 5")
     if not selected_texts:
@@ -758,7 +760,13 @@ def rewrite_sync_drafts(
             "Không có segment cần AI chỉnh sửa",
             "Không có dữ liệu hợp lệ trong các segment đã chọn.",
         )
-    response = GoogleTranslationService(model_name, source_language, target_language).rewrite_for_timing(
+    provider = create_translation_provider(
+        provider_name,
+        model_name,
+        source_language,
+        target_language,
+    )
+    response = provider.rewrite_for_timing(
         chosen,
         progress=progress,
     )

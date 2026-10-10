@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config.gemini import GEMINI_DEFAULT_MODEL
+from ..config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ..models import STEP_ORDER, StepId, StepStatus
 from ..pipeline import MockPipeline
 from ..pipeline.worker import (
@@ -221,6 +221,11 @@ class MainWindow(QMainWindow):
             "translation_manifest": translation_candidate.path,
             "transcript_id": transcript_id if transcript_manifest else "",
             "transcript_manifest": transcript_manifest,
+            "provider": str(
+                translation_payload.get("provider")
+                or translation_candidate.metadata.get("provider")
+                or GEMINI_PROVIDER_NAME
+            ),
             "model": str(translation_payload.get("model") or translation_candidate.metadata.get("model") or GEMINI_DEFAULT_MODEL),
         }
 
@@ -253,12 +258,14 @@ class MainWindow(QMainWindow):
         if not chain:
             return
         page = self.pages[StepId.SYNC]
-        page.set_repair_busy(True, f"Đang gửi {len(selected_texts)} segment tới Gemini…")
-        page.set_progress(0, "Đang chuẩn bị nội dung cho Gemini…")
+        provider_name = chain["provider"]
+        page.set_repair_busy(True, f"Đang gửi {len(selected_texts)} segment tới {provider_name}…")
+        page.set_progress(0, f"Đang chuẩn bị nội dung cho {provider_name}…")
         worker = AudioSyncAiRewriteWorker(
             chain["sync_manifest"],
             selected_texts,
             chain["model"],
+            provider_name,
             self.state.source_language,
             self.state.target_language,
         )

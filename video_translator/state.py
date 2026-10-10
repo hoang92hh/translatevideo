@@ -645,11 +645,15 @@ class ProjectState(QObject):
             **{key: value for key, value in payload.items() if key != "segments"},
             "translation_candidate_id": candidate.id,
         }
+        artifacts = {"translation": str(path)}
+        dialogue_profile_path = str(metadata.get("dialogue_profile_path", "")).strip()
+        if dialogue_profile_path and Path(dialogue_profile_path).is_file():
+            artifacts["dialogue_profile"] = dialogue_profile_path
         summary = candidate.summary or f"Bản dịch {candidate.label} · {len(segments)} segment"
         return StepResult(
             step=StepId.TRANSLATE,
             summary=summary,
-            artifacts={"translation": str(path)},
+            artifacts=artifacts,
             segments=segments,
             metadata=metadata,
         )

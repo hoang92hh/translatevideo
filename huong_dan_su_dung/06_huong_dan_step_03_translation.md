@@ -27,6 +27,17 @@ biến môi trường trên máy đó.
 - `gemini-2.5-flash`: model legacy; Google giới hạn quyền truy cập đối với project mới.
 - `gemini-2.5-pro`: model legacy cho suy luận phức tạp, thường không cần cho subtitle và có chi phí cao.
 - `Segments / batch`: số segment gửi trong mỗi request. Giá trị mặc định là 30.
+- `Quy tắc tên riêng`:
+  - `Tự động theo ngôn ngữ đích` (mặc định): Chinese → Vietnamese ưu tiên âm
+    Hán–Việt; Chinese → English, Spanish và các ngôn ngữ khác ưu tiên Pinyin cho
+    tên người. Địa danh ưu tiên cách gọi phổ biến trong ngôn ngữ đích khi có.
+  - `Hán–Việt`: buộc dùng âm Hán–Việt.
+  - `Pinyin`: buộc dùng Hanyu Pinyin không dấu thanh.
+  - `Giữ nguyên chữ gốc`: không chuyển tự tên riêng.
+- `Chế độ chất lượng — phân tích toàn truyện và kiểm duyệt`: bật mặc định. Khi bật,
+  Step 03 gửi toàn bộ transcript để phân tích mọi speaker trước khi dịch và kiểm duyệt
+  lại toàn bộ kết quả sau khi dịch. Tắt tùy chọn này để dùng luồng một lượt nhanh và
+  tiết kiệm request hơn; khi đó không có hồ sơ nhân vật do AI phân tích.
 
 Local Model hiện chưa được triển khai và bị vô hiệu hóa trên giao diện.
 
@@ -52,6 +63,29 @@ quota và rate limit riêng; project đã bật billing sẽ tính phí theo tok
 
 ## 3. Quy tắc xử lý
 
+Khi bật chế độ nhất quán toàn bộ hội thoại, Step 03 chạy ba giai đoạn:
+
+1. **Phân tích tổng quan**: AI nhận toàn bộ transcript theo thứ tự thời gian trong một
+   request, với mỗi dòng có dạng `[ID] SPEAKER_ID: câu nguồn`. AI trả một phần tử trong
+   `speakers` cho từng nhân vật, cùng `addressing_rules` có hướng từ người nói tới người
+   được nói với, phong cách nói, cách tự xưng/cách gọi, thuật ngữ và bảng `names` ánh xạ
+   chữ gốc sang đúng một `canonical_name`. `speaker_id` giữ đúng một người xuyên suốt;
+   AI không được tự khẳng định giới tính, tuổi hoặc quan hệ khi nội dung chưa đủ dữ kiện.
+2. **Dịch theo batch**: mỗi batch nhận hồ sơ chung, ba segment trước/sau ở ranh giới và
+   các bản dịch gần nhất. Mỗi segment còn nhận đúng hồ sơ của speaker và các quy tắc
+   xưng hô đang áp dụng cho đoạn đó. Tên đã có trong bảng phải dùng nguyên
+   `canonical_name`, không được tự chuyển lại trong từng batch. AI chỉ trả về ID thuộc
+   batch cần dịch.
+3. **Kiểm duyệt tổng thể**: AI nhận toàn bộ source và bản dịch trong một request, đối
+   chiếu lại với hồ sơ speaker. AI chỉ trả về các ID thật sự cần sửa cùng loại lỗi và lý
+   do; câu đúng không bị viết lại chỉ vì khác phong cách.
+
+Ứng dụng điều phối, chia batch, kiểm tra ID và lưu kết quả; provider AI xử lý phần hiểu
+ngữ nghĩa. Workflow dùng giao diện `TranslationProvider` trung lập. Gemini là provider
+đang hoạt động; extension ChatGPT, Claude hoặc provider khác có thể đăng ký adapter cùng
+giao diện về sau mà không thay đổi ba giai đoạn. Ứng dụng không đọc hoặc lưu token/cookie
+phiên đăng nhập của extension.
+
 Gemini nhận từng batch dưới dạng danh sách gồm ID, source text, timestamp bắt đầu,
 timestamp kết thúc và thời lượng của từng segment, sau đó trả structured JSON.
 Ứng dụng kiểm tra mỗi ID xuất hiện đúng một lần, không thiếu, không dư và không có
@@ -70,22 +104,40 @@ Chiến lược `timing_aware_v1` coi thời lượng là mục tiêu mềm. Gem
 Đây không phải giới hạn cứng theo số ký tự. Step 05 vẫn là nơi đo thời lượng audio
 TTS thực tế và liệt kê các segment cần sửa thêm.
 
-Nếu một batch lỗi, Step 03 dừng toàn bộ lần chạy. Không candidate mới nào được
+Chế độ ba giai đoạn tạo thêm request phân tích và rà soát nên tốn thời gian và chi phí
+hơn luồng một lượt. Nếu một batch ở bất kỳ giai đoạn nào lỗi, Step 03 dừng toàn bộ lần chạy. Không candidate mới nào được
 đăng ký và input Step 04 thành công trước đó được giữ nguyên.
 
 ## 4. Output và lựa chọn cho Step 04
 
-Mỗi lần chạy thành công tạo một thư mục riêng:
+Mỗi lần chạy thành công tạo một thư mục riêng với hai file:
 
 ```text
 <project>\translations\translate-YYYYMMDD-HHMMSS-xxxxxx\translated_segments.json
+<project>\translations\translate-YYYYMMDD-HHMMSS-xxxxxx\dialogue_profile.json
 ```
+
+`dialogue_profile.json` lưu kết quả structured JSON đã chuẩn hóa từ giai đoạn phân
+tích, gồm toàn bộ `speakers`, `addressing_rules`, bảng tên, thuật ngữ, ngôn ngữ,
+provider và model. Mỗi speaker có thêm `voice_description` trung lập provider để tham
+chiếu tuổi giọng, cao độ, năng lượng, nhịp và sắc thái khi ánh xạ sang lựa chọn giọng ở
+Step 04; Step 04 hiện chưa tự động chọn giọng từ hồ sơ.
+Khi chạy chế độ nhanh, file vẫn được tạo nhưng có `analysis_performed: false` và hồ sơ
+trống.
 
 Output mới tự động trở thành input Step 04. Khối **Chọn output bản dịch** cho phép:
 
 - Chọn bản dịch cũ và nhấn **Dùng làm input Step 4**.
 - Mở file hoặc thư mục chứa file.
 - Xóa riêng một candidate.
+
+Manifest phiên bản 3 lưu thêm `dialogue_profile`, `proper_name_policy`, trạng thái
+`context_consistency`, chiến lược dịch, số request của từng giai đoạn và danh sách lỗi
+đã được giai đoạn kiểm duyệt sửa để đối chiếu.
+Candidate phiên bản cũ vẫn được đọc bình thường.
+
+Khi cần thay đổi prompt, payload, schema hoặc chỉ dẫn gửi provider, xem bản đồ file/hàm
+trong [`translation_prompt_customization.md`](../reference/translation_prompt_customization.md).
 
 Khi đổi input Step 04, kết quả từ Step 04 trở về sau được đánh dấu cần chạy lại.
 Nếu xóa candidate đang dùng, ứng dụng chọn candidate hợp lệ mới nhất còn lại.

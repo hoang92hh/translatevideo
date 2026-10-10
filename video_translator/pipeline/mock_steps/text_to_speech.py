@@ -66,16 +66,21 @@ def execute(
         )
 
     segments = previous_segments(state, StepId.TTS)
-    if not segments or any(not segment.translated_text.strip() for segment in segments):
+    if not segments or any(
+        segment.duration > 0 and not segment.translated_text.strip()
+        for segment in segments
+    ):
         raise UserFacingError(
             "Bản dịch đầu vào không hợp lệ",
-            "Step 4 cần tất cả segment có nội dung translated_text.",
+            "Step 4 cần translated_text cho mọi segment có thời lượng lớn hơn 0.",
             "Chọn lại một output hợp lệ từ Step 3.",
         )
+    active_segments = [segment for segment in segments if segment.duration > 0]
+    skipped_segments = [segment for segment in segments if segment.duration <= 0]
     if provider in {VIENEU_PROVIDER, MELO_OPENVOICE_PROVIDER} and (speaker_profiles or shared_profile):
         missing_speakers: list[str] = []
         for speaker_id in dict.fromkeys(
-            segment.speaker_id.strip() or "SPEAKER_UNKNOWN" for segment in segments
+            segment.speaker_id.strip() or "SPEAKER_UNKNOWN" for segment in active_segments
         ):
             profile = (
                 speaker_profiles.get(speaker_id, {})
@@ -102,45 +107,59 @@ def execute(
     manifest_path = candidate_folder / "manifest.json"
     segment_folder.mkdir(parents=True, exist_ok=False)
     try:
-        synthesis = TextToSpeechService(provider, settings).synthesize(
-            [
-                {
-                    "id": segment.id,
-                    "text": segment.translated_text,
-                    "speaker_id": segment.speaker_id,
-                }
-                for segment in segments
-            ],
-            segment_folder,
-            state.target_language,
-            progress,
-        )
-        for segment, audio_file, segment_result in zip(
-            segments, synthesis.files, synthesis.segments, strict=True
-        ):
-            segment.audio_file = audio_file
-            segment.tts_provider = segment_result.provider
-            segment.tts_model = segment_result.model
-            segment.tts_voice = segment_result.voice
-            segment.tts_reference_voice = segment_result.reference_voice
-            segment.tts_actual_device = segment_result.actual_device
+        synthesis = None
+        if active_segments:
+            synthesis = TextToSpeechService(provider, settings).synthesize(
+                [
+                    {
+                        "id": segment.id,
+                        "text": segment.translated_text,
+                        "speaker_id": segment.speaker_id,
+                    }
+                    for segment in active_segments
+                ],
+                segment_folder,
+                state.target_language,
+                progress,
+            )
+            for segment, audio_file, segment_result in zip(
+                active_segments, synthesis.files, synthesis.segments, strict=True
+            ):
+                segment.audio_file = audio_file
+                segment.tts_provider = segment_result.provider
+                segment.tts_model = segment_result.model
+                segment.tts_voice = segment_result.voice
+                segment.tts_reference_voice = segment_result.reference_voice
+                segment.tts_actual_device = segment_result.actual_device
+        for segment in skipped_segments:
+            segment.audio_file = ""
+            segment.tts_provider = ""
+            segment.tts_model = ""
+            segment.tts_voice = ""
+            segment.tts_reference_voice = ""
+            segment.tts_actual_device = ""
         resolved_profiles: dict[str, dict[str, str]] = {}
-        for segment, segment_result in zip(segments, synthesis.segments, strict=True):
-            speaker_id = segment.speaker_id.strip() or "SPEAKER_UNKNOWN"
-            resolved_profiles[speaker_id] = {
-                "provider": segment_result.provider,
-                "model": segment_result.model,
-                "voice": segment_result.voice,
-                "reference_voice": segment_result.reference_voice,
-                "actual_device": segment_result.actual_device,
-            }
+        if synthesis:
+            for segment, segment_result in zip(active_segments, synthesis.segments, strict=True):
+                speaker_id = segment.speaker_id.strip() or "SPEAKER_UNKNOWN"
+                resolved_profiles[speaker_id] = {
+                    "provider": segment_result.provider,
+                    "model": segment_result.model,
+                    "voice": segment_result.voice,
+                    "reference_voice": segment_result.reference_voice,
+                    "actual_device": segment_result.actual_device,
+                }
+        model = synthesis.model if synthesis else str(settings.get("model", provider))
+        voice = synthesis.voice if synthesis else str(settings.get("voice", "Default"))
+        requested_device = synthesis.requested_device if synthesis else str(settings.get("device", "Auto"))
+        actual_device = synthesis.actual_device if synthesis else ""
         metadata = {
             "provider": provider,
-            "model": synthesis.model,
-            "voice": synthesis.voice,
+            "model": model,
+            "voice": voice,
             "speed": float(settings.get("speed", 1.0)),
-            "requested_device": synthesis.requested_device,
-            "actual_device": synthesis.actual_device,
+            "requested_device": requested_device,
+            "actual_device": actual_device,
             "reference_voice": reference,
             "speaker_profiles": resolved_profiles,
             "requested_speaker_profiles": speaker_profiles,
@@ -150,6 +169,8 @@ def execute(
             "source_translation_candidate_id": state.selected_translation_candidate_id,
             "tts_candidate_id": candidate_id,
             "recommended_tts_candidate_id": candidate_id,
+            "generated_segment_count": len(active_segments),
+            "skipped_segment_count": len(skipped_segments),
         }
         payload = {
             "version": 2,
@@ -171,6 +192,7 @@ def execute(
                     "tts_voice": segment.tts_voice,
                     "tts_reference_voice": segment.tts_reference_voice,
                     "tts_actual_device": segment.tts_actual_device,
+                    "tts_skipped": segment.duration <= 0,
                 }
                 for segment in segments
             ],
@@ -182,15 +204,17 @@ def execute(
         shutil.rmtree(candidate_folder, ignore_errors=True)
         raise
 
-    summary = f"Đã tạo {len(segments)} file giọng nói · {synthesis.model} · {synthesis.actual_device}"
+    summary = f"Đã tạo {len(active_segments)} file giọng nói · bỏ qua {len(skipped_segments)} segment 0 giây · {model}"
+    if actual_device:
+        summary += f" · {actual_device}"
     candidate = TtsCandidate(
         id=candidate_id,
-        label=f"{synthesis.model} · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
+        label=f"{model} · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
         created_at=now.isoformat(timespec="seconds"),
         path=str(manifest_path),
         folder=str(candidate_folder),
         provider=provider,
-        voice=synthesis.voice,
+        voice=voice,
         segment_count=len(segments),
         summary=summary,
         metadata=metadata,

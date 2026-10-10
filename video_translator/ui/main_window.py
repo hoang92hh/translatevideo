@@ -191,11 +191,18 @@ class MainWindow(QMainWindow):
             if not translation_candidate or not Path(translation_candidate.path).is_file():
                 raise ValueError("Không tìm thấy candidate Step 3 nguồn.")
             translation_payload = json.loads(Path(translation_candidate.path).read_text(encoding="utf-8"))
+            transcript_id = str(translation_payload.get("source_transcript_candidate_id", ""))
+            transcript_candidate = self.state.transcript_candidate(transcript_id)
+            transcript_manifest = (
+                transcript_candidate.path
+                if transcript_candidate and Path(transcript_candidate.path).is_file()
+                else ""
+            )
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             QMessageBox.warning(
                 self,
                 "Chuỗi candidate không hợp lệ",
-                f"Không thể nối candidate Step 3 → Step 4 → Step 5 để cập nhật tại chỗ.\n{exc}",
+                f"Không thể nối candidate Step 2 → Step 3 → Step 4 → Step 5 để cập nhật tại chỗ.\n{exc}",
             )
             return None
         return {
@@ -205,6 +212,8 @@ class MainWindow(QMainWindow):
             "tts_manifest": tts_candidate.path,
             "translation_id": translation_id,
             "translation_manifest": translation_candidate.path,
+            "transcript_id": transcript_id if transcript_manifest else "",
+            "transcript_manifest": transcript_manifest,
             "model": str(translation_payload.get("model") or translation_candidate.metadata.get("model") or GEMINI_DEFAULT_MODEL),
         }
 
@@ -272,7 +281,9 @@ class MainWindow(QMainWindow):
         worker.finished.connect(finished)
         QTimer.singleShot(100, worker.start)
 
-    def _repair_sync_segments(self, candidate_id: str, edited_texts: dict[int, str]) -> None:
+    def _repair_sync_segments(
+        self, candidate_id: str, segment_updates: dict[int, dict[str, object]]
+    ) -> None:
         if self.active_workers:
             QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ tác vụ hiện tại hoàn thành.")
             return
@@ -282,12 +293,13 @@ class MainWindow(QMainWindow):
         page = self.pages[StepId.SYNC]
         page.prepare_run()
         page.set_repair_busy(True, "Đang tạo lại voice cho các segment đã chọn…")
-        page.set_progress(0, "Đang chuẩn bị cập nhật Step 3 → Step 4 → Step 5…")
+        page.set_progress(0, "Đang chuẩn bị cập nhật thời gian/speaker/nội dung từ Step 2 → Step 5…")
         worker = AudioSyncBatchRepairWorker(
             chain["sync_manifest"],
             chain["tts_manifest"],
             chain["translation_manifest"],
-            edited_texts,
+            chain["transcript_manifest"],
+            segment_updates,
             self.state.target_language,
         )
         self.active_workers.add(worker)
@@ -296,6 +308,7 @@ class MainWindow(QMainWindow):
         def succeeded(result: object) -> None:
             data = result if isinstance(result, dict) else {}
             refreshed = self.state.refresh_repaired_chain(
+                chain["transcript_id"],
                 chain["translation_id"],
                 chain["tts_id"],
                 candidate_id,

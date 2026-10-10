@@ -74,8 +74,13 @@ class AudioSyncStepPage(StepPage):
         self.error_info.setWordWrap(True)
         layout.addWidget(self.error_info)
         self.repair_button = QPushButton("Mở danh sách xử lý segment")
-        self.repair_button.clicked.connect(self._open_repair_dialog)
+        self.repair_button.clicked.connect(lambda: self._open_repair_dialog(show_all=False))
         layout.addWidget(self.repair_button)
+        self.edit_segments_button = QPushButton("Sửa voice/speaker segment khác")
+        self.edit_segments_button.clicked.connect(
+            lambda: self._open_repair_dialog(show_all=True)
+        )
+        layout.addWidget(self.edit_segments_button)
 
         actions = QHBoxLayout()
         use_button = QPushButton("Dùng làm input Step 6")
@@ -173,12 +178,13 @@ class AudioSyncStepPage(StepPage):
         else:
             self.error_info.setText("Không có segment đang lỗi.")
             self.repair_button.setEnabled(False)
+        self.edit_segments_button.setEnabled(bool(valid) and not self._repairing)
 
     def _segments(self) -> list[dict[str, object]]:
         raw = self._candidate_payload.get("segments", [])
         return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
-    def _open_repair_dialog(self) -> None:
+    def _open_repair_dialog(self, show_all: bool = False) -> None:
         candidate = self._current_candidate()
         if not candidate or not self._candidate_payload:
             return
@@ -186,7 +192,13 @@ class AudioSyncStepPage(StepPage):
             self._repair_dialog.raise_()
             self._repair_dialog.activateWindow()
             return
-        dialog = SyncRepairDialog(candidate.id, dict(self._candidate_payload), self)
+        dialog = SyncRepairDialog(
+            candidate.id,
+            dict(self._candidate_payload),
+            self,
+            show_all=show_all,
+            target_language=self.state.target_language,
+        )
         dialog.ai_requested.connect(lambda texts: self.ai_rewrite_requested.emit(candidate.id, texts))
         dialog.process_requested.connect(lambda texts: self.batch_repair_requested.emit(candidate.id, texts))
         dialog.borrow_requested.connect(lambda: self.neighbor_borrow_requested.emit(candidate.id))
@@ -236,6 +248,10 @@ class AudioSyncStepPage(StepPage):
             for item in self._segments()
         ))
         self.repair_button.setText("Đang xử lý…" if busy else "Mở danh sách xử lý segment")
+        self.edit_segments_button.setEnabled(not busy and bool(self._segments()))
+        self.edit_segments_button.setText(
+            "Đang xử lý…" if busy else "Sửa voice/speaker segment khác"
+        )
         if self._repair_dialog:
             self._repair_dialog.set_busy(busy, message)
         self.run_button.setEnabled(not busy and self.state.can_run(StepId.SYNC))

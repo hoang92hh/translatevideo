@@ -650,23 +650,61 @@ def repair_sync_segments(
     sync_manifest_path: str,
     tts_manifest_path: str,
     translation_manifest_path: str,
-    edited_texts: dict[int, str],
+    transcript_manifest_path: str,
+    segment_updates: dict[int, dict[str, Any]],
     target_language: str,
     progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     sync_manifest, sync_payload = _read_manifest(sync_manifest_path, "Step 5")
     tts_manifest, tts_payload = _read_manifest(tts_manifest_path, "Step 4")
     translation_manifest, translation_payload = _read_manifest(translation_manifest_path, "Step 3")
+    transcript_manifest: Path | None = None
+    transcript_payload: dict[str, Any] | None = None
+    transcript_segments: dict[int, dict[str, Any]] = {}
+    if transcript_manifest_path:
+        transcript_manifest, transcript_payload = _read_manifest(transcript_manifest_path, "Step 2")
+        transcript_segments = _segment_map(transcript_payload)
     sync_segments = _segment_map(sync_payload)
     tts_segments = _segment_map(tts_payload)
     translation_segments = _segment_map(translation_payload)
 
-    normalized = {int(segment_id): text.strip() for segment_id, text in edited_texts.items()}
-    empty_ids = [segment_id for segment_id, text in normalized.items() if not text]
+    normalized: dict[int, dict[str, Any]] = {}
+    for raw_segment_id, raw_update in segment_updates.items():
+        if not isinstance(raw_update, dict):
+            continue
+        try:
+            normalized[int(raw_segment_id)] = {
+                "translated_text": str(raw_update.get("translated_text", "")).strip(),
+                "speaker_id": str(raw_update.get("speaker_id", "")).strip(),
+                "start": max(0.0, float(raw_update.get("start", 0.0))),
+                "end": max(0.0, float(raw_update.get("end", 0.0))),
+            }
+        except (TypeError, ValueError) as exc:
+            raise AudioSyncError("Thời gian segment chưa hợp lệ", str(exc)) from exc
+    invalid_time_ids = [
+        segment_id
+        for segment_id, update in normalized.items()
+        if float(update["end"]) < float(update["start"])
+    ]
+    if invalid_time_ids:
+        raise AudioSyncError(
+            "Thời gian segment chưa hợp lệ",
+            "End phải lớn hơn hoặc bằng Start cho: "
+            + ", ".join(f"#{item:04d}" for item in invalid_time_ids),
+        )
+    empty_ids = [
+        segment_id
+        for segment_id, update in normalized.items()
+        if (
+            float(update["start"]) < float(update["end"])
+            and (not update["translated_text"] or not update["speaker_id"])
+        )
+    ]
     if empty_ids:
         raise AudioSyncError(
             "Nội dung sửa đang trống",
-            "Các segment chưa có nội dung: " + ", ".join(f"#{item:04d}" for item in empty_ids),
+            "Segment có thời lượng lớn hơn 0 phải có speaker và nội dung: "
+            + ", ".join(f"#{item:04d}" for item in empty_ids),
         )
     target_ids = [segment_id for segment_id in normalized if segment_id in sync_segments]
     if not target_ids:
@@ -677,12 +715,16 @@ def repair_sync_segments(
     missing = [
         segment_id
         for segment_id in target_ids
-        if segment_id not in tts_segments or segment_id not in translation_segments
+        if (
+            segment_id not in tts_segments
+            or segment_id not in translation_segments
+            or (transcript_segments and segment_id not in transcript_segments)
+        )
     ]
     if missing:
         raise AudioSyncError(
             "Chuỗi candidate không đồng nhất",
-            "Không tìm thấy segment tương ứng ở Step 3 hoặc Step 4: "
+            "Không tìm thấy segment tương ứng trong chuỗi Step 2–4: "
             + ", ".join(f"#{item:04d}" for item in missing),
         )
 
@@ -694,36 +736,92 @@ def repair_sync_segments(
             "Candidate Step 5 không lưu provider TTS nguồn.",
             "Chạy lại Step 5 từ một output Step 4 hợp lệ.",
         )
+    for segment_id in target_ids:
+        update = normalized[segment_id]
+        start = float(update["start"])
+        end = float(update["end"])
+        text = str(update["translated_text"])
+        speaker_id = str(update["speaker_id"])
+        duration = end - start
+        sync_segment = sync_segments[segment_id]
+        previous_speaker = str(sync_segment.get("speaker_id", ""))
+        related = [translation_segments[segment_id], tts_segments[segment_id], sync_segments[segment_id]]
+        if transcript_segments:
+            related.append(transcript_segments[segment_id])
+        for item in related:
+            item["start"] = start
+            item["end"] = end
+            item["speaker_id"] = speaker_id
+            item["updated_in_step_5"] = True
+        translation_segments[segment_id]["translated_text"] = text
+        tts_segments[segment_id]["translated_text"] = text
+        sync_segment.setdefault("original_translated_text", str(sync_segment.get("translated_text", "")))
+        previous_draft = str(sync_segment.get("draft_text") or sync_segment.get("translated_text", "")).strip()
+        if text != previous_draft:
+            sync_segment["edit_source"] = "manual"
+        sync_segment["draft_text"] = text
+        sync_segment["translated_text"] = text
+        sync_segment["target_duration"] = duration
+        sync_segment["allowed_duration"] = duration
+        sync_segment["corrected_in_step_5"] = True
+        sync_segment["speaker_corrected_in_step_5"] = speaker_id != previous_speaker
+
+    active_ids = [
+        segment_id
+        for segment_id in target_ids
+        if float(normalized[segment_id]["end"]) > float(normalized[segment_id]["start"])
+    ]
+    zero_duration_ids = [segment_id for segment_id in target_ids if segment_id not in active_ids]
+    for segment_id in zero_duration_ids:
+        sync_segment = sync_segments[segment_id]
+        start = float(normalized[segment_id]["start"])
+        sync_segment["synced_audio_file"] = ""
+        sync_segment["status"] = "ready"
+        sync_segment["repair_status"] = "resolved"
+        sync_segment["error"] = ""
+        sync_segment["input_duration"] = 0.0
+        sync_segment["prepared_duration"] = 0.0
+        sync_segment["output_duration"] = 0.0
+        sync_segment["speed_factor"] = 1.0
+        sync_segment["play_duration"] = 0.0
+        sync_segment["adjusted_start"] = start
+        sync_segment["adjusted_end"] = start
+        sync_segment["sync_strategy"] = "zero_duration"
+        sync_segment["borrowed_before"] = 0.0
+        sync_segment["borrowed_after"] = 0.0
+        sync_segment["used_gap"] = 0.0
+
     repair_root = sync_manifest.parent / "repairs" / f"batch-{uuid4().hex[:8]}"
-    repair_root.mkdir(parents=True, exist_ok=False)
-    if progress:
-        progress(3, f"Đang tạo lại voice cho {len(target_ids)} segment…")
-    synthesis = TextToSpeechService(provider, settings).synthesize(
-        [
-            {
-                "id": segment_id,
-                "text": normalized[segment_id],
-                "speaker_id": str(
-                    tts_segments[segment_id].get(
-                        "speaker_id", sync_segments[segment_id].get("speaker_id", "")
-                    )
-                ),
-            }
-            for segment_id in target_ids
-        ],
-        repair_root,
-        target_language,
-        (lambda value, message: progress(min(55, 3 + value // 2), message)) if progress else None,
-    )
+    synthesis = None
+    if active_ids:
+        repair_root.mkdir(parents=True, exist_ok=False)
+        if progress:
+            progress(3, f"Đang tạo lại voice cho {len(active_ids)} segment…")
+        synthesis = TextToSpeechService(provider, settings).synthesize(
+            [
+                {
+                    "id": segment_id,
+                    "text": normalized[segment_id]["translated_text"],
+                    "speaker_id": normalized[segment_id]["speaker_id"],
+                }
+                for segment_id in active_ids
+            ],
+            repair_root,
+            target_language,
+            (lambda value, message: progress(min(55, 3 + value // 2), message)) if progress else None,
+        )
     service = AudioSyncService()
     outcomes: dict[int, SyncOutcome | None] = {}
     errors: dict[int, str] = {}
+    generated_files = synthesis.files if synthesis else []
+    generated_segments = synthesis.segments if synthesis else []
     for index, (segment_id, generated_path, segment_result) in enumerate(
-        zip(target_ids, synthesis.files, synthesis.segments, strict=True), start=1
+        zip(active_ids, generated_files, generated_segments, strict=True), start=1
     ):
         sync_segment = sync_segments[segment_id]
         tts_segment = tts_segments[segment_id]
-        text = normalized[segment_id]
+        text = str(normalized[segment_id]["translated_text"])
+        speaker_id = str(normalized[segment_id]["speaker_id"])
         target_audio_value = str(tts_segment.get("audio_file", "")).strip()
         if target_audio_value:
             target_audio = Path(target_audio_value)
@@ -735,7 +833,7 @@ def repair_sync_segments(
         audio_part.replace(target_audio)
         synced_audio = sync_manifest.parent / "segments" / f"segment_{segment_id:04d}.wav"
         if progress:
-            progress(55 + round(index / len(target_ids) * 35), f"Đang đồng bộ segment #{segment_id:04d}…")
+            progress(55 + round(index / len(active_ids) * 35), f"Đang đồng bộ segment #{segment_id:04d}…")
         try:
             outcome = service.synchronize_file(
                 target_audio,
@@ -751,10 +849,6 @@ def repair_sync_segments(
             synced_audio.unlink(missing_ok=True)
         outcomes[segment_id] = outcome
 
-        translation_segment = translation_segments[segment_id]
-        translation_segment["translated_text"] = text
-        translation_segment["updated_in_step_5"] = True
-        tts_segment["translated_text"] = text
         tts_segment["audio_file"] = str(target_audio)
         tts_segment["tts_provider"] = segment_result.provider
         tts_segment["tts_model"] = segment_result.model
@@ -762,12 +856,6 @@ def repair_sync_segments(
         tts_segment["tts_reference_voice"] = segment_result.reference_voice
         tts_segment["tts_actual_device"] = segment_result.actual_device
         tts_segment["updated_in_step_5"] = True
-        sync_segment.setdefault("original_translated_text", str(sync_segment.get("translated_text", "")))
-        previous_draft = str(sync_segment.get("draft_text") or sync_segment.get("translated_text", "")).strip()
-        if text != previous_draft:
-            sync_segment["edit_source"] = "manual"
-        sync_segment["draft_text"] = text
-        sync_segment["translated_text"] = text
         sync_segment["audio_file"] = str(target_audio)
         sync_segment["tts_provider"] = segment_result.provider
         sync_segment["tts_model"] = segment_result.model
@@ -777,7 +865,6 @@ def repair_sync_segments(
         sync_segment["sync_output_file"] = str(synced_audio)
         sync_segment["timeline_output_file"] = str(synced_audio)
         sync_segment["repair_attempts"] = int(sync_segment.get("repair_attempts", 0)) + 1
-        sync_segment["corrected_in_step_5"] = True
         sync_segment.setdefault("initial_sync_error", sync_segment.get("status") != "ready")
         legacy_seq = 1 if sync_segment.get("status") != "ready" or sync_segment.get("corrected_in_step_5") else 0
         current_seq = int(sync_segment.get("seq", legacy_seq))
@@ -817,11 +904,14 @@ def repair_sync_segments(
     sync_payload["repair_revision"] = int(sync_payload.get("repair_revision", 0)) + 1
     translation_payload["repair_revision"] = int(translation_payload.get("repair_revision", 0)) + 1
     tts_payload["repair_revision"] = int(tts_payload.get("repair_revision", 0)) + 1
+    if transcript_manifest and transcript_payload is not None:
+        transcript_payload["repair_revision"] = int(transcript_payload.get("repair_revision", 0)) + 1
+        _write_manifest(transcript_manifest, transcript_payload)
     _write_manifest(translation_manifest, translation_payload)
     _write_manifest(tts_manifest, tts_payload)
     _write_manifest(sync_manifest, sync_payload)
     if progress:
-        progress(100, "Đã cập nhật chuỗi Step 3 → Step 4 → Step 5.")
+        progress(100, "Đã cập nhật thời gian/speaker/nội dung trong chuỗi Step 2 → Step 5.")
     resolved = sum(1 for segment_id in target_ids if sync_segments[segment_id].get("status") == "ready")
     return {
         "candidate_id": str(sync_payload.get("candidate_id", "")),

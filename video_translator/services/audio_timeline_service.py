@@ -72,6 +72,10 @@ class AudioTimelineService:
         timeline: list[dict[str, Any]] = []
         previous_end = 0.0
         for item in segments:
+            source_start = float(item.get("start", 0.0))
+            source_end = float(item.get("end", source_start))
+            if source_end <= source_start:
+                continue
             audio = Path(str(item.get("synced_audio_file", "")))
             if not audio.is_file():
                 raise AudioTimelineError(
@@ -96,6 +100,12 @@ class AudioTimelineService:
                 )
             timeline.append({"id": int(item.get("id", 0)), "audio": audio, "start": start, "duration": duration, "end": end})
             previous_end = end
+
+        if not timeline:
+            raise AudioTimelineError(
+                "Timeline trống",
+                "Step 6 không còn segment có thời lượng lớn hơn 0 để ghép.",
+            )
 
         timeline_end = max(float(item["end"]) for item in timeline)
         if timeline_end > video_duration + 0.002:

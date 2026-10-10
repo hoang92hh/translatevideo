@@ -13,6 +13,7 @@ Mỗi segment sử dụng:
 - `play_duration`: thời lượng voice được phát.
 
 Trước khi ghép, ứng dụng kiểm tra file voice tồn tại, thời lượng hợp lệ và các voice không chồng nhau.
+Segment có `end` bằng `start` được giữ trong manifest để bảo toàn dữ liệu nhưng được Step 06 bỏ qua, không yêu cầu file voice và không đưa vào track audio.
 
 ## Đầu ra
 

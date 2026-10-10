@@ -93,14 +93,16 @@ class AudioSyncBatchRepairWorker(QThread):
         sync_manifest_path: str,
         tts_manifest_path: str,
         translation_manifest_path: str,
-        edited_texts: dict[int, str],
+        transcript_manifest_path: str,
+        segment_updates: dict[int, dict[str, object]],
         target_language: str,
     ) -> None:
         super().__init__()
         self.sync_manifest_path = sync_manifest_path
         self.tts_manifest_path = tts_manifest_path
         self.translation_manifest_path = translation_manifest_path
-        self.edited_texts = edited_texts
+        self.transcript_manifest_path = transcript_manifest_path
+        self.segment_updates = segment_updates
         self.target_language = target_language
 
     def run(self) -> None:
@@ -109,7 +111,8 @@ class AudioSyncBatchRepairWorker(QThread):
                 self.sync_manifest_path,
                 self.tts_manifest_path,
                 self.translation_manifest_path,
-                self.edited_texts,
+                self.transcript_manifest_path,
+                self.segment_updates,
                 self.target_language,
                 self.progress_changed.emit,
             )

@@ -1,6 +1,6 @@
 # Step 04 — Text to Speech
 
-Step 4 đọc output bản dịch đang được chọn ở Step 3 và tạo một file WAV mono PCM 48 kHz cho từng segment. Mỗi lần chạy thành công tạo thư mục riêng:
+Step 4 đọc output bản dịch đang được chọn ở Step 3 và tạo một file WAV mono PCM 48 kHz cho từng segment có `end > start`. Segment có `end == start` vẫn được giữ trong manifest nhưng không được gửi tới provider TTS và không tạo WAV. Mỗi lần chạy thành công tạo thư mục riêng:
 
 ```text
 generated_audio/<tts-candidate-id>/
@@ -17,6 +17,8 @@ Output thành công mới nhất tự động trở thành input Step 5. Có th�
 Chọn một output TTS, sau đó chọn segment trong danh sách hoặc bấm trực tiếp vào dòng tương ứng trong bảng. Trình phát hỗ trợ đoạn trước/tiếp theo, phát/tạm dừng, dừng, tua và chỉnh âm lượng.
 
 Việc nghe thử hoặc chuyển qua lại giữa các output không thay đổi pipeline. Chỉ nút **Dùng làm input Step 5** mới đặt output đang xem thành đầu vào của bước kế tiếp. Nếu chất lượng chưa đạt, có thể đổi model, giọng, tốc độ hoặc thiết bị rồi chạy lại Step 4; output thành công cũ vẫn được giữ để so sánh.
+
+Segment 0 giây được phép có `translated_text` rỗng và hiển thị trạng thái **Bỏ qua — segment 0 giây** trong phần nghe thử. Manifest ghi `tts_skipped: true`; Step 5 và Step 6 tiếp tục bỏ qua segment này nhưng vẫn bảo toàn ID, timestamp, speaker và `merge_parts`.
 
 ## Ánh xạ giọng theo speaker
 

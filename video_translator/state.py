@@ -635,7 +635,10 @@ class ProjectState(QObject):
             ]
         except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
             return None
-        if not segments or any(not segment.translated_text.strip() for segment in segments):
+        if not segments or any(
+            segment.end > segment.start and not segment.translated_text.strip()
+            for segment in segments
+        ):
             return None
         metadata = {
             **candidate.metadata,
@@ -779,7 +782,10 @@ class ProjectState(QObject):
             ]
         except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
             return None
-        if not segments or any(not item.audio_file or not Path(item.audio_file).is_file() for item in segments):
+        if not segments or any(
+            item.duration > 0 and (not item.audio_file or not Path(item.audio_file).is_file())
+            for item in segments
+        ):
             return None
         metadata = {
             **candidate.metadata,
@@ -843,20 +849,36 @@ class ProjectState(QObject):
 
     def refresh_repaired_chain(
         self,
+        transcript_candidate_id: str,
         translation_candidate_id: str,
         tts_candidate_id: str,
         sync_candidate_id: str,
     ) -> bool:
+        transcript = (
+            self._result_from_transcript(transcript_candidate_id)
+            if transcript_candidate_id
+            else None
+        )
         translation = self._result_from_translation(translation_candidate_id)
         tts = self._result_from_tts(tts_candidate_id)
         if translation is None or tts is None:
             return False
+        transcript_candidate = self.transcript_candidate(transcript_candidate_id)
         translation_candidate = self.translation_candidate(translation_candidate_id)
         tts_candidate = self.tts_candidate(tts_candidate_id)
+        if transcript_candidate and transcript:
+            transcript_candidate.metadata = dict(transcript.metadata)
         if translation_candidate:
             translation_candidate.metadata = dict(translation.metadata)
         if tts_candidate:
             tts_candidate.metadata = dict(tts.metadata)
+        if (
+            transcript
+            and self.selected_transcript_candidate_id == transcript_candidate_id
+        ):
+            self.results[StepId.STT] = transcript
+            self.statuses[StepId.STT] = StepStatus.DONE
+            self.step_changed.emit(StepId.STT.value)
         if self.selected_translation_candidate_id == translation_candidate_id:
             self.results[StepId.TRANSLATE] = translation
             self.statuses[StepId.TRANSLATE] = StepStatus.DONE
@@ -962,8 +984,9 @@ class ProjectState(QObject):
         error_count = int(payload.get("error_count", 0))
         if not segments or (error_count and not allow_incomplete):
             return None
-        ready_files = [Path(item.synced_audio_file) for item in segments if item.synced_audio_file]
-        expected_ready = len(segments) - error_count
+        playable_segments = [item for item in segments if item.end > item.start]
+        ready_files = [Path(item.synced_audio_file) for item in playable_segments if item.synced_audio_file]
+        expected_ready = len(playable_segments) - error_count
         if len(ready_files) != expected_ready or any(not item.is_file() for item in ready_files):
             return None
         metadata = {

@@ -35,10 +35,13 @@ def execute(
     progress: Callable[[int, str], None] | None = None,
 ) -> StepResult:
     segments = previous_segments(state, StepId.SYNC)
-    if not segments or any(not item.audio_file or not Path(item.audio_file).is_file() for item in segments):
+    if not segments or any(
+        item.duration > 0 and (not item.audio_file or not Path(item.audio_file).is_file())
+        for item in segments
+    ):
         raise UserFacingError(
             "Output Step 4 không hợp lệ",
-            "Step 5 cần một file audio còn tồn tại cho mọi segment.",
+            "Step 5 cần một file audio còn tồn tại cho mọi segment có thời lượng lớn hơn 0.",
             "Chọn lại output Step 4 hợp lệ rồi chạy Step 5.",
         )
     max_speed = max(1.0, float(settings.get("max_speed", 1.35)))
@@ -55,6 +58,54 @@ def execute(
     error_count = 0
     try:
         for index, segment in enumerate(segments):
+            if segment.duration <= 0:
+                segment.synced_audio_file = ""
+                payload_segments.append(
+                    {
+                        "id": segment.id,
+                        "start": segment.start,
+                        "end": segment.end,
+                        "speaker_id": segment.speaker_id,
+                        "merge_parts": segment.merge_parts,
+                        "source_text": segment.source_text,
+                        "original_translated_text": segment.translated_text,
+                        "translated_text": segment.translated_text,
+                        "audio_file": "",
+                        "tts_provider": segment.tts_provider,
+                        "tts_model": segment.tts_model,
+                        "tts_voice": segment.tts_voice,
+                        "tts_reference_voice": segment.tts_reference_voice,
+                        "tts_actual_device": segment.tts_actual_device,
+                        "tts_skipped": True,
+                        "synced_audio_file": "",
+                        "sync_output_file": "",
+                        "timeline_output_file": "",
+                        "target_duration": 0.0,
+                        "allowed_duration": 0.0,
+                        "input_duration": 0.0,
+                        "prepared_duration": 0.0,
+                        "output_duration": 0.0,
+                        "speed_factor": 1.0,
+                        "play_duration": 0.0,
+                        "adjusted_start": segment.start,
+                        "adjusted_end": segment.start,
+                        "sync_strategy": "zero_duration",
+                        "borrowed_before": 0.0,
+                        "borrowed_after": 0.0,
+                        "used_gap": 0.0,
+                        "status": "ready",
+                        "initial_sync_error": False,
+                        "seq": 0,
+                        "repair_status": "not_needed",
+                        "draft_text": segment.translated_text,
+                        "edit_source": "original",
+                        "repair_attempts": 0,
+                        "ai_rewrite_count": 0,
+                        "error": "",
+                        "corrected_in_step_5": False,
+                    }
+                )
+                continue
             target_duration = max(0.01, segment.duration)
             next_start = segments[index + 1].start if index + 1 < len(segments) else segment.end
             gap_duration = max(0.0, next_start - segment.end) if use_gap else 0.0

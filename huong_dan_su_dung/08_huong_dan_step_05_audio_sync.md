@@ -34,6 +34,8 @@ synchronized_audio/<sync-candidate-id>/
 
 Candidate không có lỗi mới tự động trở thành input mặc định của Step 6. Có thể chọn lại candidate hoàn chỉnh cũ bằng nút **Dùng làm input Step 6**. Nếu lần chạy mới còn segment lỗi, input Step 6 đã chọn trước đó không thay đổi.
 
+Khi chạy Step 5 từ một candidate Step 4 mới, segment có `end == start` được ghi vào manifest ở trạng thái sẵn sàng với `play_duration = 0`; Step 5 không yêu cầu WAV và không thực hiện đồng bộ audio cho segment đó.
+
 ## Segment quá dài
 
 Khi audio cần tốc độ cao hơn giới hạn đã chọn, Step 5 không cắt mất lời và không cho âm thanh chồng lên segment kế tiếp. Tool vẫn xử lý những segment còn lại rồi liệt kê riêng các segment cần sửa.
@@ -48,7 +50,9 @@ Khi audio cần tốc độ cao hơn giới hạn đã chọn, Step 5 không c�
 5. Bấm **Tạo lại voice và đồng bộ** để xử lý đúng các row được chọn, kể cả segment đang lỗi, đã xử lý hoặc segment lân cận bình thường. Nếu chưa chọn checkbox, ứng dụng không gọi TTS.
 6. Với các row vẫn quá dài và không thể rút gọn thêm, bấm **Vay thời gian lân cận**. Nút này xử lý toàn bộ row chưa đạt trong danh sách, không phụ thuộc checkbox và không gọi AI/TTS.
 
-Nút AI chỉ cập nhật nội dung nháp, chưa tạo audio. Nút tạo voice sử dụng lại provider, tốc độ, thiết bị và đúng cấu hình giọng theo `speaker_id` của candidate Step 4, sau đó cập nhật trực tiếp segment được chọn trong candidate Step 3, Step 4 và Step 5 hiện tại. Nếu một segment lân cận vốn bình thường có voice mới quá dài, nó trở thành segment lỗi và `seq` tăng. Nút vay thời gian render lại cả segment lỗi B và segment lân cận cần dùng (B+C, A+B+C hoặc A+B) từ voice mới nhất ở Step 4. Thao tác sửa lỗi không tạo candidate mới.
+Popup cho phép sửa trực tiếp `start`, `end`, đổi `speaker_id` bằng danh sách ở cột **Speaker** và sửa bản dịch ở cột **Nội dung hiện tại**. Nút AI chỉ cập nhật nội dung nháp, chưa tạo audio. Nút tạo voice sử dụng lại provider, tốc độ, thiết bị và đúng cấu hình giọng theo speaker đã chọn, sau đó cập nhật trực tiếp thời gian/speaker ở Step 2, thời gian/speaker/nội dung ở Step 3, thời gian/audio ở Step 4 và kết quả đồng bộ Step 5. `id`, số lượng segment và `merge_parts` không thay đổi. `End` phải lớn hơn hoặc bằng `Start`. Segment có `End > Start` bắt buộc phải có speaker và nội dung. Khi `End == Start`, nội dung được phép để trống; segment vẫn được giữ trong manifest nhưng không tạo lại voice và có thời lượng phát bằng 0. Nếu một segment lân cận vốn bình thường có voice mới quá dài, nó trở thành segment lỗi và `seq` tăng. Nút vay thời gian render lại cả segment lỗi B và segment lân cận cần dùng (B+C, A+B+C hoặc A+B) từ voice mới nhất ở Step 4. Thao tác sửa lỗi không tạo candidate mới.
+
+Ngoài danh sách lỗi, nút **Sửa voice/speaker segment khác** mở cùng popup với toàn bộ segment. Nhập từ khóa trong nội dung bản dịch rồi bấm **Tìm kiếm**; kết quả luôn gồm segment khớp cùng segment liền trước và liền sau. Có thể tìm nhiều lần mà không mất checkbox, speaker hoặc nội dung đang sửa. Nhập từ khóa rỗng để trở lại danh sách mặc định. **Chọn tất cả** chỉ chọn các hàng đang hiển thị, trong khi những checkbox đã chọn ở kết quả trước vẫn được giữ và được tính trong dòng tổng kết.
 
 Nếu còn bất kỳ row nào ở trạng thái **Chờ tạo voice**, ứng dụng yêu cầu tạo voice trước khi vay thời gian để tránh sử dụng nhầm voice cũ.
 
@@ -69,6 +73,7 @@ Bản sửa được áp dụng cho đúng chuỗi candidate nguồn của outpu
 
 - `original_translated_text` giữ câu dịch trước lần sửa đầu tiên.
 - Nội dung hiện tại được ghi vào segment tương ứng của candidate Step 3.
+- `start` và `end` được ghi vào segment tương ứng trong chuỗi candidate Step 2–5.
 - Voice mới thay thế audio của segment tương ứng trong candidate Step 4.
 - Kết quả đồng bộ và trạng thái được cập nhật trong candidate Step 5.
 - Các candidate khác không bị thay đổi.

@@ -348,7 +348,16 @@ class TextToSpeechStepPage(StepPage):
             self.player.setSource(QUrl())
         segment_id = int(segment.get("id", index + 1))
         text = str(segment.get("translated_text", "")).strip()
-        status = "Sẵn sàng để nghe" if exists else "File audio không tồn tại"
+        start = float(segment.get("start", 0.0))
+        end = float(segment.get("end", start))
+        skipped = bool(segment.get("tts_skipped", False)) or end <= start
+        status = (
+            "Bỏ qua — segment 0 giây"
+            if skipped
+            else "Sẵn sàng để nghe"
+            if exists
+            else "File audio không tồn tại"
+        )
         self.segment_info.setText(f"Segment #{segment_id:04d} · {status}\n{text}\n{path}")
         self.play_button.setEnabled(exists)
         self.stop_button.setEnabled(exists)

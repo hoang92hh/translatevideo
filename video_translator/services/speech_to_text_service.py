@@ -54,12 +54,14 @@ class SpeechToTextService:
         language: str | None,
         vad_filter: bool,
         diarization: bool = True,
+        merge_adjacent_segments: bool = True,
     ) -> None:
         self.model_name = model_name
         self.device = device
         self.language = language
         self.vad_filter = vad_filter
         self.diarization = diarization
+        self.merge_adjacent_segments = merge_adjacent_segments
 
     @staticmethod
     def model_cache_dir() -> Path:
@@ -172,7 +174,11 @@ class SpeechToTextService:
                     "Speaker diarization không trả về khoảng lời nói hợp lệ.",
                     "Kiểm tra file Voice và thư mục model local rồi chạy lại Step 2.",
                 )
-            segments = self._segments_with_speakers(normalized, turns)
+            segments = self._segments_with_speakers(
+                normalized,
+                turns,
+                merge_adjacent_segments=self.merge_adjacent_segments,
+            )
             diarization_model = str(diarization_result.get("model", ""))
             diarization_device = str(diarization_result.get("actual_device", ""))
             diarization_turns = tuple(dict(turn) for turn in turns)
@@ -357,6 +363,7 @@ class SpeechToTextService:
         cls,
         raw_segments: list[dict[str, object]],
         turns: list[dict[str, object]],
+        merge_adjacent_segments: bool = True,
     ) -> list[TranscriptSegment]:
         word_units: list[dict[str, object]] = []
         for raw_index, raw in enumerate(raw_segments):
@@ -437,7 +444,8 @@ class SpeechToTextService:
                 "text": str(item["text"]).strip(),
             }
             if (
-                merged
+                merge_adjacent_segments
+                and merged
                 and merged[-1]["speaker_id"] == item["speaker_id"]
                 and abs(start - float(merged[-1]["end"])) < 0.01
             ):

@@ -42,6 +42,7 @@ def execute(
         language=LANGUAGE_CODES.get(state.source_language),
         vad_filter=bool(settings.get("vad", True)),
         diarization=bool(settings.get("diarization", True)),
+        merge_adjacent_segments=bool(settings.get("merge_adjacent_segments", True)),
     )
     transcription = service.transcribe(input_audio, progress)
     segments = [
@@ -75,6 +76,7 @@ def execute(
         "device_selection_reason": transcription.device_selection_reason,
         "vad_filter": bool(settings.get("vad", True)),
         "diarization": bool(settings.get("diarization", True)),
+        "merge_adjacent_segments": bool(settings.get("merge_adjacent_segments", True)),
         "diarization_model": transcription.diarization_model,
         "diarization_device": transcription.diarization_device,
         "diarization_turns": [dict(turn) for turn in transcription.diarization_turns],
@@ -128,6 +130,7 @@ def execute(
         "device_selection_reason": transcription.device_selection_reason,
         "duration_seconds": transcription.duration_seconds,
         "diarization": bool(settings.get("diarization", True)),
+        "merge_adjacent_segments": bool(settings.get("merge_adjacent_segments", True)),
         "diarization_model": transcription.diarization_model,
         "diarization_device": transcription.diarization_device,
         "diarization_smoothing": {

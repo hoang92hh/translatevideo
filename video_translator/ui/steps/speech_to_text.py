@@ -31,6 +31,12 @@ class SpeechToTextStepPage(StepPage):
                 DEVICE_FIELD,
                 FieldSpec("vad", "Voice activity detection", "bool", True),
                 FieldSpec("diarization", "Speaker diarization", "bool", True),
+                FieldSpec(
+                    "merge_adjacent_segments",
+                    "Gộp segment liền kề cùng speaker",
+                    "bool",
+                    True,
+                ),
             )),
             ProviderSpec("Provider khác (sắp có)", available=False),
         ),

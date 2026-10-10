@@ -81,11 +81,19 @@ chọn `Original` thay cho `Voice`.
   khả dụng. Worker đọc WAV bằng SoundFile và truyền waveform trong bộ nhớ cho
   pyannote, không phụ thuộc TorchCodec/FFmpeg để giải mã audio ở bước diarization.
 
-Sau khi gắn speaker ở cấp từ, Step 02 gộp hai đoạn liền kề khi chúng có cùng
-`speaker_id` và `abs(next.start - current.end) < 0,01` giây. Độ lệch đúng `0,01`
-giây trở lên tạo segment mới. Segment mới được đánh lại ID từ `1`.
+### Gộp segment liền kề cùng speaker
 
-Mỗi segment gộp lưu `merge_parts`. Mỗi phần gồm `source_id`, `start`, `end`,
+Tùy chọn này được bật mặc định để giữ hành vi gộp hiện có. Sau khi gắn speaker ở
+cấp từ, Step 02 gộp hai đoạn liền kề khi chúng có cùng `speaker_id` và
+`abs(next.start - current.end) < 0,01` giây. Độ lệch đúng `0,01` giây trở lên tạo
+segment mới.
+
+Khi tắt tùy chọn, từng đoạn nguyên tử sau bước làm mượt speaker được giữ riêng,
+kể cả khi hai đoạn liền kề có cùng `speaker_id` và không có khoảng cách thời gian.
+Trong cả hai chế độ, segment được đánh lại ID tuần tự từ `1`.
+
+Mỗi segment lưu `merge_parts`; ở chế độ không gộp, danh sách này chỉ có một phần.
+Mỗi phần gồm `source_id`, `start`, `end`,
 `duration`, `text` và `ratio`; `ratio` được chuẩn hóa theo thời lượng để tổng bằng
 `1.0`. Dữ liệu này được giữ qua các step sau và dùng để chia subtitle.
 

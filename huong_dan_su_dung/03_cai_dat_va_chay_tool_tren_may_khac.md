@@ -343,11 +343,20 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_melo_runtime.ps1 -Device 
 
 Script tạo runtime tại `.runtimes/melo`, cài MeloTTS + OpenVoice và tải checkpoint V2. Không thay đổi `.venv` chính đang dùng cho Step 1–3.
 
+Piper TTS cũng dùng runtime riêng và chỉ chạy CPU/ONNX. Cài runtime bằng:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_piper_runtime.ps1
+```
+
+Script tạo `.runtimes/piper` và cài `piper-tts==1.8.0`, nhưng không tự tải voice. Tải riêng file model `.onnx` cùng file cấu hình có tên tương ứng `.onnx.json`, đặt cạnh nhau rồi chọn model trong Step 4. Nếu dùng runtime ở vị trí khác, đặt biến môi trường `TRANSLANGUAGE_PIPER_PYTHON` tới file Python của runtime đó.
+
 Quy tắc lựa chọn thiết bị của Step 4:
 
 - `Auto`: provider local tự dùng GPU khi CUDA trong đúng runtime đó khả dụng, nếu không dùng CPU.
 - `CPU`: luôn ép CPU.
 - `GPU`: luôn yêu cầu CUDA; nếu không dùng được sẽ báo lỗi và không fallback CPU.
 - Edge TTS chạy online nên không có lựa chọn CPU/GPU.
+- Piper TTS luôn chạy CPU/ONNX; mỗi speaker dùng model đã chọn trong component Piper.
 
 XTTS-v2 được hiển thị nhưng khóa và chưa triển khai. Checkpoint này dùng Coqui Public Model License, chỉ phù hợp mục đích phi thương mại. Xem thêm [`07_huong_dan_step_04_text_to_speech.md`](07_huong_dan_step_04_text_to_speech.md).

@@ -7,7 +7,6 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QComboBox,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -17,19 +16,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...config.tts import (
-    EDGE_TTS_PROVIDER,
-    EDGE_VOICES,
-    MELO_OPENVOICE_PROVIDER,
-    MELO_SPEAKERS,
-    PROVIDER_LICENSE_NOTES,
-    VIENEU_PROVIDER,
-    VIENEU_VOICES,
-    XTTS_V2_PROVIDER,
-)
 from ...models import StepId
-from ..components import Card, FilePicker
-from ..specs import DEVICE_FIELD, FieldSpec, ProviderSpec, StepSpec
+from ..components import Card
+from ..specs import StepSpec
+from ..tts_components import TtsComponentSelector
 from .base import StepPage
 
 
@@ -39,55 +29,25 @@ class TextToSpeechStepPage(StepPage):
         "04",
         "Text to Speech",
         "Tạo một file giọng nói riêng cho mỗi segment.",
-        (
-            ProviderSpec(VIENEU_PROVIDER, (
-                FieldSpec("voice", "Giọng", "choice", "Default", VIENEU_VOICES),
-                FieldSpec("speed", "Tốc độ", "float", 1.0),
-                DEVICE_FIELD,
-                FieldSpec("voice_consent", "Tôi có quyền sử dụng giọng", "bool", False),
-            )),
-            ProviderSpec(MELO_OPENVOICE_PROVIDER, (
-                FieldSpec("voice", "Giọng nền", "choice", "EN-Default", MELO_SPEAKERS),
-                FieldSpec("speed", "Tốc độ", "float", 1.0),
-                DEVICE_FIELD,
-                FieldSpec("voice_consent", "Tôi có quyền sử dụng giọng", "bool", False),
-            )),
-            ProviderSpec(EDGE_TTS_PROVIDER, (
-                FieldSpec("voice", "Giọng online", "choice", "vi-VN-HoaiMyNeural", EDGE_VOICES),
-                FieldSpec("speed", "Tốc độ", "float", 1.0),
-            )),
-            ProviderSpec(XTTS_V2_PROVIDER, available=False),
-        ),
     )
 
     def __init__(self, state) -> None:
         self._loaded_manifest_signature: tuple[str, int, int] | None = None
-        self._speaker_mapping_signature: tuple[str, tuple[str, ...]] | None = None
-        self._speaker_controls: dict[str, tuple[QComboBox, FilePicker | None]] = {}
         super().__init__(state)
         self.table.cellClicked.connect(self._table_segment_clicked)
-        self.provider_panel.provider_combo.currentTextChanged.connect(self._update_provider_note)
-        self._update_provider_note(self.provider_panel.provider_combo.currentText())
 
-    def build_special_card(self) -> Card:
-        card = Card(
-            "Giọng theo người nói",
-            "Ba speaker đầu dùng giọng riêng; mọi speaker còn lại dùng chung một giọng.",
-        )
-        self.speaker_mapping_container = QWidget()
-        self.speaker_mapping_layout = QGridLayout(self.speaker_mapping_container)
-        self.speaker_mapping_layout.setContentsMargins(0, 0, 0, 0)
-        self.speaker_mapping_layout.setSpacing(8)
-        card.content_layout.addWidget(self.speaker_mapping_container)
-        self.provider_note = QLabel()
-        self.provider_note.setObjectName("muted")
-        self.provider_note.setWordWrap(True)
-        card.content_layout.addWidget(self.provider_note)
-        return card
-
-    def _update_provider_note(self, provider: str) -> None:
-        self.provider_note.setText(PROVIDER_LICENSE_NOTES.get(provider, ""))
-        self._rebuild_speaker_mapping(force=True)
+    def _build_settings_column(self) -> QVBoxLayout:
+        column = QVBoxLayout()
+        input_card = Card("Đầu vào", "Kết quả từ step trước được kết nối tự động.")
+        self.input_summary = QLabel()
+        self.input_summary.setObjectName("inputValue")
+        self.input_summary.setWordWrap(True)
+        input_card.content_layout.addWidget(self.input_summary)
+        column.addWidget(input_card)
+        self.tts_selector = TtsComponentSelector()
+        column.addWidget(self.tts_selector)
+        column.addStretch()
+        return column
 
     def _input_speakers(self) -> tuple[str, ...]:
         previous = self.state.previous_result(StepId.TTS)
@@ -100,65 +60,8 @@ class TextToSpeechStepPage(StepPage):
             )
         )
 
-    def _rebuild_speaker_mapping(self, force: bool = False) -> None:
-        if not hasattr(self, "speaker_mapping_layout") or not hasattr(self, "provider_panel"):
-            return
-        provider = self.provider_panel.provider_combo.currentText()
-        speakers = self._input_speakers()
-        signature = (provider, speakers)
-        if not force and signature == self._speaker_mapping_signature:
-            return
-        self._speaker_mapping_signature = signature
-        while self.speaker_mapping_layout.count():
-            item = self.speaker_mapping_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-        self._speaker_controls = {}
-        if not speakers:
-            label = QLabel("Chưa có speaker từ output Step 3 đang chọn.")
-            label.setObjectName("muted")
-            self.speaker_mapping_layout.addWidget(label, 0, 0, 1, 3)
-            return
-
-        is_edge = provider == EDGE_TTS_PROVIDER
-        choices = EDGE_VOICES if is_edge else (MELO_SPEAKERS if provider == MELO_OPENVOICE_PROVIDER else VIENEU_VOICES)
-        self.speaker_mapping_layout.addWidget(QLabel("Speaker"), 0, 0)
-        self.speaker_mapping_layout.addWidget(QLabel("Giọng nền/preset"), 0, 1)
-        if not is_edge:
-            self.speaker_mapping_layout.addWidget(QLabel("File giọng tham chiếu"), 0, 2)
-
-        dedicated = [item for item in ("SPEAKER_00", "SPEAKER_01", "SPEAKER_02") if item in speakers]
-        has_shared = any(item not in {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"} for item in speakers)
-        rows = [(speaker, speaker) for speaker in dedicated]
-        if has_shared:
-            rows.append(("__shared__", "SPEAKER_03 trở đi / khác"))
-        for row, (key, label_text) in enumerate(rows, start=1):
-            label = QLabel(label_text)
-            voice = QComboBox()
-            voice.addItems(choices)
-            reference = None if is_edge else FilePicker()
-            self.speaker_mapping_layout.addWidget(label, row, 0)
-            self.speaker_mapping_layout.addWidget(voice, row, 1)
-            if reference:
-                self.speaker_mapping_layout.addWidget(reference, row, 2)
-            self._speaker_controls[key] = (voice, reference)
-
     def settings(self) -> dict[str, object]:
-        values = super().settings()
-        profiles: dict[str, dict[str, str]] = {}
-        shared_profile: dict[str, str] = {}
-        for speaker_id, (voice, reference) in self._speaker_controls.items():
-            profile = {"voice": voice.currentText()}
-            if reference:
-                profile["reference_voice"] = reference.value()
-            if speaker_id == "__shared__":
-                shared_profile = profile
-            else:
-                profiles[speaker_id] = profile
-        values["speaker_profiles"] = profiles
-        values["shared_speaker_profile"] = shared_profile
-        return values
+        return self.tts_selector.settings()
 
     def build_result_extra(self) -> QWidget:
         container = QWidget()
@@ -242,13 +145,14 @@ class TextToSpeechStepPage(StepPage):
         self._release_player("Đã giải phóng trình phát để chạy lại Step 4…")
 
     def refresh_special(self) -> None:
-        self._rebuild_speaker_mapping()
+        self.tts_selector.set_speakers(self._input_speakers())
         if hasattr(self, "tts_combo") and not getattr(self, "_processing", False):
             self._refresh_outputs()
 
     def set_busy(self, busy: bool) -> None:
         self._processing = busy
         super().set_busy(busy)
+        self.tts_selector.setEnabled(not busy)
         if not busy and hasattr(self, "tts_combo"):
             self._refresh_outputs(prefer_selected=True)
 

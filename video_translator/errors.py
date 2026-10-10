@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import traceback
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,6 +70,6 @@ def error_payload(error: Exception) -> dict[str, str]:
         "Không thể hoàn thành step",
         str(error) or "Đã xảy ra lỗi chưa xác định.",
         "Mở phần chi tiết kỹ thuật và gửi nội dung đó khi cần hỗ trợ.",
-        repr(error),
+        "".join(traceback.format_exception(type(error), error, error.__traceback__)),
     ).as_dict()
 

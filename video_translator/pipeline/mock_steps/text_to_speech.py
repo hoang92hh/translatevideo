@@ -10,6 +10,7 @@ from uuid import uuid4
 from ...config.tts import (
     MELO_LANGUAGE_CODES,
     MELO_OPENVOICE_PROVIDER,
+    PIPER_PROVIDER,
     PROVIDER_LICENSE_NOTES,
     VIENEU_PROVIDER,
 )
@@ -77,6 +78,44 @@ def execute(
         )
     active_segments = [segment for segment in segments if segment.duration > 0]
     skipped_segments = [segment for segment in segments if segment.duration <= 0]
+    if provider == PIPER_PROVIDER:
+        missing_models: list[str] = []
+        invalid_models: list[tuple[str, str]] = []
+        for speaker_id in dict.fromkeys(
+            segment.speaker_id.strip() or "SPEAKER_UNKNOWN" for segment in active_segments
+        ):
+            profile = (
+                speaker_profiles.get(speaker_id, {})
+                if speaker_id in {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"}
+                else shared_profile
+            )
+            model_path = (
+                str(profile.get("model_path") or profile.get("voice") or "").strip()
+                if isinstance(profile, dict)
+                else ""
+            )
+            if not model_path:
+                missing_models.append(speaker_id)
+                continue
+            model_file = Path(model_path)
+            config_file = Path(f"{model_file}.json")
+            if model_file.suffix.lower() != ".onnx" or not model_file.is_file():
+                invalid_models.append((speaker_id, model_path))
+            elif not config_file.is_file():
+                invalid_models.append((speaker_id, str(config_file)))
+        if missing_models:
+            raise UserFacingError(
+                "Chưa chọn đủ model Piper",
+                "Thiếu model cho: " + ", ".join(missing_models),
+                "Chọn file .onnx riêng cho SPEAKER_00–02 và model chung nếu có speaker còn lại.",
+            )
+        if invalid_models:
+            speaker_id, path = invalid_models[0]
+            raise UserFacingError(
+                "Model Piper không hợp lệ",
+                f"{speaker_id}: {path}",
+                "Mỗi model cần file .onnx và file cấu hình .onnx.json nằm cùng thư mục.",
+            )
     if provider in {VIENEU_PROVIDER, MELO_OPENVOICE_PROVIDER} and (speaker_profiles or shared_profile):
         missing_speakers: list[str] = []
         for speaker_id in dict.fromkeys(
@@ -138,7 +177,8 @@ def execute(
             segment.tts_voice = ""
             segment.tts_reference_voice = ""
             segment.tts_actual_device = ""
-        resolved_profiles: dict[str, dict[str, str]] = {}
+        resolved_profiles: dict[str, dict[str, object]] = {}
+        segment_provider_settings: dict[int, dict[str, object]] = {}
         if synthesis:
             for segment, segment_result in zip(active_segments, synthesis.segments, strict=True):
                 speaker_id = segment.speaker_id.strip() or "SPEAKER_UNKNOWN"
@@ -149,6 +189,9 @@ def execute(
                     "reference_voice": segment_result.reference_voice,
                     "actual_device": segment_result.actual_device,
                 }
+                if segment_result.settings:
+                    resolved_profiles[speaker_id]["provider_settings"] = segment_result.settings
+                    segment_provider_settings[segment.id] = segment_result.settings
         model = synthesis.model if synthesis else str(settings.get("model", provider))
         voice = synthesis.voice if synthesis else str(settings.get("voice", "Default"))
         requested_device = synthesis.requested_device if synthesis else str(settings.get("device", "Auto"))
@@ -164,6 +207,17 @@ def execute(
             "speaker_profiles": resolved_profiles,
             "requested_speaker_profiles": speaker_profiles,
             "shared_speaker_profile": shared_profile,
+            "provider_settings": {
+                key: settings[key]
+                for key in (
+                    "length_scale",
+                    "noise_scale",
+                    "noise_w_scale",
+                    "volume",
+                    "normalize_audio",
+                )
+                if key in settings
+            },
             "voice_rights_confirmed": bool(settings.get("voice_consent", False)),
             "license_note": PROVIDER_LICENSE_NOTES.get(provider, ""),
             "source_translation_candidate_id": state.selected_translation_candidate_id,
@@ -192,6 +246,7 @@ def execute(
                     "tts_voice": segment.tts_voice,
                     "tts_reference_voice": segment.tts_reference_voice,
                     "tts_actual_device": segment.tts_actual_device,
+                    "tts_settings": segment_provider_settings.get(segment.id, {}),
                     "tts_skipped": segment.duration <= 0,
                 }
                 for segment in segments

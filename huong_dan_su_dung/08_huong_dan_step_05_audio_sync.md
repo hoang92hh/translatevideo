@@ -6,7 +6,7 @@ Step 5 nhận candidate TTS đang được chọn ở Step 4 và căn thời lư
 
 Với mỗi segment, Step 5 thực hiện theo thứ tự:
 
-1. Cắt khoảng lặng thừa ở đầu và cuối nếu bật **Cắt khoảng lặng đầu/cuối**.
+1. Cắt khoảng lặng thừa ở đầu và cuối nếu bật **Cắt khoảng lặng đầu/cuối**. Tool xử lý riêng hai mép WAV và giữ nguyên các khoảng nghỉ tự nhiên nằm giữa câu; không dừng voice tại khoảng lặng đầu tiên.
 2. Giữ tốc độ tự nhiên nếu audio đã nằm vừa trong khung thời gian.
 3. Tận dụng khoảng trống từ cuối segment hiện tại tới đầu segment kế tiếp nếu bật **Tận dụng khoảng trống kế tiếp**.
 4. Nếu audio vẫn dài, tăng tốc nhưng không vượt quá **Tốc độ tối đa**.

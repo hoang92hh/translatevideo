@@ -20,6 +20,12 @@ Việc nghe thử hoặc chuyển qua lại giữa các output không thay đổ
 
 Segment 0 giây được phép có `translated_text` rỗng và hiển thị trạng thái **Bỏ qua — segment 0 giây** trong phần nghe thử. Manifest ghi `tts_skipped: true`; Step 5 và Step 6 tiếp tục bỏ qua segment này nhưng vẫn bảo toàn ID, timestamp, speaker và `merge_parts`.
 
+## Chọn component TTS và provider mặc định
+
+Mỗi provider có một component cấu hình riêng. Dùng các nút ở đầu khu vực cấu hình như tab con để chuyển giữa VieNeu-TTS, Piper TTS, Melo + OpenVoice và Edge TTS. Giá trị đã nhập của component được giữ khi chuyển qua lại trong phiên ứng dụng hiện tại.
+
+Nút **Đặt làm mặc định** lưu provider đang mở vào thiết lập ứng dụng. Lần sau mở TransLanguage, Step 4 tự chọn provider này; đường dẫn model, audio tham chiếu và các giá trị khác không được lưu qua lần khởi động mới.
+
 ## Ánh xạ giọng theo speaker
 
 Step 4 đọc `speaker_id` từ candidate Step 3 và hiển thị cấu hình giọng cho các speaker thực sự xuất hiện:
@@ -27,12 +33,13 @@ Step 4 đọc `speaker_id` từ candidate Step 3 và hiển thị cấu hình gi
 - `SPEAKER_00`, `SPEAKER_01`, `SPEAKER_02` dùng ba cấu hình riêng.
 - `SPEAKER_03` trở đi, `SPEAKER_UNKNOWN` và speaker khác định dạng dùng chung cấu hình **SPEAKER_03 trở đi / khác**.
 - VieNeu-TTS và MeloTTS/OpenVoice yêu cầu file giọng tham chiếu cho mỗi cấu hình đang được sử dụng.
+- Piper TTS yêu cầu model `.onnx` và file `.onnx.json` tương ứng cho mỗi cấu hình đang được sử dụng.
 - Edge TTS không dùng file tham chiếu; mỗi cấu hình chọn một voice preset.
 - Tốc độ và thiết bị vẫn áp dụng chung cho toàn candidate.
 
 Một speaker luôn dùng cùng cấu hình trong toàn bộ candidate. Manifest phiên bản 2 lưu `speaker_profiles` ở cấp candidate và các trường `tts_provider`, `tts_model`, `tts_voice`, `tts_reference_voice`, `tts_actual_device` trên từng segment. Candidate cũ chỉ có một `reference_voice` vẫn được hỗ trợ.
 
-## Ba provider đã triển khai
+## Bốn provider đã triển khai
 
 ### VieNeu-TTS — Local
 
@@ -41,6 +48,16 @@ Một speaker luôn dùng cùng cấu hình trong toàn bộ candidate. Manifest
 - `CPU`: ép ONNX CPU.
 - `GPU`: ép CUDA và báo lỗi nếu CUDA không khả dụng, không tự rơi về CPU.
 - Giấy phép model/checkpoint Apache-2.0. Có thể dùng thương mại với giọng preset; nếu dùng audio tham chiếu, người dùng phải có quyền hoặc sự đồng ý của chủ giọng.
+
+### Piper TTS — Local
+
+- Chạy local bằng model ONNX cố định trên CPU; không clone giọng từ file audio tham chiếu.
+- Mỗi cấu hình speaker chọn một file `.onnx`. File cấu hình cùng tên với hậu tố `.onnx.json` phải nằm cạnh model.
+- Khi chọn model, component đọc `speaker_id_map` trong `.onnx.json`. Với model đa giọng, chọn **Giọng trong model** tương ứng; model đơn giọng giữ **Mặc định của model**.
+- Các tham số native gồm `length_scale` (nhỏ hơn `1` nhanh hơn), `noise_scale`, `noise_w_scale`, `volume` và `normalize_audio`. Giá trị inference ban đầu được đọc từ file cấu hình của model đầu tiên được chọn và được truyền trực tiếp qua `SynthesisConfig` của Piper.
+- Cài runtime riêng bằng `powershell -ExecutionPolicy Bypass -File scripts/setup_piper_runtime.ps1`. Có thể trỏ sang runtime khác bằng `TRANSLANGUAGE_PIPER_PYTHON`.
+- Tool không tự tải model. Khi tải voice Piper, cần đọc `MODEL_CARD` và giấy phép của chính voice đó trước khi phân phối hoặc dùng thương mại.
+- Engine Piper dùng GPL-3.0; giấy phép engine không thay thế giấy phép riêng của từng model giọng.
 
 ### MeloTTS + OpenVoice V2 — Local
 

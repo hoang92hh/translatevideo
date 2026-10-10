@@ -59,6 +59,16 @@ class AudioSyncService:
             factors.append(remaining)
         return ",".join(f"atempo={factor:.8f}" for factor in factors)
 
+    @staticmethod
+    def _edge_silence_filters() -> list[str]:
+        """Cắt silence ở hai mép mà không dừng tại khoảng nghỉ bên trong câu."""
+        return [
+            "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-45dB",
+            "areverse",
+            "silenceremove=start_periods=1:start_duration=0.10:start_threshold=-45dB",
+            "areverse",
+        ]
+
     def _run_ffmpeg(self, source: Path, output: Path, filters: list[str]) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         temporary = output.with_name(f"{output.stem}.part{output.suffix}")
@@ -131,12 +141,7 @@ class AudioSyncService:
             )
 
         prepared = output.with_name(f".{output.stem}.prepared.wav")
-        trim_filter = []
-        if trim_silence:
-            trim_filter = [
-                "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-45dB:"
-                "stop_periods=1:stop_duration=0.10:stop_threshold=-45dB"
-            ]
+        trim_filter = self._edge_silence_filters() if trim_silence else []
         try:
             self._run_ffmpeg(source, prepared, trim_filter)
             prepared_duration = self.ffmpeg.probe_duration(prepared) or input_duration
@@ -191,10 +196,7 @@ class AudioSyncService:
     ) -> float:
         filters: list[str] = []
         if trim_silence:
-            filters.append(
-                "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-45dB:"
-                "stop_periods=1:stop_duration=0.10:stop_threshold=-45dB"
-            )
+            filters.extend(self._edge_silence_filters())
         atempo = self._atempo_filter(max(1.0, speed_factor))
         if atempo:
             filters.append(atempo)

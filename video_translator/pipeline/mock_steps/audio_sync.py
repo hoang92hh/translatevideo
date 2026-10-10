@@ -15,7 +15,7 @@ from .common import previous_segments
 
 
 def _tts_settings(metadata: dict[str, Any]) -> dict[str, Any]:
-    return {
+    settings = {
         "provider": str(metadata.get("provider", "")),
         "voice": str(metadata.get("voice", "Default")),
         "speed": float(metadata.get("speed", 1.0)),
@@ -27,6 +27,10 @@ def _tts_settings(metadata: dict[str, Any]) -> dict[str, Any]:
         ),
         "shared_speaker_profile": dict(metadata.get("shared_speaker_profile", {})),
     }
+    provider_settings = metadata.get("provider_settings", {})
+    if isinstance(provider_settings, dict):
+        settings.update(provider_settings)
+    return settings
 
 
 def execute(

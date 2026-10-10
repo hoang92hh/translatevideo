@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 VIENEU_PROVIDER = "VieNeu-TTS — Local"
+PIPER_PROVIDER = "Piper TTS — Local"
 MELO_OPENVOICE_PROVIDER = "MeloTTS + OpenVoice V2 — Local"
 EDGE_TTS_PROVIDER = "Edge TTS — Online"
 XTTS_V2_PROVIDER = "XTTS-v2 — Chưa triển khai · Chỉ phi thương mại"
@@ -32,6 +33,10 @@ PROVIDER_LICENSE_NOTES = {
     VIENEU_PROVIDER: (
         "Apache-2.0. Có thể dùng thương mại với giọng preset; giọng tham chiếu chỉ được dùng "
         "khi bạn có quyền hoặc sự đồng ý của chủ giọng."
+    ),
+    PIPER_PROVIDER: (
+        "Piper chạy local bằng model ONNX cố định, không clone giọng từ audio tham chiếu. "
+        "Engine dùng GPL-3.0; cần kiểm tra thêm MODEL_CARD và giấy phép của từng voice trước khi phân phối."
     ),
     MELO_OPENVOICE_PROVIDER: (
         "MeloTTS và OpenVoice V2 dùng giấy phép MIT. Việc clone/chuyển giọng vẫn cần quyền "

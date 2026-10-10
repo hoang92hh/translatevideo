@@ -10,7 +10,13 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from ..config.tts import EDGE_TTS_PROVIDER, MELO_LANGUAGE_CODES, MELO_OPENVOICE_PROVIDER, VIENEU_PROVIDER
+from video_translator.config.tts import (
+    EDGE_TTS_PROVIDER,
+    MELO_LANGUAGE_CODES,
+    MELO_OPENVOICE_PROVIDER,
+    PIPER_PROVIDER,
+    VIENEU_PROVIDER,
+)
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -48,7 +54,7 @@ def normalize_audio(source: Path, target: Path, speed: float = 1.0) -> None:
     source.unlink(missing_ok=True)
 
 
-def speaker_profile(settings: dict[str, Any], item: dict[str, Any]) -> dict[str, str]:
+def speaker_profile(settings: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
     speaker_id = str(item.get("speaker_id", "")).strip() or "SPEAKER_UNKNOWN"
     raw_profiles = settings.get("speaker_profiles", {})
     profiles = raw_profiles if isinstance(raw_profiles, dict) else {}
@@ -61,10 +67,16 @@ def speaker_profile(settings: dict[str, Any], item: dict[str, Any]) -> dict[str,
             raw_profile = {**shared, **raw_profile}
     return {
         "speaker_id": speaker_id,
-        "voice": str(raw_profile.get("voice") or settings.get("voice", "Default")).strip(),
+        "voice": str(
+            raw_profile.get("model_path")
+            or raw_profile.get("voice")
+            or settings.get("model_path")
+            or settings.get("voice", "Default")
+        ).strip(),
         "reference_voice": str(
             raw_profile.get("reference_voice") or settings.get("reference_voice", "")
         ).strip(),
+        "piper_speaker_id": raw_profile.get("piper_speaker_id"),
     }
 
 
@@ -75,6 +87,7 @@ def segment_result(
     voice: str,
     reference_voice: str,
     actual_device: str,
+    settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": int(item["id"]),
@@ -84,6 +97,7 @@ def segment_result(
         "voice": voice,
         "reference_voice": reference_voice,
         "actual_device": actual_device,
+        "settings": settings or {},
     }
 
 
@@ -161,6 +175,73 @@ async def run_edge_async(settings: dict[str, Any], segments: list[dict[str, Any]
         "actual_device": "Online",
         "model": "Microsoft Edge TTS",
         "voice": next(iter(voices)) if len(voices) == 1 else "Nhiều giọng theo speaker",
+        "segment_results": segment_results,
+    }
+
+
+def run_piper(settings: dict[str, Any], segments: list[dict[str, Any]], output: Path) -> dict[str, Any]:
+    import wave
+
+    from piper import PiperVoice, SynthesisConfig
+
+    native_settings = {
+        "length_scale": float(settings.get("length_scale", 1.0)),
+        "noise_scale": float(settings.get("noise_scale", 0.667)),
+        "noise_w_scale": float(settings.get("noise_w_scale", 0.8)),
+        "volume": float(settings.get("volume", 1.0)),
+        "normalize_audio": bool(settings.get("normalize_audio", True)),
+    }
+    voice_cache: dict[str, Any] = {}
+    files: list[str] = []
+    segment_results: list[dict[str, Any]] = []
+    for index, item in enumerate(segments, start=1):
+        profile = speaker_profile(settings, item)
+        model_path = Path(profile["voice"]).expanduser().resolve()
+        config_path = Path(f"{model_path}.json")
+        cache_key = str(model_path)
+        if cache_key not in voice_cache:
+            voice_cache[cache_key] = PiperVoice.load(
+                str(model_path),
+                config_path=str(config_path),
+            )
+        voice = voice_cache[cache_key]
+        requested_speaker_id = profile.get("piper_speaker_id")
+        speaker_id = int(requested_speaker_id) if requested_speaker_id is not None else None
+        actual_speaker_id = speaker_id
+        if actual_speaker_id is None and int(voice.config.num_speakers) > 1:
+            actual_speaker_id = int(voice.config.default_speaker_id)
+        synthesis_config = SynthesisConfig(
+            speaker_id=speaker_id,
+            length_scale=native_settings["length_scale"],
+            noise_scale=native_settings["noise_scale"],
+            noise_w_scale=native_settings["noise_w_scale"],
+            volume=native_settings["volume"],
+            normalize_audio=native_settings["normalize_audio"],
+        )
+        target = output / f"segment_{int(item['id']):04d}.wav"
+        temporary = output / f"segment_{int(item['id']):04d}.source.wav"
+        with wave.open(str(temporary), "wb") as wav_file:
+            voice.synthesize_wav(str(item["text"]), wav_file, syn_config=synthesis_config)
+        normalize_audio(temporary, target)
+        files.append(str(target.resolve()))
+        segment_results.append(
+            segment_result(
+                item,
+                PIPER_PROVIDER,
+                "Piper TTS",
+                str(model_path),
+                "",
+                "CPU (ONNX)",
+                {**native_settings, "piper_speaker_id": actual_speaker_id},
+            )
+        )
+        progress(index, len(segments), f"Piper TTS: đã tạo {index}/{len(segments)} segment…")
+    voices = {item["voice"] for item in segment_results}
+    return {
+        "files": files,
+        "actual_device": "CPU (ONNX)",
+        "model": "Piper TTS",
+        "voice": next(iter(voices)) if len(voices) == 1 else "Nhiều model theo speaker",
         "segment_results": segment_results,
     }
 
@@ -266,6 +347,10 @@ def main() -> None:
         output.mkdir(parents=True, exist_ok=True)
         if provider == VIENEU_PROVIDER:
             result = run_vieneu(settings, segments, output)
+        elif provider == PIPER_PROVIDER:
+            if str(settings.get("device", "CPU")) not in {"CPU", "Auto", ""}:
+                raise RuntimeError("Piper TTS hiện chỉ hỗ trợ CPU (ONNX).")
+            result = run_piper(settings, segments, output)
         elif provider == EDGE_TTS_PROVIDER:
             if str(settings.get("device", "Auto")) not in {"Auto", ""}:
                 raise RuntimeError("Edge TTS xử lý online nên không hỗ trợ lựa chọn CPU/GPU.")

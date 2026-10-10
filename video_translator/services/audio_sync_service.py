@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -31,12 +33,20 @@ class SyncOutcome:
     allowed_duration: float
     speed_factor: float
     used_gap: float
+    detected_leading_silence: float = 0.0
+    detected_trailing_silence: float = 0.0
+    trimmed_leading_silence: float = 0.0
+    trimmed_trailing_silence: float = 0.0
+    silence_trim_decision: str = "disabled"
     error: str = ""
 
 
 class AudioSyncService:
     SAMPLE_RATE = 48_000
     CHANNELS = 1
+    SILENCE_THRESHOLD_DB = -55
+    MIN_EDGE_SILENCE = 0.25
+    EDGE_SILENCE_GUARD = 0.12
 
     def __init__(self) -> None:
         try:
@@ -60,14 +70,95 @@ class AudioSyncService:
         return ",".join(f"atempo={factor:.8f}" for factor in factors)
 
     @staticmethod
-    def _edge_silence_filters() -> list[str]:
-        """Cắt silence ở hai mép mà không dừng tại khoảng nghỉ bên trong câu."""
+    def _edge_trim_filters(
+        input_duration: float,
+        leading_trim: float,
+        trailing_trim: float,
+    ) -> list[str]:
+        if leading_trim <= 0.000001 and trailing_trim <= 0.000001:
+            return []
+        end = max(leading_trim + 0.01, input_duration - trailing_trim)
         return [
-            "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-45dB",
-            "areverse",
-            "silenceremove=start_periods=1:start_duration=0.10:start_threshold=-45dB",
-            "areverse",
+            f"atrim=start={leading_trim:.6f}:end={end:.6f}",
+            "asetpts=PTS-STARTPTS",
         ]
+
+    def _detect_edge_silence(self, source: Path, duration: float) -> tuple[float, float]:
+        command = [
+            self.ffmpeg.ffmpeg_path,
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(source),
+            "-vn",
+            "-af",
+            (
+                f"silencedetect=noise={self.SILENCE_THRESHOLD_DB}dB:"
+                f"d={self.MIN_EDGE_SILENCE:.3f}"
+            ),
+            "-f",
+            "null",
+            os.devnull,
+        ]
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+        if completed.returncode != 0:
+            return 0.0, 0.0
+
+        intervals: list[tuple[float, float]] = []
+        current_start: float | None = None
+        for match in re.finditer(
+            r"silence_(start|end):\s*(-?\d+(?:\.\d+)?)",
+            completed.stderr,
+        ):
+            event, raw_value = match.groups()
+            value = max(0.0, float(raw_value))
+            if event == "start":
+                current_start = value
+            elif current_start is not None:
+                intervals.append((current_start, min(duration, value)))
+                current_start = None
+        if current_start is not None:
+            intervals.append((current_start, duration))
+
+        leading = 0.0
+        trailing = 0.0
+        if intervals and intervals[0][0] <= 0.02:
+            leading = max(0.0, intervals[0][1])
+        if intervals and intervals[-1][1] >= duration - 0.05:
+            trailing = max(0.0, duration - intervals[-1][0])
+        return leading, trailing
+
+    def _safe_edge_trim(
+        self,
+        source: Path,
+        input_duration: float,
+        allowed_duration: float,
+        enabled: bool,
+    ) -> tuple[float, float, float, float, str]:
+        if not enabled:
+            return 0.0, 0.0, 0.0, 0.0, "disabled"
+        excess = input_duration - max(allowed_duration, 0.01)
+        if excess <= 0.0001:
+            return 0.0, 0.0, 0.0, 0.0, "fits_allowed_duration"
+
+        leading, trailing = self._detect_edge_silence(source, input_duration)
+        leading_available = max(0.0, leading - self.EDGE_SILENCE_GUARD)
+        trailing_available = max(0.0, trailing - self.EDGE_SILENCE_GUARD)
+        if leading_available + trailing_available <= 0.0001:
+            return leading, trailing, 0.0, 0.0, "no_safe_edge_silence"
+
+        # Ưu tiên bỏ silence cuối để không làm dịch thời điểm bắt đầu phát lời.
+        trailing_trim = min(excess, trailing_available)
+        leading_trim = min(max(0.0, excess - trailing_trim), leading_available)
+        return leading, trailing, leading_trim, trailing_trim, "edge_silence_trimmed"
 
     def _run_ffmpeg(self, source: Path, output: Path, filters: list[str]) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +232,23 @@ class AudioSyncService:
             )
 
         prepared = output.with_name(f".{output.stem}.prepared.wav")
-        trim_filter = self._edge_silence_filters() if trim_silence else []
+        (
+            detected_leading,
+            detected_trailing,
+            trimmed_leading,
+            trimmed_trailing,
+            trim_decision,
+        ) = self._safe_edge_trim(
+            source,
+            input_duration,
+            allowed_duration,
+            trim_silence,
+        )
+        trim_filter = self._edge_trim_filters(
+            input_duration,
+            trimmed_leading,
+            trimmed_trailing,
+        )
         try:
             self._run_ffmpeg(source, prepared, trim_filter)
             prepared_duration = self.ffmpeg.probe_duration(prepared) or input_duration
@@ -157,6 +264,11 @@ class AudioSyncService:
                     allowed_duration=allowed_duration,
                     speed_factor=required_speed,
                     used_gap=max(0.0, allowed_duration - target_duration),
+                    detected_leading_silence=detected_leading,
+                    detected_trailing_silence=detected_trailing,
+                    trimmed_leading_silence=trimmed_leading,
+                    trimmed_trailing_silence=trimmed_trailing,
+                    silence_trim_decision=trim_decision,
                     error=(
                         f"Cần tốc độ {required_speed:.2f}x nhưng giới hạn là {max_speed:.2f}x"
                     ),
@@ -183,6 +295,11 @@ class AudioSyncService:
                 allowed_duration=allowed_duration,
                 speed_factor=speed_factor,
                 used_gap=max(0.0, measured - target_duration),
+                detected_leading_silence=detected_leading,
+                detected_trailing_silence=detected_trailing,
+                trimmed_leading_silence=trimmed_leading,
+                trimmed_trailing_silence=trimmed_trailing,
+                silence_trim_decision=trim_decision,
             )
         finally:
             prepared.unlink(missing_ok=True)
@@ -192,15 +309,16 @@ class AudioSyncService:
         source_path: str | Path,
         output_path: str | Path,
         speed_factor: float,
-        trim_silence: bool,
+        leading_trim: float = 0.0,
+        trailing_trim: float = 0.0,
     ) -> float:
-        filters: list[str] = []
-        if trim_silence:
-            filters.extend(self._edge_silence_filters())
+        source = Path(source_path)
+        input_duration = self.ffmpeg.probe_duration(source) or 0.0
+        filters = self._edge_trim_filters(input_duration, leading_trim, trailing_trim)
         atempo = self._atempo_filter(max(1.0, speed_factor))
         if atempo:
             filters.append(atempo)
-        self._run_ffmpeg(Path(source_path), Path(output_path), filters)
+        self._run_ffmpeg(source, Path(output_path), filters)
         measured = self.ffmpeg.probe_duration(output_path)
         if not measured or measured <= 0:
             raise AudioSyncError(
@@ -353,7 +471,13 @@ def apply_neighbor_borrow(
                 render_failed = True
                 break
             try:
-                measured = service.prepare_timeline_file(source, output, chosen_speed, trim_silence)
+                measured = service.prepare_timeline_file(
+                    source,
+                    output,
+                    chosen_speed,
+                    float(item.get("trimmed_leading_silence", 0.0)),
+                    float(item.get("trimmed_trailing_silence", 0.0)),
+                )
             except Exception:
                 render_failed = True
                 break
@@ -412,7 +536,6 @@ def borrow_neighbor_time(
     error_indexes = unresolved_indexes
 
     max_speed = max(1.0, float(payload.get("max_speed", 1.35)))
-    trim_silence = bool(payload.get("trim_silence", True))
     service = AudioSyncService()
     attempt_folder = manifest.parent / "repairs" / f"borrow-{uuid4().hex[:8]}"
     attempt_folder.mkdir(parents=True, exist_ok=False)
@@ -443,7 +566,13 @@ def borrow_neighbor_time(
                 f"Không tìm thấy audio của segment #{int(item.get('id', 0)):04d}: {source}",
             )
         output = attempt_folder / f"segment_{int(item.get('id', index + 1)):04d}.wav"
-        measured = service.prepare_timeline_file(source, output, max_speed, trim_silence)
+        measured = service.prepare_timeline_file(
+            source,
+            output,
+            max_speed,
+            float(item.get("trimmed_leading_silence", 0.0)),
+            float(item.get("trimmed_trailing_silence", 0.0)),
+        )
         staged[index] = (output, measured)
         return output, measured
 
@@ -843,7 +972,7 @@ def repair_sync_segments(
                 float(sync_segment.get("target_duration", 0.0)),
                 float(sync_segment.get("allowed_duration", 0.0)),
                 float(sync_payload.get("max_speed", 1.35)),
-                bool(sync_payload.get("trim_silence", True)),
+                bool(sync_payload.get("trim_silence", False)),
             )
         except Exception as exc:
             outcome = None
@@ -899,6 +1028,19 @@ def repair_sync_segments(
             sync_segment["borrowed_before"] = 0.0
             sync_segment["borrowed_after"] = 0.0
             sync_segment["used_gap"] = outcome.used_gap
+            sync_segment["detected_leading_silence"] = round(
+                outcome.detected_leading_silence, 6
+            )
+            sync_segment["detected_trailing_silence"] = round(
+                outcome.detected_trailing_silence, 6
+            )
+            sync_segment["trimmed_leading_silence"] = round(
+                outcome.trimmed_leading_silence, 6
+            )
+            sync_segment["trimmed_trailing_silence"] = round(
+                outcome.trimmed_trailing_silence, 6
+            )
+            sync_segment["silence_trim_decision"] = outcome.silence_trim_decision
 
     error_count = sum(1 for item in sync_segments.values() if item.get("status") != "ready")
     sync_payload["error_count"] = error_count

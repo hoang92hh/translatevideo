@@ -50,7 +50,7 @@ def execute(
         )
     max_speed = max(1.0, float(settings.get("max_speed", 1.35)))
     use_gap = bool(settings.get("use_gap", True))
-    trim_silence = bool(settings.get("trim_silence", True))
+    trim_silence = bool(settings.get("trim_silence", False))
     now = datetime.now(timezone.utc)
     candidate_id = f"sync-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
     candidate_folder = Path(state.workspace_path("synchronized_audio", candidate_id))
@@ -97,6 +97,11 @@ def execute(
                         "borrowed_before": 0.0,
                         "borrowed_after": 0.0,
                         "used_gap": 0.0,
+                        "detected_leading_silence": 0.0,
+                        "detected_trailing_silence": 0.0,
+                        "trimmed_leading_silence": 0.0,
+                        "trimmed_trailing_silence": 0.0,
+                        "silence_trim_decision": "zero_duration",
                         "status": "ready",
                         "initial_sync_error": False,
                         "seq": 0,
@@ -167,6 +172,19 @@ def execute(
                     "borrowed_before": 0.0,
                     "borrowed_after": 0.0,
                     "used_gap": outcome.used_gap,
+                    "detected_leading_silence": round(
+                        outcome.detected_leading_silence, 6
+                    ),
+                    "detected_trailing_silence": round(
+                        outcome.detected_trailing_silence, 6
+                    ),
+                    "trimmed_leading_silence": round(
+                        outcome.trimmed_leading_silence, 6
+                    ),
+                    "trimmed_trailing_silence": round(
+                        outcome.trimmed_trailing_silence, 6
+                    ),
+                    "silence_trim_decision": outcome.silence_trim_decision,
                     "status": "ready" if outcome.success else "needs_edit",
                     "initial_sync_error": not outcome.success,
                     "seq": 0 if outcome.success else 1,

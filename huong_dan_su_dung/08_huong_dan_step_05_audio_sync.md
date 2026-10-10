@@ -6,11 +6,14 @@ Step 5 nhận candidate TTS đang được chọn ở Step 4 và căn thời lư
 
 Với mỗi segment, Step 5 thực hiện theo thứ tự:
 
-1. Cắt khoảng lặng thừa ở đầu và cuối nếu bật **Cắt khoảng lặng đầu/cuối**. Tool xử lý riêng hai mép WAV và giữ nguyên các khoảng nghỉ tự nhiên nằm giữa câu; không dừng voice tại khoảng lặng đầu tiên.
-2. Giữ tốc độ tự nhiên nếu audio đã nằm vừa trong khung thời gian.
-3. Tận dụng khoảng trống từ cuối segment hiện tại tới đầu segment kế tiếp nếu bật **Tận dụng khoảng trống kế tiếp**.
-4. Nếu audio vẫn dài, tăng tốc nhưng không vượt quá **Tốc độ tối đa**.
-5. Nếu audio ngắn hơn khung gốc, chèn khoảng lặng ở cuối.
+1. Mặc định giữ nguyên WAV từ Step 4. Tùy chọn **Tự động cắt silence dư khi audio vượt khung** mặc định tắt.
+2. Khi bật tùy chọn này, Step 5 chỉ phân tích silence nếu WAV dài hơn `allowed_duration`. Silence phải nằm liên tục ở đầu hoặc cuối và dài ít nhất 0,25 giây; tool luôn giữ lại 0,12 giây đệm an toàn, chỉ cắt lượng cần thiết để đưa audio vào khung. Khoảng nghỉ bên trong câu luôn được giữ nguyên.
+3. Giữ tốc độ tự nhiên nếu audio đã nằm vừa trong khung thời gian.
+4. Tận dụng khoảng trống từ cuối segment hiện tại tới đầu segment kế tiếp nếu bật **Tận dụng khoảng trống kế tiếp**.
+5. Nếu audio vẫn dài, tăng tốc nhưng không vượt quá **Tốc độ tối đa**.
+6. Nếu audio ngắn hơn khung gốc, chèn khoảng lặng ở cuối.
+
+Manifest ghi riêng `detected_leading_silence`, `detected_trailing_silence`, `trimmed_leading_silence`, `trimmed_trailing_silence` và `silence_trim_decision` cho từng segment để có thể kiểm tra quyết định của Step 5.
 
 Luồng chạy Step 5 thông thường không tự động cân lại các hàng xóm. Nếu một segment vẫn quá dài, có thể dùng nút **Vay thời gian lân cận** riêng trong popup sửa lỗi. Mỗi segment lỗi B được thử với C trước; chỉ khi B+C chưa đủ mới thử A+B+C, hoặc A+B nếu không có C. Mọi voice trong nhóm được tạo lại từ audio Step 4 với cùng **Tốc độ tối đa**, phát lần lượt và không chồng nhau. Mỗi segment chỉ được lệch tối đa 0,5 giây; khoảng nghỉ lớn hơn 1 giây là ranh giới không vay qua.
 

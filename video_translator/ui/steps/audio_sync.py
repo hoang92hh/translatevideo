@@ -36,7 +36,12 @@ class AudioSyncStepPage(StepPage):
                 (
                     FieldSpec("max_speed", "Tốc độ tối đa", "float", 1.35),
                     FieldSpec("use_gap", "Tận dụng khoảng trống kế tiếp", "bool", True),
-                    FieldSpec("trim_silence", "Cắt khoảng lặng đầu/cuối", "bool", True),
+                    FieldSpec(
+                        "trim_silence",
+                        "Tự động cắt silence dư khi audio vượt khung",
+                        "bool",
+                        False,
+                    ),
                 ),
             ),
         ),

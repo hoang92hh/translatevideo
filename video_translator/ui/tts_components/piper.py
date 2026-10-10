@@ -121,32 +121,61 @@ class PiperTtsComponent(TtsComponentBase):
         for row, (key, label_text) in enumerate(self.speaker_rows(), start=1):
             model = PiperModelPicker()
             model_speaker = QComboBox()
-            model_speaker.addItem("Mặc định của model", None)
+            model_speaker.addItem("Chọn model để tải danh sách giọng", None)
+            suggested_speaker_id = {
+                "SPEAKER_00": 0,
+                "SPEAKER_01": 1,
+                "SPEAKER_02": 2,
+                "__shared__": 3,
+            }.get(key, 0)
             model.config_loaded.connect(
-                lambda config, target=model_speaker: self._apply_model_config(config, target)
+                lambda config, target=model_speaker, suggested=suggested_speaker_id: (
+                    self._apply_model_config(config, target, suggested)
+                )
             )
             self.speaker_layout.addWidget(QLabel(label_text), row, 0)
             self.speaker_layout.addWidget(model, row, 1)
             self.speaker_layout.addWidget(model_speaker, row, 2)
             self._profile_controls[key] = (model, model_speaker)
 
-    def _apply_model_config(self, config: dict[str, Any], speaker: QComboBox) -> None:
+    def _apply_model_config(
+        self,
+        config: dict[str, Any],
+        speaker: QComboBox,
+        suggested_speaker_id: int,
+    ) -> None:
         current_id = speaker.currentData()
         speaker.blockSignals(True)
         speaker.clear()
-        speaker.addItem("Mặc định của model", None)
         speaker_map = config.get("speaker_id_map", {})
+        speaker_ids: list[int] = []
         if isinstance(speaker_map, dict):
-            valid_speakers: list[tuple[str, int]] = []
-            for name, speaker_id in speaker_map.items():
+            for speaker_id in speaker_map.values():
                 try:
-                    valid_speakers.append((str(name), int(speaker_id)))
+                    speaker_ids.append(int(speaker_id))
                 except (TypeError, ValueError):
                     continue
-            for name, speaker_id in sorted(valid_speakers, key=lambda item: item[1]):
-                speaker.addItem(f"{name} (ID {speaker_id})", speaker_id)
-        index = speaker.findData(current_id)
-        speaker.setCurrentIndex(index if index >= 0 else 0)
+        if not speaker_ids:
+            try:
+                speaker_ids = list(range(max(0, int(config.get("num_speakers", 0)))))
+            except (TypeError, ValueError):
+                speaker_ids = []
+
+        speaker_ids = sorted(set(speaker_ids))
+        for position, speaker_id in enumerate(speaker_ids, start=1):
+            speaker.addItem(f"Giọng {position} — ID {speaker_id}", speaker_id)
+
+        if speaker_ids:
+            selected_id = current_id if current_id in speaker_ids else suggested_speaker_id
+            index = speaker.findData(selected_id)
+            speaker.setCurrentIndex(index if index >= 0 else 0)
+            speaker.setToolTip(
+                f"Model có {len(speaker_ids)} giọng. "
+                "Speaker ID này sẽ được truyền riêng cho người nói tương ứng."
+            )
+        else:
+            speaker.addItem("Model không khai báo danh sách giọng", None)
+            speaker.setToolTip("Kiểm tra file .onnx.json nằm cạnh model .onnx.")
         speaker.blockSignals(False)
 
         if not self._native_defaults_loaded:

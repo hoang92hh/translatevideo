@@ -26,19 +26,20 @@ class RenderStepPage(StepPage):
         StepId.RENDER,
         "07",
         "Render & Export",
-        "Ghép hình ảnh gốc, voice mới, background và subtitle tùy chọn.",
+        "Ghép hình ảnh gốc, voice mới, voice gốc, background và subtitle tùy chọn.",
         (ProviderSpec("FFmpeg Renderer", ()),),
     )
 
     def __init__(self, state) -> None:
         self._processing = False
+        self._original_voice_available = False
         self._background_available = False
         super().__init__(state)
 
     def build_special_card(self) -> Card:
         card = Card(
             "Thành phần đưa vào video",
-            "Hình ảnh và voice mới là bắt buộc. Original Mix không được sử dụng.",
+            "Voice mới, voice gốc đã tách và background có thể chỉnh âm lượng riêng.",
         )
         self.image_check = QCheckBox("Hình ảnh video gốc — bắt buộc")
         self.image_check.setChecked(True)
@@ -46,6 +47,30 @@ class RenderStepPage(StepPage):
         self.voice_check = QCheckBox("Voice mới từ Step 6 — bắt buộc")
         self.voice_check.setChecked(True)
         self.voice_check.setEnabled(False)
+        voice_volume_row = QHBoxLayout()
+        voice_volume_row.addWidget(QLabel("Âm lượng Voice mới"))
+        self.voice_volume = QSlider(Qt.Orientation.Horizontal)
+        self.voice_volume.setRange(0, 100)
+        self.voice_volume.setValue(100)
+        self.voice_volume.valueChanged.connect(self._voice_volume_changed)
+        self.voice_volume_label = QLabel("100%")
+        voice_volume_row.addWidget(self.voice_volume, 1)
+        voice_volume_row.addWidget(self.voice_volume_label)
+        self.original_voice_check = QCheckBox("Voice gốc đã tách ở Step 1")
+        self.original_voice_check.setChecked(False)
+        self.original_voice_check.toggled.connect(self._original_voice_toggled)
+        self.original_voice_info = QLabel()
+        self.original_voice_info.setObjectName("muted")
+        self.original_voice_info.setWordWrap(True)
+        original_voice_volume_row = QHBoxLayout()
+        original_voice_volume_row.addWidget(QLabel("Âm lượng Voice gốc"))
+        self.original_voice_volume = QSlider(Qt.Orientation.Horizontal)
+        self.original_voice_volume.setRange(0, 100)
+        self.original_voice_volume.setValue(20)
+        self.original_voice_volume.valueChanged.connect(self._original_voice_volume_changed)
+        self.original_voice_volume_label = QLabel("20%")
+        original_voice_volume_row.addWidget(self.original_voice_volume, 1)
+        original_voice_volume_row.addWidget(self.original_voice_volume_label)
         self.background_check = QCheckBox("Âm thanh nền gốc (Background)")
         self.background_check.setChecked(True)
         self.background_check.toggled.connect(self._background_toggled)
@@ -56,9 +81,9 @@ class RenderStepPage(StepPage):
         volume_row.addWidget(QLabel("Âm lượng Background"))
         self.background_volume = QSlider(Qt.Orientation.Horizontal)
         self.background_volume.setRange(0, 100)
-        self.background_volume.setValue(100)
-        self.background_volume.valueChanged.connect(self._volume_changed)
-        self.background_volume_label = QLabel("100%")
+        self.background_volume.setValue(80)
+        self.background_volume.valueChanged.connect(self._background_volume_changed)
+        self.background_volume_label = QLabel("80%")
         volume_row.addWidget(self.background_volume, 1)
         volume_row.addWidget(self.background_volume_label)
         self.subtitle_check = QCheckBox("Tạo subtitle SRT")
@@ -67,13 +92,14 @@ class RenderStepPage(StepPage):
         self.burn_subtitle_check = QCheckBox("Burn subtitle vào video")
         self.burn_subtitle_check.setChecked(False)
         self.burn_subtitle_check.setEnabled(False)
-        for widget in (
-            self.image_check,
-            self.voice_check,
-            self.background_check,
-            self.background_info,
-        ):
-            card.content_layout.addWidget(widget)
+        card.content_layout.addWidget(self.image_check)
+        card.content_layout.addWidget(self.voice_check)
+        card.content_layout.addLayout(voice_volume_row)
+        card.content_layout.addWidget(self.original_voice_check)
+        card.content_layout.addWidget(self.original_voice_info)
+        card.content_layout.addLayout(original_voice_volume_row)
+        card.content_layout.addWidget(self.background_check)
+        card.content_layout.addWidget(self.background_info)
         card.content_layout.addLayout(volume_row)
         card.content_layout.addWidget(self.subtitle_check)
         card.content_layout.addWidget(self.burn_subtitle_check)
@@ -119,6 +145,11 @@ class RenderStepPage(StepPage):
             **super().settings(),
             "include_video": True,
             "include_voice": True,
+            "voice_volume": self.voice_volume.value() / 100,
+            "include_original_voice": (
+                self._original_voice_available and self.original_voice_check.isChecked()
+            ),
+            "original_voice_volume": self.original_voice_volume.value() / 100,
             "include_background": self._background_available and self.background_check.isChecked(),
             "background_volume": self.background_volume.value() / 100,
             "subtitle": self.subtitle_check.isChecked(),
@@ -128,6 +159,22 @@ class RenderStepPage(StepPage):
     def refresh_special(self) -> None:
         self.output_path.setText(self.state.output_folder)
         candidate = self.state.candidate(self.state.selected_audio_candidate_id)
+        original_voice_value = candidate.stem_path("voice") if candidate else ""
+        original_voice = Path(original_voice_value) if original_voice_value else None
+        original_voice_available = bool(original_voice and original_voice.is_file())
+        if original_voice_available != self._original_voice_available:
+            self._original_voice_available = original_voice_available
+            self.original_voice_check.setEnabled(original_voice_available)
+            self.original_voice_check.setChecked(original_voice_available)
+        if original_voice_available and original_voice:
+            self.original_voice_info.setText(f"Voice gốc được chọn:\n{original_voice}")
+        else:
+            self.original_voice_info.setText(
+                "Candidate Step 1 không có stem Voice. Hãy chạy tách MDX để dùng voice gốc."
+            )
+            self.original_voice_check.setChecked(False)
+            self.original_voice_check.setEnabled(False)
+        self._original_voice_toggled(self.original_voice_check.isChecked())
         background_value = candidate.stem_path("background") if candidate else ""
         background = Path(background_value) if background_value else None
         available = bool(background and background.is_file())
@@ -164,7 +211,16 @@ class RenderStepPage(StepPage):
     def _background_toggled(self, checked: bool) -> None:
         self.background_volume.setEnabled(self._background_available and checked)
 
-    def _volume_changed(self, value: int) -> None:
+    def _original_voice_toggled(self, checked: bool) -> None:
+        self.original_voice_volume.setEnabled(self._original_voice_available and checked)
+
+    def _voice_volume_changed(self, value: int) -> None:
+        self.voice_volume_label.setText(f"{value}%")
+
+    def _original_voice_volume_changed(self, value: int) -> None:
+        self.original_voice_volume_label.setText(f"{value}%")
+
+    def _background_volume_changed(self, value: int) -> None:
         self.background_volume_label.setText(f"{value}%")
 
     def _subtitle_toggled(self, checked: bool) -> None:
@@ -193,9 +249,18 @@ class RenderStepPage(StepPage):
         if not candidate:
             self.render_info.setText("Chưa có output Step 7")
             return
-        components = ["Hình ảnh", "Voice mới"]
+        voice_volume = round(float(candidate.metadata.get("voice_volume", 1.0)) * 100)
+        components = ["Hình ảnh", f"Voice mới {voice_volume}%"]
+        if candidate.original_voice_used:
+            original_voice_volume = round(
+                float(candidate.metadata.get("original_voice_volume", 0.2)) * 100
+            )
+            components.append(f"Voice gốc {original_voice_volume}%")
         if candidate.background_used:
-            components.append("Background")
+            background_volume = round(
+                float(candidate.metadata.get("background_volume", 1.0)) * 100
+            )
+            components.append(f"Background {background_volume}%")
         if candidate.subtitle_file:
             components.append("Subtitle burn" if candidate.burned_subtitle else "Subtitle SRT")
         status = "Sẵn sàng" if Path(candidate.video_file).is_file() else "File không tồn tại"

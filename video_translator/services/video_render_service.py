@@ -31,6 +31,9 @@ class VideoRenderService:
         source_video_path: str | Path,
         voice_track_path: str | Path,
         output_path: str | Path,
+        voice_volume: float,
+        original_voice_path: str | Path | None,
+        original_voice_volume: float,
         background_path: str | Path | None,
         background_volume: float,
         subtitle_path: str | Path | None,
@@ -39,12 +42,15 @@ class VideoRenderService:
     ) -> dict[str, Any]:
         source_video = Path(source_video_path)
         voice_track = Path(voice_track_path)
+        original_voice = Path(original_voice_path) if original_voice_path else None
         background = Path(background_path) if background_path else None
         subtitle = Path(subtitle_path) if subtitle_path else None
         if not source_video.is_file():
             raise VideoRenderError("Thiếu video nguồn", f"Không tìm thấy: {source_video}")
         if not voice_track.is_file():
             raise VideoRenderError("Thiếu voice track", f"Không tìm thấy: {voice_track}")
+        if original_voice is not None and not original_voice.is_file():
+            raise VideoRenderError("Thiếu voice gốc", f"Không tìm thấy: {original_voice}")
         if background is not None and not background.is_file():
             raise VideoRenderError("Thiếu background", f"Không tìm thấy: {background}")
         if burn_subtitle and (subtitle is None or not subtitle.is_file()):
@@ -75,17 +81,33 @@ class VideoRenderService:
             "-i",
             str(voice_track),
         ]
+        audio_inputs = [(1, "voice_new", voice_volume)]
+        next_input_index = 2
+        if original_voice is not None:
+            command.extend(["-i", str(original_voice)])
+            audio_inputs.append((next_input_index, "voice_original", original_voice_volume))
+            next_input_index += 1
         if background is not None:
             command.extend(["-i", str(background)])
-            audio_filter = (
-                f"[1:a]volume=1.0[voice];[2:a]volume={background_volume:.4f}[background];"
-                f"[voice][background]amix=inputs=2:duration=longest:normalize=0,"
-                f"aresample=48000,apad,atrim=duration={duration:.6f}[audio]"
+            audio_inputs.append((next_input_index, "background", background_volume))
+
+        filter_parts = [
+            f"[{input_index}:a]volume={volume:.4f}[{label}]"
+            for input_index, label, volume in audio_inputs
+        ]
+        labels = "".join(f"[{label}]" for _, label, _ in audio_inputs)
+        if len(audio_inputs) > 1:
+            filter_parts.append(
+                f"{labels}amix=inputs={len(audio_inputs)}:duration=longest:normalize=0,"
+                f"alimiter=limit=0.95:level=0:latency=1,aresample=48000,apad,"
+                f"atrim=duration={duration:.6f}[audio]"
             )
         else:
-            audio_filter = (
-                f"[1:a]aresample=48000,apad,atrim=duration={duration:.6f}[audio]"
+            filter_parts.append(
+                f"[{audio_inputs[0][1]}]aresample=48000,apad,"
+                f"atrim=duration={duration:.6f}[audio]"
             )
+        audio_filter = ";".join(filter_parts)
         command.extend(["-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[audio]"])
         if burn_subtitle and subtitle is not None:
             command.extend(["-vf", f"subtitles=filename={subtitle.name}:charenc=UTF-8"])
@@ -162,6 +184,9 @@ class VideoRenderService:
         return {
             "output_path": str(output),
             "duration_seconds": measured,
+            "voice_volume": voice_volume,
+            "original_voice_used": original_voice is not None,
+            "original_voice_volume": original_voice_volume if original_voice is not None else 0.0,
             "background_used": background is not None,
             "background_volume": background_volume if background is not None else 0.0,
             "subtitle_created": subtitle is not None,

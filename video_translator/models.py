@@ -145,6 +145,7 @@ class RenderCandidate:
     folder: str
     video_file: str
     subtitle_file: str = ""
+    original_voice_used: bool = False
     background_used: bool = False
     burned_subtitle: bool = False
     duration_seconds: float = 0.0

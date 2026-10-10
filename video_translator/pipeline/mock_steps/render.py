@@ -106,13 +106,23 @@ def execute(
     if build_candidate is None or not Path(build_candidate.audio_file).is_file():
         raise RuntimeError("Step 7 cần một voice track Step 6 hoàn chỉnh còn tồn tại.")
 
+    voice_volume = max(0.0, min(1.0, float(settings.get("voice_volume", 1.0))))
+    include_original_voice = bool(settings.get("include_original_voice", True))
     include_background = bool(settings.get("include_background", True))
     audio_candidate = state.candidate(state.selected_audio_candidate_id)
+    original_voice_value = audio_candidate.stem_path("voice") if audio_candidate else ""
+    original_voice = Path(original_voice_value) if original_voice_value else None
+    if not original_voice or not original_voice.is_file() or not include_original_voice:
+        original_voice = None
+    original_voice_volume = max(
+        0.0,
+        min(1.0, float(settings.get("original_voice_volume", 0.2))),
+    )
     background_value = audio_candidate.stem_path("background") if audio_candidate else ""
     background = Path(background_value) if background_value else None
     if not background or not background.is_file() or not include_background:
         background = None
-    background_volume = max(0.0, min(1.0, float(settings.get("background_volume", 1.0))))
+    background_volume = max(0.0, min(1.0, float(settings.get("background_volume", 0.8))))
     create_subtitle = bool(settings.get("subtitle", False))
     burn_subtitle = create_subtitle and bool(settings.get("burn_subtitle", False))
 
@@ -137,14 +147,17 @@ def execute(
                 }
             _write_subtitle(subtitle_output, segments, timings)
         result = VideoRenderService().render(
-            state.input_video,
-            build_candidate.audio_file,
-            video_output,
-            background,
-            background_volume,
-            subtitle_output if create_subtitle else None,
-            burn_subtitle,
-            progress,
+            source_video_path=state.input_video,
+            voice_track_path=build_candidate.audio_file,
+            output_path=video_output,
+            voice_volume=voice_volume,
+            original_voice_path=original_voice,
+            original_voice_volume=original_voice_volume,
+            background_path=background,
+            background_volume=background_volume,
+            subtitle_path=subtitle_output if create_subtitle else None,
+            burn_subtitle=burn_subtitle,
+            progress=progress,
         )
         payload = {
             "version": 1,
@@ -153,6 +166,9 @@ def execute(
             "source_video": state.input_video,
             "source_build_audio_candidate_id": build_candidate.id,
             "voice_track": build_candidate.audio_file,
+            "voice_volume": voice_volume,
+            "original_voice_file": str(original_voice) if original_voice else "",
+            "original_voice_volume": original_voice_volume if original_voice else 0.0,
             "background_file": str(background) if background else "",
             "subtitle_file": str(subtitle_output) if create_subtitle else "",
             **result,
@@ -165,6 +181,8 @@ def execute(
         raise
 
     components = ["hình ảnh", "voice mới"]
+    if original_voice:
+        components.append("voice gốc")
     if background:
         components.append("background")
     if create_subtitle:
@@ -178,6 +196,7 @@ def execute(
         folder=str(candidate_folder),
         video_file=str(video_output),
         subtitle_file=str(subtitle_output) if create_subtitle else "",
+        original_voice_used=original_voice is not None,
         background_used=background is not None,
         burned_subtitle=burn_subtitle,
         duration_seconds=float(result["duration_seconds"]),

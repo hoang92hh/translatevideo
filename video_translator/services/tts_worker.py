@@ -17,6 +17,7 @@ from video_translator.config.tts import (
     PIPER_PROVIDER,
     VIENEU_PROVIDER,
 )
+from video_translator.config.speaker_profiles import resolve_speaker_profile
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -56,15 +57,7 @@ def normalize_audio(source: Path, target: Path, speed: float = 1.0) -> None:
 
 def speaker_profile(settings: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
     speaker_id = str(item.get("speaker_id", "")).strip() or "SPEAKER_UNKNOWN"
-    raw_profiles = settings.get("speaker_profiles", {})
-    profiles = raw_profiles if isinstance(raw_profiles, dict) else {}
-    raw_profile = profiles.get(speaker_id, {})
-    if not isinstance(raw_profile, dict):
-        raw_profile = {}
-    if speaker_id not in {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"}:
-        shared = settings.get("shared_speaker_profile", {})
-        if isinstance(shared, dict):
-            raw_profile = {**shared, **raw_profile}
+    raw_profile = resolve_speaker_profile(settings, speaker_id)
     return {
         "speaker_id": speaker_id,
         "voice": str(

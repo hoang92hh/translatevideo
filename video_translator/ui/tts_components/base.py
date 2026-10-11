@@ -14,9 +14,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..components import Card, FilePicker
-
-
-DEDICATED_SPEAKERS = {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"}
+from ...config.speaker_profiles import (
+    GROUP_LABELS,
+    LEGACY_SHARED_PROFILE,
+    MINOR_FEMALE_PROFILE,
+    MINOR_MALE_PROFILE,
+    MINOR_UNKNOWN_PROFILE,
+    speaker_profile_assignments,
+)
 
 
 def speed_control() -> QDoubleSpinBox:
@@ -39,6 +44,10 @@ class TtsComponentBase(QWidget):
     def __init__(self, title: str, subtitle: str, license_note: str) -> None:
         super().__init__()
         self._speakers: tuple[str, ...] = ()
+        self._dialogue_profile: dict[str, Any] = {}
+        self._speaker_assignments: dict[str, str] = {}
+        self._speaker_profiles: dict[str, dict[str, Any]] = {}
+        self._classified_speakers = False
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(0, 0, 0, 0)
         self.root.setSpacing(12)
@@ -46,7 +55,7 @@ class TtsComponentBase(QWidget):
         self.root.addWidget(self.settings_card)
         self.speaker_card = Card(
             "Giọng theo người nói",
-            "Ba speaker đầu dùng cấu hình riêng; mọi speaker còn lại dùng chung một cấu hình.",
+            "Nhân vật chính/quan trọng dùng giọng riêng; nhân vật phụ dùng chung giọng theo giới tính.",
         )
         self.speaker_container = QWidget()
         self.speaker_layout = QGridLayout(self.speaker_container)
@@ -59,10 +68,21 @@ class TtsComponentBase(QWidget):
         self.speaker_card.content_layout.addWidget(note)
         self.root.addWidget(self.speaker_card)
 
-    def set_speakers(self, speakers: tuple[str, ...]) -> None:
-        if speakers == self._speakers:
+    def set_speakers(
+        self,
+        speakers: tuple[str, ...],
+        dialogue_profile: dict[str, Any] | None = None,
+    ) -> None:
+        resolved_profile = dict(dialogue_profile or {})
+        if speakers == self._speakers and resolved_profile == self._dialogue_profile:
             return
         self._speakers = speakers
+        self._dialogue_profile = resolved_profile
+        (
+            self._speaker_assignments,
+            self._speaker_profiles,
+            self._classified_speakers,
+        ) = speaker_profile_assignments(speakers, resolved_profile)
         while self.speaker_layout.count():
             item = self.speaker_layout.takeAt(0)
             widget = item.widget()
@@ -71,11 +91,59 @@ class TtsComponentBase(QWidget):
         self._build_speaker_controls()
 
     def speaker_rows(self) -> list[tuple[str, str]]:
-        dedicated = [item for item in ("SPEAKER_00", "SPEAKER_01", "SPEAKER_02") if item in self._speakers]
-        rows = [(speaker, speaker) for speaker in dedicated]
-        if any(item not in DEDICATED_SPEAKERS for item in self._speakers):
-            rows.append(("__shared__", "SPEAKER_03 trở đi / khác"))
+        rows: list[tuple[str, str]] = []
+        for speaker_id in self._speakers:
+            if self._speaker_assignments.get(speaker_id) != speaker_id:
+                continue
+            profile = self._speaker_profiles.get(speaker_id, {})
+            details = [speaker_id]
+            name = str(profile.get("character_name", "")).strip()
+            importance = str(profile.get("importance", "")).strip().lower()
+            gender = str(profile.get("gender", "")).strip().lower()
+            if name:
+                details.append(name)
+            if importance:
+                details.append({"main": "chính", "supporting": "quan trọng"}.get(importance, importance))
+            if gender:
+                details.append({"male": "nam", "female": "nữ", "unknown": "chưa rõ"}.get(gender, gender))
+            rows.append((speaker_id, " · ".join(details)))
+
+        group_order = (
+            MINOR_MALE_PROFILE,
+            MINOR_FEMALE_PROFILE,
+            MINOR_UNKNOWN_PROFILE,
+            LEGACY_SHARED_PROFILE,
+        )
+        for group_key in group_order:
+            members = [
+                speaker_id
+                for speaker_id in self._speakers
+                if self._speaker_assignments.get(speaker_id) == group_key
+            ]
+            if members:
+                rows.append((group_key, f"{GROUP_LABELS[group_key]} ({', '.join(members)})"))
         return rows
+
+    def profile_settings(
+        self,
+        profiles_by_key: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        dedicated: dict[str, dict[str, Any]] = {}
+        groups: dict[str, dict[str, Any]] = {}
+        shared: dict[str, Any] = {}
+        for key, profile in profiles_by_key.items():
+            if key == LEGACY_SHARED_PROFILE:
+                shared = profile
+            elif key.startswith("__"):
+                groups[key] = profile
+            else:
+                dedicated[key] = profile
+        return {
+            "speaker_profiles": dedicated,
+            "speaker_group_profiles": groups,
+            "speaker_profile_assignments": dict(self._speaker_assignments),
+            "shared_speaker_profile": shared,
+        }
 
     def show_no_speakers(self, columns: int = 3) -> bool:
         if self._speakers:
@@ -145,19 +213,13 @@ class ReferenceTtsComponentBase(TtsComponentBase):
 
     def settings(self) -> dict[str, Any]:
         profiles: dict[str, dict[str, str]] = {}
-        shared: dict[str, str] = {}
         for key, (voice, reference) in self._profile_controls.items():
-            profile = {"voice": voice.currentText(), "reference_voice": reference.value()}
-            if key == "__shared__":
-                shared = profile
-            else:
-                profiles[key] = profile
+            profiles[key] = {"voice": voice.currentText(), "reference_voice": reference.value()}
         return {
             "provider": self.provider_name,
             "voice": self.voice.currentText(),
             "speed": self.speed.value(),
             "device": self.device.currentText(),
             "voice_consent": self.consent.isChecked(),
-            "speaker_profiles": profiles,
-            "shared_speaker_profile": shared,
+            **self.profile_settings(profiles),
         }

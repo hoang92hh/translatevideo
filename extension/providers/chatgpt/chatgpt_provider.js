@@ -9,6 +9,7 @@ const comparable = text => normalize(text)
   .replace(/\u00a0/g, " ")
   .replace(/[\u200b-\u200d\ufeff]/gu, "")
   .replace(/\s+/gu, " ");
+const RESPONSE_SETTLE_DELAY_MS = 2000;
 
 export class ChatGPTProvider extends BaseProvider {
   constructor({ document: doc = document, timeoutMs = 180000,
@@ -216,23 +217,43 @@ export class ChatGPTProvider extends BaseProvider {
     if (!this.sent) throw error("PROMPT_SEND_FAILED", "Prompt has not been sent.");
     this.log("WAITING RESPONSE");
     let sawAssistant = false;
-    const text = await this.observe(() => {
+    const deadline = this.startedAt + this.timeoutMs;
+    while (Date.now() < deadline) {
+      await this.observe(() => {
+        const assistant = this.currentAssistant();
+        if (!assistant) return null;
+        sawAssistant = true;
+        const controls = this.completionControls(assistant);
+        return controls && this.find(S.copyAction, controls) ? true : null;
+      }, Math.max(1, deadline - Date.now()), () => error(
+        sawAssistant ? "RESPONSE_TIMEOUT" : "ASSISTANT_RESPONSE_NOT_FOUND",
+        sawAssistant ? "ChatGPT did not show a Copy button before the deadline."
+          : "No assistant message for this prompt was found before the deadline.",
+      ));
+
+      // The Copy action can appear shortly before the response DOM has finished rendering.
+      // Wait once, then inspect completion state; do not continuously compare response text.
+      await new Promise(resolve => this.win.setTimeout(resolve, RESPONSE_SETTLE_DELAY_MS));
+      if (this.cancelled) throw error("PROVIDER_ERROR", "Local response wait cancelled.");
+
       const assistant = this.currentAssistant();
-      if (!assistant) return null;
-      sawAssistant = true;
-      const controls = this.completionControls(assistant);
-      if (!controls || !this.find(S.copyAction, controls)) return null;
-      const value = this.responseText(assistant);
-      if (value && this.editable(this.find(S.composer))) return value;
-      return null;
-    }, this.timeoutMs - (Date.now() - this.startedAt), () => error(
-      sawAssistant ? "RESPONSE_TIMEOUT" : "ASSISTANT_RESPONSE_NOT_FOUND",
-      sawAssistant ? "ChatGPT did not show a completed response before the deadline."
-        : "No assistant message for this prompt was found before the deadline.",
-    ));
-    this.text = text;
-    this.finished = true;
-    this.log("RESPONSE COMPLETE");
+      const controls = assistant ? this.completionControls(assistant) : null;
+      const copyVisible = controls && this.find(S.copyAction, controls);
+      const responseTurn = assistant?.closest(S.turn) || assistant;
+      const stillGenerating = this.find(S.stop)
+        || (responseTurn && this.find(S.streaming, responseTurn));
+      const value = assistant ? this.responseText(assistant) : "";
+      if (copyVisible && !stillGenerating && value && this.editable(this.find(S.composer))) {
+        this.text = value;
+        this.finished = true;
+        this.log("RESPONSE COMPLETE");
+        return;
+      }
+    }
+    throw error(
+      "RESPONSE_TIMEOUT",
+      "ChatGPT response did not reach a completed state before the deadline.",
+    );
   }
 
   async getResponse() {

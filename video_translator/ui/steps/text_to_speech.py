@@ -60,6 +60,13 @@ class TextToSpeechStepPage(StepPage):
             )
         )
 
+    def _input_dialogue_profile(self) -> dict[str, object]:
+        previous = self.state.previous_result(StepId.TTS)
+        if not previous:
+            return {}
+        profile = previous.metadata.get("dialogue_profile", {})
+        return dict(profile) if isinstance(profile, dict) else {}
+
     def settings(self) -> dict[str, object]:
         return self.tts_selector.settings()
 
@@ -145,7 +152,10 @@ class TextToSpeechStepPage(StepPage):
         self._release_player("Đã giải phóng trình phát để chạy lại Step 4…")
 
     def refresh_special(self) -> None:
-        self.tts_selector.set_speakers(self._input_speakers())
+        self.tts_selector.set_speakers(
+            self._input_speakers(),
+            self._input_dialogue_profile(),
+        )
         if hasattr(self, "tts_combo") and not getattr(self, "_processing", False):
             self._refresh_outputs()
 

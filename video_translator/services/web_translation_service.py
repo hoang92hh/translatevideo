@@ -145,11 +145,18 @@ class WebTranslationService:
         segments: list[Segment],
         proper_name_policy: dict[str, object],
     ) -> DialogueAnalysisResponse:
+        analysis_segments = GoogleTranslationService._analysis_segments(segments)
         payload = {
             "source_language": self.source_language,
             "target_language": self.target_language,
             "proper_name_policy": proper_name_policy,
-            "full_transcript": GoogleTranslationService._full_transcript(segments),
+            "transcript_scope": {
+                "total_segment_count": len(segments),
+                "analyzed_segment_count": len(analysis_segments),
+                "is_sampled": len(analysis_segments) < len(segments),
+            },
+            "speaker_statistics": GoogleTranslationService._speaker_statistics(segments),
+            "transcript": GoogleTranslationService._full_transcript(analysis_segments),
         }
         parsed = self._request_json(
             render_web_translation_prompt(
@@ -160,7 +167,8 @@ class WebTranslationService:
             payload,
             (
                 "One object with keys: story_summary, global_style, speakers, addressing_rules, terminology, "
-                "names, uncertainties. speakers items require speaker_id, story_role, default_self_reference; "
+                "names, uncertainties. speakers items require speaker_id, importance (main/supporting/minor), "
+                "gender (male/female/unknown), story_role, and default_self_reference; "
                 "addressing_rules items require from_speaker, to_speaker, self_reference, direct_address, "
                 "third_person_reference; terminology items require source_term and preferred_translation; "
                 "names items require source_name, name_type, canonical_name."
@@ -200,6 +208,9 @@ class WebTranslationService:
             ),
             payload,
             'A JSON array containing only objects of the form {"id": integer, "translated_text": string}.',
+            attachment_name=(
+                f"step3-translation-{segments[0].id:04d}-{segments[-1].id:04d}.json"
+            ),
         )
         return TranslationResponse(
             self._translation_map(parsed),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Callable
 
 from pydantic import BaseModel, Field
@@ -18,6 +19,7 @@ from .translation_provider import (
 
 
 ProgressCallback = Callable[[int, str], None]
+ANALYSIS_SEGMENT_LIMIT = 250
 
 
 class TranslationItem(BaseModel):
@@ -28,11 +30,12 @@ class TranslationItem(BaseModel):
 class SpeakerGuidance(BaseModel):
     speaker_id: str
     character_name: str = ""
-    story_role: str
+    story_role: str = ""
+    importance: str = "minor"
     gender: str = "unknown"
     age_group: str = "unknown"
     personality: str = ""
-    default_self_reference: str
+    default_self_reference: str = ""
     speech_style: str = ""
     voice_description: str = ""
     confidence: str = "low"
@@ -188,6 +191,62 @@ class GoogleTranslationService:
         return "\n".join(lines)
 
     @staticmethod
+    def _analysis_segments(segments: list[Segment]) -> list[Segment]:
+        """Use at most 250 lines while retaining rare speakers and timeline coverage."""
+        if len(segments) <= ANALYSIS_SEGMENT_LIMIT:
+            return list(segments)
+
+        selected_indexes: set[int] = set()
+        by_speaker: dict[str, list[tuple[int, Segment]]] = {}
+        for index, segment in enumerate(segments):
+            speaker_id = segment.speaker_id.strip() or "SPEAKER_UNKNOWN"
+            by_speaker.setdefault(speaker_id, []).append((index, segment))
+
+        representatives = sorted(
+            (
+                max(items, key=lambda pair: len(pair[1].source_text.strip()))
+                for items in by_speaker.values()
+            ),
+            key=lambda pair: len(
+                by_speaker[pair[1].speaker_id.strip() or "SPEAKER_UNKNOWN"]
+            ),
+        )
+        for index, _segment in representatives[:ANALYSIS_SEGMENT_LIMIT]:
+            selected_indexes.add(index)
+
+        remaining = ANALYSIS_SEGMENT_LIMIT - len(selected_indexes)
+        if remaining > 0:
+            candidates = [index for index in range(len(segments)) if index not in selected_indexes]
+            if remaining >= len(candidates):
+                selected_indexes.update(candidates)
+            elif remaining == 1:
+                selected_indexes.add(candidates[len(candidates) // 2])
+            else:
+                last = len(candidates) - 1
+                selected_indexes.update(
+                    candidates[round(position * last / (remaining - 1))]
+                    for position in range(remaining)
+                )
+        return [segments[index] for index in sorted(selected_indexes)]
+
+    @staticmethod
+    def _speaker_statistics(segments: list[Segment]) -> list[dict[str, object]]:
+        counts = Counter(
+            segment.speaker_id.strip() or "SPEAKER_UNKNOWN" for segment in segments
+        )
+        durations: Counter[str] = Counter()
+        for segment in segments:
+            durations[segment.speaker_id.strip() or "SPEAKER_UNKNOWN"] += segment.duration
+        return [
+            {
+                "speaker_id": speaker_id,
+                "segment_count": count,
+                "total_duration_seconds": round(durations[speaker_id], 3),
+            }
+            for speaker_id, count in counts.items()
+        ]
+
+    @staticmethod
     def _speaker_context(
         segments: list[Segment],
         dialogue_profile: dict[str, object],
@@ -232,22 +291,35 @@ class GoogleTranslationService:
         segments: list[Segment],
         proper_name_policy: dict[str, object],
     ) -> DialogueAnalysisResponse:
+        analysis_segments = self._analysis_segments(segments)
         content = {
             "source_language": self.source_language,
             "target_language": self.target_language,
             "proper_name_policy": proper_name_policy,
-            "full_transcript": self._full_transcript(segments),
+            "transcript_scope": {
+                "total_segment_count": len(segments),
+                "analyzed_segment_count": len(analysis_segments),
+                "is_sampled": len(analysis_segments) < len(segments),
+            },
+            "speaker_statistics": self._speaker_statistics(segments),
+            "transcript": self._full_transcript(analysis_segments),
         }
         parsed, credential_source = self._generate_structured(
             content,
             (
-                "Read full_transcript from beginning to end as one complete story before answering. Every line "
-                "has [segment ID] SPEAKER_ID: source dialogue. Return exactly one speakers entry for every "
-                "distinct SPEAKER_ID, with that character's identity, role in the whole story, personality, "
-                "speech style, provider-neutral voice_description, and an exact default_self_reference written "
-                "in target_language. Describe only voice traits supported by the dialogue (such as perceived "
+                "Read transcript in chronological order. Use transcript_scope and speaker_statistics to account "
+                "for a representative sample of a longer story. Every line has [segment ID] SPEAKER_ID: source "
+                "dialogue. Return exactly one speakers entry for every SPEAKER_ID in speaker_statistics. Keep "
+                "speaker IDs separate even when one voice actor may perform multiple characters. Classify "
+                "importance as main, supporting, or minor and gender as male, female, or unknown. For main and "
+                "supporting speakers, include identity, story role, personality, speech style, provider-neutral "
+                "voice_description, and an exact default_self_reference written in target_language. For minor "
+                "speakers, keep the profile concise; importance and gender are essential. Never guess gender "
+                "when evidence is insufficient: use unknown. Describe only voice traits supported by dialogue (such as perceived "
                 "age, pitch, energy, pace, and tone); do not choose a provider-specific voice or model. Infer directed "
-                "addressing_rules only from story evidence. Every self_reference, direct_address, and "
+                "addressing_rules only for main/supporting speaker pairs and only from story evidence. "
+                "from_speaker and to_speaker must be exact SPEAKER_ID values from speaker_statistics, never "
+                "names, titles, kinship terms, or groups. Every self_reference, direct_address, and "
                 "third_person_reference must be an exact expression in target_language, never source-language "
                 "text or an explanation in parentheses. Use from_segment/to_segment when a relationship or form "
                 "of address changes during the story; zero means the entire story. Record uncertainty instead "

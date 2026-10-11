@@ -28,16 +28,18 @@ Nút **Đặt làm mặc định** lưu provider đang mở vào thiết lập �
 
 ## Ánh xạ giọng theo speaker
 
-Step 4 đọc `speaker_id` từ candidate Step 3 và hiển thị cấu hình giọng cho các speaker thực sự xuất hiện:
+Step 4 đọc `speaker_id` và `dialogue_profile` từ candidate Step 3 rồi hiển thị cấu hình giọng cho các speaker thực sự xuất hiện:
 
-- `SPEAKER_00`, `SPEAKER_01`, `SPEAKER_02` dùng ba cấu hình riêng.
-- `SPEAKER_03` trở đi, `SPEAKER_UNKNOWN` và speaker khác định dạng dùng chung cấu hình **SPEAKER_03 trở đi / khác**.
+- Speaker được AI phân loại `main` hoặc `supporting` dùng cấu hình riêng, không phụ thuộc số thứ tự ID.
+- Speaker `minor` dùng một trong ba cấu hình chung: **Nhân vật phụ — Nam**, **Nhân vật phụ — Nữ** hoặc **Nhân vật phụ — Chưa xác định**.
+- Mọi `SPEAKER_xx` vẫn được giữ nguyên trong segment; việc gom nhóm chỉ quyết định voice được sử dụng.
+- Candidate cũ chưa có `importance` tiếp tục dùng quy tắc tương thích: `SPEAKER_00`–`02` riêng, speaker còn lại dùng một cấu hình chung.
 - VieNeu-TTS và MeloTTS/OpenVoice yêu cầu file giọng tham chiếu cho mỗi cấu hình đang được sử dụng.
 - Piper TTS yêu cầu model `.onnx` và file `.onnx.json` tương ứng cho mỗi cấu hình đang được sử dụng.
 - Edge TTS không dùng file tham chiếu; mỗi cấu hình chọn một voice preset.
 - Tốc độ và thiết bị vẫn áp dụng chung cho toàn candidate.
 
-Một speaker luôn dùng cùng cấu hình trong toàn bộ candidate. Manifest phiên bản 2 lưu `speaker_profiles` ở cấp candidate và các trường `tts_provider`, `tts_model`, `tts_voice`, `tts_reference_voice`, `tts_actual_device` trên từng segment. Candidate cũ chỉ có một `reference_voice` vẫn được hỗ trợ.
+Một speaker luôn dùng cùng cấu hình trong toàn bộ candidate. Manifest phiên bản 2 lưu `speaker_profiles`, `speaker_group_profiles` và `speaker_profile_assignments` ở cấp candidate, cùng các trường `tts_provider`, `tts_model`, `tts_voice`, `tts_reference_voice`, `tts_actual_device` trên từng segment. Candidate cũ chỉ có một `reference_voice` vẫn được hỗ trợ.
 
 ## Bốn provider đã triển khai
 

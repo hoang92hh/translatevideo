@@ -45,46 +45,51 @@ class TranslationWorkflow:
         }
         raw_speakers = profile.get("speakers")
         speakers = raw_speakers if isinstance(raw_speakers, list) else []
+        normalized_speakers: list[dict[str, object]] = []
         actual: set[str] = set()
-        invalid: list[str] = []
         for item in speakers:
             if not isinstance(item, dict):
                 continue
             speaker_id = str(item.get("speaker_id", "")).strip()
-            if speaker_id:
-                actual.add(speaker_id)
-            if not speaker_id or not str(item.get("story_role", "")).strip():
-                invalid.append(speaker_id or "<trống>")
-            if not str(item.get("default_self_reference", "")).strip():
-                invalid.append(f"{speaker_id or '<trống>'}: thiếu cách tự xưng")
-        if actual != expected or invalid:
-            raise UserFacingError(
-                "Hồ sơ speaker từ AI không hợp lệ",
-                "Giai đoạn phân tích toàn truyện không trả đủ vai trò và cách tự xưng.",
-                "Chạy lại Step 3 hoặc chọn model mạnh hơn.",
-                (
-                    f"Missing: {sorted(expected - actual)}; extra: {sorted(actual - expected)}; "
-                    f"invalid: {invalid}"
-                ),
+            if not speaker_id or speaker_id not in expected or speaker_id in actual:
+                continue
+            importance = str(item.get("importance", "minor")).strip().lower()
+            gender = str(item.get("gender", "unknown")).strip().lower()
+            normalized = dict(item)
+            normalized["speaker_id"] = speaker_id
+            normalized["importance"] = (
+                importance if importance in {"main", "supporting", "minor"} else "minor"
             )
+            normalized["gender"] = gender if gender in {"male", "female", "unknown"} else "unknown"
+            normalized.setdefault("story_role", "")
+            normalized.setdefault("default_self_reference", "")
+            normalized_speakers.append(normalized)
+            actual.add(speaker_id)
+        for speaker_id in sorted(expected - actual):
+            normalized_speakers.append(
+                {
+                    "speaker_id": speaker_id,
+                    "character_name": "",
+                    "story_role": "",
+                    "importance": "minor",
+                    "gender": "unknown",
+                    "default_self_reference": "",
+                    "confidence": "low",
+                    "notes": "Không đủ dữ liệu phân tích để phân loại.",
+                }
+            )
+        profile["speakers"] = normalized_speakers
         raw_rules = profile.get("addressing_rules")
         rules = raw_rules if isinstance(raw_rules, list) else []
-        invalid_rules: list[str] = []
+        valid_rules: list[dict[str, object]] = []
         for item in rules:
             if not isinstance(item, dict):
-                invalid_rules.append(repr(item))
                 continue
             source = str(item.get("from_speaker", "")).strip()
             target = str(item.get("to_speaker", "")).strip()
-            if source not in expected or target not in expected:
-                invalid_rules.append(f"{source} → {target}")
-        if invalid_rules:
-            raise UserFacingError(
-                "Ma trận xưng hô từ AI không hợp lệ",
-                "Một hoặc nhiều quy tắc tham chiếu speaker không tồn tại.",
-                "Chạy lại Step 3 hoặc chọn model mạnh hơn.",
-                f"Invalid rules: {invalid_rules}",
-            )
+            if source in expected and target in expected:
+                valid_rules.append(item)
+        profile["addressing_rules"] = valid_rules
         return profile
 
     @staticmethod
@@ -135,7 +140,7 @@ class TranslationWorkflow:
 
         if consistency_enabled:
             if progress:
-                progress(3, "AI đang đọc toàn bộ hội thoại và xác định vai trò speaker…")
+                progress(3, "AI đang phân tích tối đa 250 segment đại diện và phân loại speaker…")
             response = self.provider.analyze_dialogue(
                 segments,
                 resolved_name_policy,

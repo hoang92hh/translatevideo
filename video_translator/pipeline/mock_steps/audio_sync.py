@@ -25,6 +25,8 @@ def _tts_settings(metadata: dict[str, Any]) -> dict[str, Any]:
         "speaker_profiles": dict(
             metadata.get("requested_speaker_profiles", metadata.get("speaker_profiles", {}))
         ),
+        "speaker_group_profiles": dict(metadata.get("speaker_group_profiles", {})),
+        "speaker_profile_assignments": dict(metadata.get("speaker_profile_assignments", {})),
         "shared_speaker_profile": dict(metadata.get("shared_speaker_profile", {})),
     }
     provider_settings = metadata.get("provider_settings", {})

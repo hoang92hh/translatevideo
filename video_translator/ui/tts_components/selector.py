@@ -114,6 +114,10 @@ class TtsComponentSelector(QWidget):
     def settings(self) -> dict[str, Any]:
         return self.current_component().settings()
 
-    def set_speakers(self, speakers: tuple[str, ...]) -> None:
+    def set_speakers(
+        self,
+        speakers: tuple[str, ...],
+        dialogue_profile: dict[str, Any] | None = None,
+    ) -> None:
         for component in self.components:
-            component.set_speakers(speakers)
+            component.set_speakers(speakers, dialogue_profile)

@@ -127,6 +127,9 @@ class PiperTtsComponent(TtsComponentBase):
                 "SPEAKER_01": 1,
                 "SPEAKER_02": 2,
                 "__shared__": 3,
+                "__minor_male__": 3,
+                "__minor_female__": 4,
+                "__minor_unknown__": 5,
             }.get(key, 0)
             model.config_loaded.connect(
                 lambda config, target=model_speaker, suggested=suggested_speaker_id: (
@@ -191,7 +194,6 @@ class PiperTtsComponent(TtsComponentBase):
 
     def settings(self) -> dict[str, Any]:
         profiles: dict[str, dict[str, object]] = {}
-        shared: dict[str, object] = {}
         for key, (picker, model_speaker) in self._profile_controls.items():
             path = picker.value()
             profile: dict[str, object] = {
@@ -199,10 +201,7 @@ class PiperTtsComponent(TtsComponentBase):
                 "model_path": path,
                 "piper_speaker_id": model_speaker.currentData(),
             }
-            if key == "__shared__":
-                shared = profile
-            else:
-                profiles[key] = profile
+            profiles[key] = profile
         return {
             "provider": self.provider_name,
             "voice": "",
@@ -213,6 +212,5 @@ class PiperTtsComponent(TtsComponentBase):
             "noise_w_scale": self.noise_w_scale.value(),
             "volume": self.volume.value(),
             "normalize_audio": self.normalize_audio.isChecked(),
-            "speaker_profiles": profiles,
-            "shared_speaker_profile": shared,
+            **self.profile_settings(profiles),
         }

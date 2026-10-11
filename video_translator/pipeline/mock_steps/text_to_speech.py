@@ -14,6 +14,7 @@ from ...config.tts import (
     PROVIDER_LICENSE_NOTES,
     VIENEU_PROVIDER,
 )
+from ...config.speaker_profiles import resolve_speaker_profile
 from ...errors import UserFacingError
 from ...models import StepId, StepResult, TtsCandidate
 from ...services import TextToSpeechService
@@ -44,10 +45,17 @@ def execute(
     speaker_profiles = raw_profiles if isinstance(raw_profiles, dict) else {}
     raw_shared_profile = settings.get("shared_speaker_profile", {})
     shared_profile = raw_shared_profile if isinstance(raw_shared_profile, dict) else {}
+    raw_group_profiles = settings.get("speaker_group_profiles", {})
+    group_profiles = raw_group_profiles if isinstance(raw_group_profiles, dict) else {}
     references = [reference]
     references.extend(
         str(profile.get("reference_voice", "")).strip()
         for profile in speaker_profiles.values()
+        if isinstance(profile, dict)
+    )
+    references.extend(
+        str(profile.get("reference_voice", "")).strip()
+        for profile in group_profiles.values()
         if isinstance(profile, dict)
     )
     references.append(str(shared_profile.get("reference_voice", "")).strip())
@@ -84,11 +92,7 @@ def execute(
         for speaker_id in dict.fromkeys(
             segment.speaker_id.strip() or "SPEAKER_UNKNOWN" for segment in active_segments
         ):
-            profile = (
-                speaker_profiles.get(speaker_id, {})
-                if speaker_id in {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"}
-                else shared_profile
-            )
+            profile = resolve_speaker_profile(settings, speaker_id)
             model_path = (
                 str(profile.get("model_path") or profile.get("voice") or "").strip()
                 if isinstance(profile, dict)
@@ -107,7 +111,7 @@ def execute(
             raise UserFacingError(
                 "Chưa chọn đủ model Piper",
                 "Thiếu model cho: " + ", ".join(missing_models),
-                "Chọn file .onnx riêng cho SPEAKER_00–02 và model chung nếu có speaker còn lại.",
+                "Chọn model cho từng nhân vật chính/quan trọng và từng nhóm nhân vật phụ đang sử dụng.",
             )
         if invalid_models:
             speaker_id, path = invalid_models[0]
@@ -116,16 +120,14 @@ def execute(
                 f"{speaker_id}: {path}",
                 "Mỗi model cần file .onnx và file cấu hình .onnx.json nằm cùng thư mục.",
             )
-    if provider in {VIENEU_PROVIDER, MELO_OPENVOICE_PROVIDER} and (speaker_profiles or shared_profile):
+    if provider in {VIENEU_PROVIDER, MELO_OPENVOICE_PROVIDER} and (
+        speaker_profiles or group_profiles or shared_profile
+    ):
         missing_speakers: list[str] = []
         for speaker_id in dict.fromkeys(
             segment.speaker_id.strip() or "SPEAKER_UNKNOWN" for segment in active_segments
         ):
-            profile = (
-                speaker_profiles.get(speaker_id, {})
-                if speaker_id in {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"}
-                else shared_profile
-            )
+            profile = resolve_speaker_profile(settings, speaker_id)
             profile_reference = (
                 str(profile.get("reference_voice", "")).strip()
                 if isinstance(profile, dict)
@@ -137,7 +139,7 @@ def execute(
             raise UserFacingError(
                 "Chưa chọn đủ giọng tham chiếu",
                 "Thiếu giọng cho: " + ", ".join(missing_speakers),
-                "Chọn reference riêng cho SPEAKER_00–02 và reference chung nếu có speaker còn lại.",
+                "Chọn reference cho từng nhân vật chính/quan trọng và từng nhóm nhân vật phụ đang sử dụng.",
             )
     now = datetime.now(timezone.utc)
     candidate_id = f"tts-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
@@ -206,6 +208,8 @@ def execute(
             "reference_voice": reference,
             "speaker_profiles": resolved_profiles,
             "requested_speaker_profiles": speaker_profiles,
+            "speaker_group_profiles": group_profiles,
+            "speaker_profile_assignments": dict(settings.get("speaker_profile_assignments", {})),
             "shared_speaker_profile": shared_profile,
             "provider_settings": {
                 key: settings[key]

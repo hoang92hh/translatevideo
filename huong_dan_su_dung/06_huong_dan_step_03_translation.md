@@ -35,7 +35,7 @@ biến môi trường trên máy đó.
   - `Pinyin`: buộc dùng Hanyu Pinyin không dấu thanh.
   - `Giữ nguyên chữ gốc`: không chuyển tự tên riêng.
 - `Chế độ chất lượng — phân tích toàn truyện và kiểm duyệt`: bật mặc định. Khi bật,
-  Step 03 gửi toàn bộ transcript để phân tích mọi speaker trước khi dịch và kiểm duyệt
+  Step 03 phân tích mọi speaker trước khi dịch và kiểm duyệt
   lại toàn bộ kết quả sau khi dịch. Tắt tùy chọn này để dùng luồng một lượt nhanh và
   tiết kiệm request hơn; khi đó không có hồ sơ nhân vật do AI phân tích.
 
@@ -56,9 +56,11 @@ riêng trong cùng cuộc trò chuyện thuộc Project và kết quả JSON đ�
 lưu riêng trong `project.json` của project video hiện tại. Không đóng hoặc tải lại tab trong lúc job đang chạy;
 extension không tự gửi lại prompt khi không chắc request trước đã được thực thi hay chưa.
 
-Để tránh dán nội dung quá dài vào composer, giai đoạn phân tích đính kèm `step3-analysis.json` và giai
-đoạn kiểm duyệt đính kèm `step3-review.json`. Các batch dịch vẫn được gửi trực tiếp và chịu sự điều khiển
-của `Segments / batch`. File chỉ được tạo trong bộ nhớ cho lượt chat, không được thêm vào Project Sources.
+Để tránh dán nội dung dài vào composer, cả ba giai đoạn đều gửi input bằng file JSON đính kèm. Giai đoạn
+phân tích dùng `step3-analysis.json`, mỗi batch dịch dùng file có dạng
+`step3-translation-0121-0140.json`, và giai đoạn kiểm duyệt dùng `step3-review.json`. Kích thước batch vẫn
+do `Segments / batch` điều khiển. Các file chỉ được tạo trong bộ nhớ cho lượt chat, không được thêm vào
+Project Sources.
 
 Ba chỉ dẫn ngắn cho giai đoạn phân tích, dịch và kiểm duyệt nằm tại
 [`reference/web_translation_prompts.md`](../reference/web_translation_prompts.md). Có thể sửa nội dung dưới
@@ -88,12 +90,16 @@ quota và rate limit riêng; project đã bật billing sẽ tính phí theo tok
 
 Khi bật chế độ nhất quán toàn bộ hội thoại, Step 03 chạy ba giai đoạn:
 
-1. **Phân tích tổng quan**: AI nhận toàn bộ transcript theo thứ tự thời gian trong một
-   request, với mỗi dòng có dạng `[ID] SPEAKER_ID: câu nguồn`. AI trả một phần tử trong
-   `speakers` cho từng nhân vật, cùng `addressing_rules` có hướng từ người nói tới người
+1. **Phân tích tổng quan**: với tối đa 250 segment, AI nhận toàn bộ transcript. Khi dài
+   hơn, ứng dụng lấy tối đa 250 segment đại diện trải đều từ đầu đến cuối, ưu tiên giữ
+   ít nhất một câu của speaker ít xuất hiện và gửi thêm thống kê của toàn kịch bản.
+   Mỗi dòng có dạng `[ID] SPEAKER_ID: câu nguồn`. AI trả một phần tử trong `speakers`
+   cho từng người nói, phân loại `main`/`supporting`/`minor` và `male`/`female`/`unknown`,
+   cùng `addressing_rules` có hướng từ người nói tới người
    được nói với, phong cách nói, cách tự xưng/cách gọi, thuật ngữ và bảng `names` ánh xạ
    chữ gốc sang đúng một `canonical_name`. `speaker_id` giữ đúng một người xuyên suốt;
    AI không được tự khẳng định giới tính, tuổi hoặc quan hệ khi nội dung chưa đủ dữ kiện.
+   Nhân vật phụ chỉ cần hồ sơ ngắn phục vụ gom voice theo giới tính ở Step 4.
 2. **Dịch theo batch**: mỗi batch nhận hồ sơ chung, ba segment trước/sau ở ranh giới và
    các bản dịch gần nhất. Mỗi segment còn nhận đúng hồ sơ của speaker và các quy tắc
    xưng hô đang áp dụng cho đoạn đó. Tên đã có trong bảng phải dùng nguyên

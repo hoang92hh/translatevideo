@@ -43,17 +43,11 @@ class EdgeTtsComponent(TtsComponentBase):
 
     def settings(self) -> dict[str, Any]:
         profiles: dict[str, dict[str, str]] = {}
-        shared: dict[str, str] = {}
         for key, voice in self._profile_controls.items():
-            profile = {"voice": voice.currentText()}
-            if key == "__shared__":
-                shared = profile
-            else:
-                profiles[key] = profile
+            profiles[key] = {"voice": voice.currentText()}
         return {
             "provider": self.provider_name,
             "voice": self.voice.currentText(),
             "speed": self.speed.value(),
-            "speaker_profiles": profiles,
-            "shared_speaker_profile": shared,
+            **self.profile_settings(profiles),
         }

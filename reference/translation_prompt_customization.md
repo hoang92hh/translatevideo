@@ -28,7 +28,7 @@ dịch ở Step 03 và chức năng AI rút gọn câu tại Step 05.
 
 `TranslationWorkflow` điều phối ba tác vụ AI theo thứ tự:
 
-1. `analyze_dialogue()` đọc toàn bộ transcript một lần và tạo `dialogue_profile`.
+1. `analyze_dialogue()` đọc tối đa 250 segment đại diện một lần và tạo `dialogue_profile`.
 2. `translate_batch()` dịch từng batch bằng hồ sơ chung và ngữ cảnh chồng lấn.
 3. `review_translation()` đọc toàn bộ bản dịch một lần và chỉ trả các ID cần sửa.
 
@@ -48,13 +48,16 @@ chế structured output riêng của provider đó.
   "source_language": "Chinese",
   "target_language": "Vietnamese",
   "proper_name_policy": {},
-  "full_transcript": "[0001] SPEAKER_00: ...\n[0002] SPEAKER_01: ..."
+  "transcript_scope": {"total_segment_count": 320, "analyzed_segment_count": 250, "is_sampled": true},
+  "speaker_statistics": [{"speaker_id": "SPEAKER_00", "segment_count": 180, "total_duration_seconds": 420.5}],
+  "transcript": "[0001] SPEAKER_00: ...\n[0002] SPEAKER_01: ..."
 }
 ```
 
 - `proper_name_policy`: quy tắc tên được code giải quyết trước khi gọi AI.
-- `full_transcript`: toàn bộ câu nguồn theo thứ tự thời gian, mỗi dòng gắn ID và
-  `speaker_id`. Giai đoạn này chỉ gọi provider một lần.
+- `transcript`: toàn bộ câu nguồn nếu có không quá 250 segment; nếu dài hơn thì là mẫu
+  đại diện trải đều, ưu tiên speaker ít xuất hiện. `speaker_statistics` vẫn được tính từ
+  toàn bộ kịch bản. Giai đoạn này chỉ gọi provider một lần.
 
 Kết quả phải khớp `DialogueProfileOutput`, gồm:
 
@@ -67,7 +70,7 @@ Kết quả phải khớp `DialogueProfileOutput`, gồm:
 - `uncertainties`
 
 Mỗi phần tử trong `names` ánh xạ `source_name` sang đúng một `canonical_name`.
-Mỗi speaker có `story_role`, `default_self_reference`, phong cách nói,
+Mỗi speaker có `importance`, `gender`, `story_role`, `default_self_reference`, phong cách nói,
 `voice_description` trung lập provider và các thuộc tính tham chiếu giọng. Mỗi quy tắc
 xưng hô có `from_speaker`, `to_speaker`, khoảng segment
 áp dụng, cách tự xưng, cách gọi trực tiếp và cách nhắc ở ngôi thứ ba.
@@ -90,7 +93,9 @@ xưng hô có `from_speaker`, `to_speaker`, khoảng segment
 
 AI chỉ được trả kết quả cho `segments_to_translate`. `speaker_context_for_targets`
 chứa hồ sơ và quy tắc xưng hô áp dụng cho từng ID mục tiêu. Các segment trong
-`context_before` và `context_after` chỉ dùng làm ngữ cảnh.
+`context_before` và `context_after` chỉ dùng làm ngữ cảnh. Với ChatGPT Web và Claude
+Web, toàn bộ payload của mỗi batch được đính kèm bằng file có tên theo khoảng ID;
+prompt trong composer chỉ chứa nhiệm vụ, output contract và tên file cần đọc.
 
 ### 3.3. Rà soát tổng thể
 

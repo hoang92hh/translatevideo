@@ -267,7 +267,9 @@ class AudioSyncStepPage(StepPage):
         )
         if self._repair_dialog:
             self._repair_dialog.set_busy(busy, message)
-        self.run_button.setEnabled(not busy and self.state.can_run(StepId.SYNC))
+        can_run = not busy and self.state.can_run(StepId.SYNC)
+        self.run_button.setEnabled(can_run)
+        self.run_from_here_button.setEnabled(can_run)
 
     def ai_rewrite_finished(self, translations: dict[int, str], message: str) -> None:
         self.set_repair_busy(False)

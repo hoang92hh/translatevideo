@@ -78,9 +78,14 @@ class TranslationStepPage(StepPage):
             and self.state.can_run(self.spec.step)
             and status != StepStatus.RUNNING
         )
-        self.run_button.setToolTip(
-            "" if ready else self.translation_selector.unavailable_reason()
+        self.run_from_here_button.setEnabled(
+            ready
+            and self.state.can_run(self.spec.step)
+            and status != StepStatus.RUNNING
         )
+        unavailable_reason = "" if ready else self.translation_selector.unavailable_reason()
+        self.run_button.setToolTip(unavailable_reason)
+        self.run_from_here_button.setToolTip(unavailable_reason)
 
     def refresh_special(self) -> None:
         if hasattr(self, "translation_combo") and not getattr(self, "_processing", False):

@@ -85,7 +85,7 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 
 ## Trạng thái hiện tại
 
-- Có thể chạy từng step hoặc toàn bộ pipeline. Nếu chuỗi chạy toàn bộ bị dừng do lỗi, giao diện chuyển tới step lỗi và hiện nút **Continue** để tiếp tục từ step chưa hoàn thành sau khi người dùng xử lý.
+- Có thể chạy riêng từng step, chạy toàn bộ pipeline, hoặc dùng nút **Chạy từ Step XX đến cuối** trên mỗi trang để chạy lại step đang chọn rồi tự động nối tiếp tới Step 07. Nếu chuỗi bị dừng do lỗi, giao diện chuyển tới step lỗi và hiện nút **Continue** để tiếp tục từ step chưa hoàn thành sau khi người dùng xử lý.
 - Giao diện và mock handler của mỗi step nằm trong module riêng.
 - Cấu hình hiển thị theo provider được chọn.
 - Bảng segment giữ ID xuyên suốt pipeline và cho phép chỉnh sửa nội dung.

@@ -117,6 +117,7 @@ class MainWindow(QMainWindow):
         for page_type in STEP_PAGE_TYPES:
             page = page_type(self.state)
             page.run_requested.connect(self._run_requested)
+            page.run_from_here_requested.connect(self._run_from_here_requested)
             if hasattr(page, "ai_rewrite_requested"):
                 page.ai_rewrite_requested.connect(self._rewrite_sync_segments)
             if hasattr(page, "batch_repair_requested"):
@@ -180,6 +181,30 @@ class MainWindow(QMainWindow):
 
     def _run_requested(self, step_value: str) -> None:
         self._execute_step(StepId(step_value))
+
+    def _run_from_here_requested(self, step_value: str) -> None:
+        if not self.state.project:
+            QMessageBox.information(self, "Chưa có project", "Vui lòng tạo hoặc mở project trước.")
+            self.stack.setCurrentWidget(self.project_manager)
+            return
+        if self.active_workers:
+            QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ step hiện tại hoàn thành.")
+            return
+        step = StepId(step_value)
+        if not self.state.can_run(step):
+            QMessageBox.information(
+                self,
+                "Chưa đủ đầu vào",
+                "Hãy hoàn thành step trước trước khi chạy pipeline từ step này.",
+            )
+            return
+        self.running_all = True
+        self.continuing_pipeline = True
+        self.run_all_button.setVisible(False)
+        self.continue_button.setVisible(True)
+        self.continue_button.setEnabled(False)
+        self.continue_button.setText(f"Đang chạy từ Step {STEP_ORDER.index(step) + 1}…")
+        self._execute_step(step, continue_all=True)
 
     def _sync_repair_chain(self, candidate_id: str) -> dict[str, str] | None:
         candidate = self.state.sync_candidate(candidate_id)

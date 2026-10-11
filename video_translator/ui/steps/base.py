@@ -26,6 +26,7 @@ from ..specs import StepSpec
 
 class StepPage(QWidget):
     run_requested = Signal(str)
+    run_from_here_requested = Signal(str)
     SPEC: StepSpec
 
     def __init__(self, state: ProjectState) -> None:
@@ -134,6 +135,13 @@ class StepPage(QWidget):
         self.run_button.setObjectName("primaryButton")
         self.run_button.clicked.connect(lambda: self.run_requested.emit(self.spec.step.value))
         actions.addWidget(self.run_button)
+        self.run_from_here_button = QPushButton(
+            f"Chạy từ Step {self.spec.number} đến cuối"
+        )
+        self.run_from_here_button.clicked.connect(
+            lambda: self.run_from_here_requested.emit(self.spec.step.value)
+        )
+        actions.addWidget(self.run_from_here_button)
         return actions
 
     def build_special_card(self) -> Card | None:
@@ -155,6 +163,12 @@ class StepPage(QWidget):
     def set_busy(self, busy: bool) -> None:
         self.run_button.setDisabled(busy)
         self.run_button.setText("Đang xử lý…" if busy else f"Chạy step {self.spec.number}")
+        self.run_from_here_button.setDisabled(busy)
+        self.run_from_here_button.setText(
+            "Đang chạy pipeline…"
+            if busy
+            else f"Chạy từ Step {self.spec.number} đến cuối"
+        )
         if busy:
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(True)
@@ -185,7 +199,9 @@ class StepPage(QWidget):
         result = self.state.results.get(self.spec.step)
         self.show_candidate_result(result)
         self.refresh_special()
-        self.run_button.setEnabled(self.state.can_run(self.spec.step) and status != StepStatus.RUNNING)
+        can_run = self.state.can_run(self.spec.step) and status != StepStatus.RUNNING
+        self.run_button.setEnabled(can_run)
+        self.run_from_here_button.setEnabled(can_run)
 
     def show_candidate_result(self, result: StepResult | None) -> None:
         if result:

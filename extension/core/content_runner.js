@@ -106,12 +106,13 @@ function scheduleModelStateRead(reason) {
   }, 1000);
 }
 
-setInterval(() => {
-  const currentUrl = location.href;
-  if (currentUrl === lastModelStateUrl) return;
-  lastModelStateUrl = currentUrl;
-  scheduleModelStateRead("navigation");
-}, 500);
+// Tạm tắt đọc model/effort tự động khi URL thay đổi trong ChatGPT.
+// setInterval(() => {
+//   const currentUrl = location.href;
+//   if (currentUrl === lastModelStateUrl) return;
+//   lastModelStateUrl = currentUrl;
+//   scheduleModelStateRead("navigation");
+// }, 500);
 
 async function execute(job, record) {
   try {
@@ -250,4 +251,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-if (pageProvider === "chatgpt") scheduleModelStateRead("initial-load");
+// Tạm tắt đọc model/effort tự động khi reload trang.
+// if (pageProvider === "chatgpt") scheduleModelStateRead("initial-load");

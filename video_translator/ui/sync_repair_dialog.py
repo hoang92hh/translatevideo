@@ -55,6 +55,7 @@ class SyncRepairDialog(QDialog):
         self.show_all = show_all
         self.target_language = target_language
         self._default_visible_indexes: set[int] = set()
+        self._row_by_segment_id: dict[int, int] = {}
         self.setWindowTitle("Xử lý segment quá thời lượng")
         self.resize(1280, 720)
 
@@ -163,7 +164,7 @@ class SyncRepairDialog(QDialog):
     def load_payload(self, payload: dict[str, Any]) -> None:
         preserved = self._capture_row_state()
         self.table.blockSignals(True)
-        self.table.setRowCount(0)
+        self.table.setUpdatesEnabled(False)
         raw = payload.get("segments", [])
         all_segments = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
         speaker_choices = {
@@ -186,13 +187,17 @@ class SyncRepairDialog(QDialog):
                 visible_indexes.add(index - 1)
             if index + 1 < len(all_segments):
                 visible_indexes.add(index + 1)
-        self._default_visible_indexes = (
-            set(range(len(all_segments))) if self.show_all else visible_indexes
+        displayed = (
+            list(enumerate(all_segments))
+            if self.show_all
+            else [(index, all_segments[index]) for index in sorted(visible_indexes)]
         )
-        for index, item in enumerate(all_segments):
-            row = self.table.rowCount()
-            self.table.insertRow(row)
+        self.table.setRowCount(len(displayed))
+        self._default_visible_indexes = set(range(len(displayed)))
+        self._row_by_segment_id = {}
+        for row, (index, item) in enumerate(displayed):
             segment_id = int(item.get("id", row + 1))
+            self._row_by_segment_id[segment_id] = row
             is_resolved = item.get("status") == "ready"
             is_context = (
                 not self.show_all
@@ -250,14 +255,103 @@ class SyncRepairDialog(QDialog):
                 if current:
                     current.setText(str(saved["translated_text"]))
                 saved_speaker = str(saved["speaker_id"])
+                speaker.blockSignals(True)
                 if speaker.findText(saved_speaker) < 0:
                     speaker.addItem(saved_speaker)
                 speaker.setCurrentText(saved_speaker)
+                speaker.blockSignals(False)
+                start.blockSignals(True)
+                end.blockSignals(True)
                 start.setValue(float(saved["start"]))
                 end.setValue(float(saved["end"]))
+                start.blockSignals(False)
+                end.blockSignals(False)
             self.table.setRowHeight(row, 76)
         self.table.blockSignals(False)
+        self.table.setUpdatesEnabled(True)
         self._apply_search()
+        self._refresh_actions()
+
+    def refresh_payload(self, payload: dict[str, Any], processed_ids: set[int]) -> None:
+        """Patch repaired rows in place; rebuild only when row identity is unavailable."""
+        if not processed_ids or not self.table.rowCount():
+            self.load_payload(payload)
+            return
+        raw = payload.get("segments", [])
+        all_segments = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        by_id = {
+            int(item.get("id", -1)): item
+            for item in all_segments
+            if str(item.get("id", "")).lstrip("-").isdigit()
+        }
+        if processed_ids - set(by_id):
+            self.load_payload(payload)
+            return
+
+        self.table.blockSignals(True)
+        self.table.setUpdatesEnabled(False)
+        try:
+            for segment_id in processed_ids:
+                row = self._row_by_segment_id.get(segment_id)
+                if row is None:
+                    continue
+                selector = self.table.item(row, self.SELECT_COLUMN)
+                if not selector:
+                    continue
+                item = by_id[segment_id]
+                is_resolved = item.get("status") == "ready"
+                is_context = bool(selector.data(self.CONTEXT_ROLE))
+                selector.setData(self.RESOLVED_ROLE, is_resolved)
+                values = {
+                    self.STATUS_COLUMN: self._status_text(item, is_context),
+                    self.SEQ_COLUMN: str(item.get(
+                        "seq",
+                        1 if item.get("status") != "ready" or item.get("corrected_in_step_5") else 0,
+                    )),
+                    self.SOURCE_COLUMN: str(item.get("source_text", "")),
+                    self.ORIGINAL_COLUMN: str(item.get(
+                        "original_translated_text",
+                        item.get("translated_text", ""),
+                    )),
+                    self.CURRENT_COLUMN: str(item.get("draft_text") or item.get("translated_text", "")),
+                    self.TIMING_COLUMN: (
+                        f"TTS {float(item.get('prepared_duration', 0)):.2f}s\n"
+                        f"Cho phép {float(item.get('allowed_duration', 0)):.2f}s\n"
+                        f"Cần {float(item.get('speed_factor', 1)):.2f}x\n"
+                        f"Vay {float(item.get('borrowed_before', 0)):.2f}s trước / "
+                        f"{float(item.get('borrowed_after', 0)):.2f}s sau"
+                    ),
+                    self.NOTE_COLUMN: str(item.get("error", "")),
+                }
+                for column, value in values.items():
+                    cell = self.table.item(row, column)
+                    if cell:
+                        cell.setText(value)
+                current = self.table.item(row, self.CURRENT_COLUMN)
+                if current:
+                    current.setData(Qt.ItemDataRole.UserRole, str(item.get("edit_source", "original")))
+
+                speaker = self.table.cellWidget(row, self.SPEAKER_COLUMN)
+                if isinstance(speaker, QComboBox):
+                    speaker.blockSignals(True)
+                    speaker_id = str(item.get("speaker_id", "")).strip() or "SPEAKER_UNKNOWN"
+                    if speaker.findText(speaker_id) < 0:
+                        speaker.addItem(speaker_id)
+                    speaker.setCurrentText(speaker_id)
+                    speaker.blockSignals(False)
+                for column, key in ((self.START_COLUMN, "start"), (self.END_COLUMN, "end")):
+                    editor = self.table.cellWidget(row, column)
+                    if isinstance(editor, QDoubleSpinBox):
+                        editor.blockSignals(True)
+                        editor.setValue(float(item.get(key, 0.0)))
+                        editor.blockSignals(False)
+        finally:
+            self.table.blockSignals(False)
+            self.table.setUpdatesEnabled(True)
+        self._apply_search()
+        self._refresh_actions()
+
+    def _refresh_actions(self) -> None:
         has_selectable_rows = self.table.rowCount() > 0
         has_errors = any(
             not bool(self.table.item(row, self.SELECT_COLUMN).data(self.RESOLVED_ROLE))

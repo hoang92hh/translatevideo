@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1360,6 +1361,19 @@ class ProjectState(QObject):
         self.invalidate_from(step)
         self.statuses[step] = StepStatus.RUNNING
         self.step_changed.emit(step.value)
+        self.save_project()
+
+    def pipeline_snapshot(self) -> tuple[dict[StepId, StepResult], dict[StepId, StepStatus]]:
+        return deepcopy(self.results), dict(self.statuses)
+
+    def restore_pipeline_snapshot(
+        self,
+        snapshot: tuple[dict[StepId, StepResult], dict[StepId, StepStatus]],
+    ) -> None:
+        self.results, self.statuses = deepcopy(snapshot[0]), dict(snapshot[1])
+        for step in STEP_ORDER:
+            self.step_changed.emit(step.value)
+        self.project_changed.emit()
         self.save_project()
 
     def mark_error(self, step: StepId, restore_previous: bool = True) -> None:

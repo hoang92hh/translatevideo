@@ -284,7 +284,7 @@ class AudioSyncStepPage(StepPage):
             self._repair_dialog.apply_ai_results(translations)
             self._repair_dialog.set_busy(False, message)
 
-    def repair_finished(self, candidate_id: str) -> None:
+    def repair_finished(self, candidate_id: str, processed_ids: set[int] | None = None) -> None:
         self.set_repair_busy(False)
         self._loaded_manifest_signature = None
         self._refresh_candidates(prefer_current=True)
@@ -292,7 +292,10 @@ class AudioSyncStepPage(StepPage):
         if target >= 0:
             self.sync_combo.setCurrentIndex(target)
         if self._repair_dialog and self._repair_dialog.candidate_id == candidate_id:
-            self._repair_dialog.load_payload(dict(self._candidate_payload))
+            self._repair_dialog.refresh_payload(
+                dict(self._candidate_payload),
+                processed_ids or set(),
+            )
 
     def _select_for_step_six(self) -> None:
         candidate = self._current_candidate()

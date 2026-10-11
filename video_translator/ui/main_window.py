@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
-from ..models import STEP_ORDER, StepId, StepStatus
+from ..models import STEP_ORDER, StepId, StepResult, StepStatus
 from ..pipeline import MockPipeline
 from ..pipeline.worker import (
     AudioSyncAiRewriteWorker,
@@ -47,6 +48,7 @@ class MainWindow(QMainWindow):
         self.running_all = False
         self.continuing_pipeline = False
         self.active_workers: set[PipelineWorker] = set()
+        self.active_pipeline_worker: PipelineWorker | None = None
         self.pages: dict[StepId, StepPage] = {}
         self._loading_project = False
         self._dirty_steps: set[StepId] = set()
@@ -110,6 +112,11 @@ class MainWindow(QMainWindow):
         self.continue_button.clicked.connect(self._continue_pipeline)
         self.continue_button.setVisible(False)
         top_layout.addWidget(self.continue_button)
+        self.stop_pipeline_button = QPushButton("Dừng pipeline")
+        self.stop_pipeline_button.setObjectName("stopButton")
+        self.stop_pipeline_button.clicked.connect(self._request_pipeline_stop)
+        self.stop_pipeline_button.setVisible(False)
+        top_layout.addWidget(self.stop_pipeline_button)
         root.addWidget(top)
 
         self.tabs = QTabWidget()
@@ -346,6 +353,11 @@ class MainWindow(QMainWindow):
 
         def succeeded(result: object) -> None:
             data = result if isinstance(result, dict) else {}
+            processed_ids = {
+                int(item)
+                for item in data.get("processed_ids", [])
+                if isinstance(item, (int, str)) and str(item).isdigit()
+            }
             refreshed = self.state.refresh_repaired_chain(
                 chain["transcript_id"],
                 chain["translation_id"],
@@ -354,7 +366,7 @@ class MainWindow(QMainWindow):
             )
             message = str(data.get("message") or "Đã cập nhật các segment.")
             page.set_progress(100, message)
-            page.repair_finished(candidate_id)
+            page.repair_finished(candidate_id, processed_ids)
             if not refreshed:
                 QMessageBox.warning(self, "Không thể nạp lại output", "Các manifest đã cập nhật nhưng không thể nạp lại chuỗi candidate.")
 
@@ -413,6 +425,60 @@ class MainWindow(QMainWindow):
         worker.finished.connect(finished)
         QTimer.singleShot(100, worker.start)
 
+    def _request_pipeline_stop(self) -> None:
+        worker = self.active_pipeline_worker
+        if not worker:
+            return
+        worker.cancel()
+        self.running_all = False
+        self.stop_pipeline_button.setEnabled(False)
+        self.stop_pipeline_button.setText("Đang dừng an toàn…")
+        page = self.pages.get(worker.step)
+        if page:
+            page.set_progress(
+                page.progress_bar.value(),
+                "Đã yêu cầu dừng; đang chờ checkpoint an toàn của tác vụ hiện tại…",
+            )
+
+    def _discard_cancelled_result(self, result: StepResult | None) -> None:
+        if not result or not self.state.project:
+            return
+        target_roots: list[tuple[Path, Path]] = []
+        if result.step == StepId.EXTRACT:
+            root = self.state.project.path("audio_separation")
+            for candidate in result.audio_candidates:
+                if candidate.id == "original-mix" or not candidate.stems:
+                    continue
+                target_roots.append((Path(next(iter(candidate.stems.values()))).parent, root))
+        elif result.step == StepId.STT:
+            root = self.state.project.path("transcripts")
+            target_roots.extend((Path(candidate.path).parent, root) for candidate in result.transcript_candidates)
+        elif result.step == StepId.TRANSLATE:
+            root = self.state.project.path("translations")
+            target_roots.extend((Path(candidate.path).parent, root) for candidate in result.translation_candidates)
+        elif result.step == StepId.TTS:
+            root = self.state.project.path("generated_audio")
+            target_roots.extend((Path(candidate.folder), root) for candidate in result.tts_candidates)
+        elif result.step == StepId.SYNC:
+            root = self.state.project.path("synchronized_audio")
+            target_roots.extend((Path(candidate.folder), root) for candidate in result.sync_candidates)
+        elif result.step == StepId.BUILD_AUDIO:
+            root = self.state.project.path("built_audio")
+            target_roots.extend((Path(candidate.folder), root) for candidate in result.build_audio_candidates)
+        elif result.step == StepId.RENDER:
+            root = self.state.project.path("output")
+            target_roots.extend((Path(candidate.folder), root) for candidate in result.render_candidates)
+
+        for target, root in target_roots:
+            resolved_target = target.resolve()
+            resolved_root = root.resolve()
+            if (
+                resolved_target != resolved_root
+                and resolved_target.is_relative_to(resolved_root)
+                and resolved_target.is_dir()
+            ):
+                shutil.rmtree(resolved_target, ignore_errors=True)
+
     def _execute_step(self, step: StepId, continue_all: bool = False) -> None:
         if self.active_workers:
             QMessageBox.information(self, "Pipeline đang chạy", "Vui lòng chờ step hiện tại hoàn thành.")
@@ -423,9 +489,13 @@ class MainWindow(QMainWindow):
             return
         page = self.pages[step]
         settings = page.settings()
+        pipeline_snapshot = self.state.pipeline_snapshot()
         page.set_busy(True)
         page.prepare_run()
         self.state.mark_running(step)
+        self.stop_pipeline_button.setVisible(True)
+        self.stop_pipeline_button.setEnabled(True)
+        self.stop_pipeline_button.setText("Dừng pipeline")
         self.tabs.setCurrentWidget(page)
         if continue_all:
             if self.continuing_pipeline:
@@ -437,8 +507,9 @@ class MainWindow(QMainWindow):
                     f"Đang chạy Step {STEP_ORDER.index(step) + 1}/{len(STEP_ORDER)}…"
                 )
         worker = PipelineWorker(self.pipeline, step, self.state, settings)
-        outcome = {"success": False}
+        outcome = {"success": False, "cancelled": False}
         self.active_workers.add(worker)
+        self.active_pipeline_worker = worker
         worker.progress_changed.connect(page.set_progress)
 
         def succeeded(result: object) -> None:
@@ -456,6 +527,14 @@ class MainWindow(QMainWindow):
                     f"Step {STEP_ORDER.index(step) + 1:02d} cần xử lý",
                     "Pipeline đã dừng tại step này. Hãy xử lý các lỗi được hiển thị rồi nhấn Continue.",
                 )
+
+        def cancelled(result: object) -> None:
+            outcome["cancelled"] = True
+            self._discard_cancelled_result(result if isinstance(result, StepResult) else None)
+            self.state.restore_pipeline_snapshot(pipeline_snapshot)
+            page.set_busy(False)
+            page.refresh()
+            page.set_progress(0, "Đã dừng an toàn. Output của lần chạy dang dở đã bị loại bỏ.")
 
         def failed(payload: object) -> None:
             self.state.mark_error(step, restore_previous=not continue_all)
@@ -483,8 +562,12 @@ class MainWindow(QMainWindow):
 
         def finished() -> None:
             self.active_workers.discard(worker)
+            if self.active_pipeline_worker is worker:
+                self.active_pipeline_worker = None
             worker.deleteLater()
-            if outcome["success"] and continue_all and self.running_all:
+            if outcome["cancelled"]:
+                self._reset_pipeline_buttons()
+            elif outcome["success"] and continue_all and self.running_all:
                 next_index = STEP_ORDER.index(step) + 1
                 if next_index < len(STEP_ORDER):
                     self._execute_step(STEP_ORDER[next_index], continue_all=True)
@@ -492,8 +575,13 @@ class MainWindow(QMainWindow):
                     self._stop_run_all()
             elif continue_all and self.running_all:
                 self._stop_run_all(interrupted=True)
+            elif not continue_all:
+                self.stop_pipeline_button.setVisible(False)
+                self.stop_pipeline_button.setEnabled(True)
+                self.stop_pipeline_button.setText("Dừng pipeline")
 
         worker.succeeded.connect(succeeded)
+        worker.cancelled.connect(cancelled)
         worker.failed.connect(failed)
         worker.finished.connect(finished)
         QTimer.singleShot(150, worker.start)
@@ -550,6 +638,9 @@ class MainWindow(QMainWindow):
             self.continue_button.setVisible(True)
             self.continue_button.setEnabled(True)
             self.continue_button.setText("Continue")
+            self.stop_pipeline_button.setVisible(False)
+            self.stop_pipeline_button.setEnabled(True)
+            self.stop_pipeline_button.setText("Dừng pipeline")
             return
         self._reset_pipeline_buttons()
 
@@ -562,6 +653,9 @@ class MainWindow(QMainWindow):
         self.run_all_button.setVisible(True)
         self.run_all_button.setEnabled(True)
         self.run_all_button.setText("Chạy toàn bộ pipeline")
+        self.stop_pipeline_button.setVisible(False)
+        self.stop_pipeline_button.setEnabled(True)
+        self.stop_pipeline_button.setText("Dừng pipeline")
 
     def _refresh_step(self, step_value: str) -> None:
         step = StepId(step_value)

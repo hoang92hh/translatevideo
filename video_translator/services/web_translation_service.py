@@ -56,11 +56,77 @@ class WebTranslationService:
         self._last_raw_response = ""
 
     @staticmethod
-    def _parse_json(text: str) -> object:
+    def _normalize_smart_json_quotes(text: str) -> str:
+        """Normalize typographic JSON delimiters without rewriting quoted prose."""
+        result: list[str] = []
+        in_string = False
+        smart_delimiter = False
+        escaped = False
+
+        for index, character in enumerate(text):
+            if not in_string:
+                if character == '"':
+                    in_string = True
+                    smart_delimiter = False
+                elif character in "“”":
+                    result.append('"')
+                    in_string = True
+                    smart_delimiter = True
+                    continue
+                result.append(character)
+                continue
+
+            if escaped:
+                result.append(character)
+                escaped = False
+                continue
+            if character == "\\":
+                result.append(character)
+                escaped = True
+                continue
+            if not smart_delimiter:
+                result.append(character)
+                if character == '"':
+                    in_string = False
+                continue
+            if character not in {'"', "“", "”"}:
+                result.append(character)
+                continue
+
+            lookahead = index + 1
+            while lookahead < len(text) and text[lookahead].isspace():
+                lookahead += 1
+            next_significant = text[lookahead] if lookahead < len(text) else None
+            if next_significant is None or next_significant in ":,}]":
+                result.append('"')
+                in_string = False
+                smart_delimiter = False
+            else:
+                result.append(character)
+
+        return "".join(result)
+
+    @classmethod
+    def _parse_json(cls, text: str, *, normalize_smart_quotes: bool = False) -> object:
         cleaned = text.strip()
         fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned, re.IGNORECASE)
         if fenced:
             cleaned = fenced.group(1).strip()
+        if normalize_smart_quotes and any(
+            quote in cleaned for quote in ("\u201c", "\u201d")
+        ):
+            strict_starts = [
+                position for position in (cleaned.find("["), cleaned.find("{"))
+                if position >= 0
+            ]
+            if strict_starts:
+                try:
+                    parsed, _end = json.JSONDecoder().raw_decode(
+                        cleaned[min(strict_starts) :]
+                    )
+                    return parsed
+                except json.JSONDecodeError:
+                    cleaned = cls._normalize_smart_json_quotes(cleaned)
         starts = [position for position in (cleaned.find("["), cleaned.find("{")) if position >= 0]
         if not starts:
             raise ValueError("Phản hồi không chứa JSON object hoặc array.")
@@ -91,10 +157,17 @@ class WebTranslationService:
             if attachment_name
             else f"INPUT JSON\n{serialized_payload}"
         )
+        quote_requirement = (
+            "Use only the ASCII double quote character U+0022 for every JSON key and string delimiter. "
+            "Do not use typographic quotes U+201C or U+201D.\n"
+            if self.provider_name == CLAUDE_WEB_PROVIDER_NAME
+            else ""
+        )
         prompt = (
             f"SYSTEM TASK\n{instruction}\n\n"
             "OUTPUT CONTRACT\n"
             f"{output_contract}\n"
+            f"{quote_requirement}"
             "Return JSON only. Do not use Markdown fences, commentary, prefaces, or trailing notes.\n\n"
             f"{input_section}"
         )
@@ -116,7 +189,10 @@ class WebTranslationService:
             )
             self._last_raw_response = response
             self._conversation_started = True
-            return self._parse_json(response)
+            return self._parse_json(
+                response,
+                normalize_smart_quotes=self.provider_name == CLAUDE_WEB_PROVIDER_NAME,
+            )
         except UserFacingError:
             raise
         except (ValueError, json.JSONDecodeError, ValidationError) as exc:

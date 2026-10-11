@@ -7,9 +7,20 @@ function usableFileInput(input) {
   return !accept || accept.includes("json") || accept.includes("text") || accept.includes("*/*");
 }
 
-function findFileInput(doc, composer) {
-  const form = composer.closest("form");
-  const local = form ? [...form.querySelectorAll('input[type="file"]')].filter(usableFileInput) : [];
+function findFileInput(doc, composer, preferredInput = null) {
+  if (preferredInput) {
+    if (!usableFileInput(preferredInput)) {
+      throw attachmentError(
+        "ATTACHMENT_INPUT_NOT_FOUND",
+        "The selected composer file input is not available.",
+      );
+    }
+    return preferredInput;
+  }
+  const composerScope = composer.closest("form, fieldset");
+  const local = composerScope
+    ? [...composerScope.querySelectorAll('input[type="file"]')].filter(usableFileInput)
+    : [];
   const candidates = local.length
     ? local
     : [...doc.querySelectorAll('input[type="file"]')].filter(usableFileInput);
@@ -30,8 +41,8 @@ function visible(win, node) {
 }
 
 function attachmentVisible(doc, composer, name) {
-  const form = composer.closest("form") || doc.body;
-  const candidates = [...form.querySelectorAll(
+  const composerScope = composer.closest("form, fieldset") || doc.body;
+  const candidates = [...composerScope.querySelectorAll(
     '[data-testid*="attach" i], [data-testid*="file" i], [aria-label], [title], button, span, div',
   )];
   return candidates.some(node => {
@@ -48,6 +59,7 @@ function attachmentVisible(doc, composer, name) {
 export async function attachComposerFiles(doc, composer, attachments, {
   timeoutMs = 30000,
   log = () => {},
+  fileInput = null,
 } = {}) {
   if (!Array.isArray(attachments) || attachments.length !== 1) {
     throw attachmentError("INVALID_REQUEST", "Exactly one composer attachment is required.");
@@ -58,7 +70,7 @@ export async function attachComposerFiles(doc, composer, attachments, {
       || typeof attachment.mime_type !== "string" || !attachment.mime_type.trim()) {
     throw attachmentError("INVALID_REQUEST", "Attachment name, content and MIME type are required.");
   }
-  const input = findFileInput(doc, composer);
+  const input = findFileInput(doc, composer, fileInput);
   const transfer = new doc.defaultView.DataTransfer();
   transfer.items.add(new doc.defaultView.File([attachment.content], attachment.name, {
     type: attachment.mime_type,

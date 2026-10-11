@@ -1067,6 +1067,7 @@ def repair_sync_segments(
     resolved = sum(1 for segment_id in target_ids if sync_segments[segment_id].get("status") == "ready")
     return {
         "candidate_id": str(sync_payload.get("candidate_id", "")),
+        "processed_ids": target_ids,
         "processed_count": len(target_ids),
         "resolved_count": resolved,
         "error_count": error_count,

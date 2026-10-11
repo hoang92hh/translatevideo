@@ -1,5 +1,6 @@
 import { BaseProvider } from "../base_provider.js";
 import { claudeSelectors as S } from "./claude_selectors.js";
+import { attachComposerFiles } from "../../core/composer_attachments.js";
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const normalize = value => (value || "").replace(/\r\n?/g, "\n").trim();
@@ -59,11 +60,20 @@ export class ClaudeProvider extends BaseProvider {
     if (typeof content !== "string" || !content.trim()) {
       throw fail("INVALID_REQUEST", "Prompt must be a non-blank string.");
     }
-    if (Object.keys(options).length) throw fail("UNSUPPORTED_OPTION", "Options are not supported.");
+    if (Object.keys(options).some(key => key !== "attachments")) {
+      throw fail("UNSUPPORTED_OPTION", "Only composer attachments are supported.");
+    }
     if (!(await this.isReady())) throw fail("PROVIDER_NOT_READY", "Claude is not ready or is generating.");
-    const composer = this.find(S.composer);
+    let composer = this.find(S.composer);
     if (normalize(this.composerText(composer))) {
       throw fail("COMPOSER_NOT_EMPTY", "Clear the existing Claude draft before starting a job.");
+    }
+    if (options.attachments?.length) {
+      await attachComposerFiles(this.doc, composer, options.attachments, { log: this.log });
+      composer = this.find(S.composer);
+      if (!composer || !this.editable(composer)) {
+        throw fail("COMPOSER_NOT_FOUND", "Claude composer disappeared after attachment upload.");
+      }
     }
     this.prompt = content;
     composer.focus();

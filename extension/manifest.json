@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MyTool Bridge Extension",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "minimum_chrome_version": "120",
   "description": "Local Bridge for ChatGPT and Claude web prompts.",
   "permissions": [
@@ -37,6 +37,7 @@
         "core/content_runner.js",
         "core/provider_factory.js",
         "core/execution_errors.js",
+        "core/composer_attachments.js",
         "providers/base_provider.js",
         "providers/chatgpt/chatgpt_provider.js",
         "providers/chatgpt/chatgpt_selectors.js",

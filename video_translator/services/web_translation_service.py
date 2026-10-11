@@ -74,6 +74,7 @@ class WebTranslationService:
         output_contract: str,
         *,
         require_project: bool = True,
+        attachment_name: str = "",
     ) -> object:
         url_error = project_url_error(self.provider_name, self.project_url)
         if require_project and url_error:
@@ -82,13 +83,20 @@ class WebTranslationService:
                 url_error,
                 "Mở Project trên trang web, sao chép URL trên thanh địa chỉ rồi dán vào Step 3.",
             )
+        serialized_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        input_section = (
+            "ATTACHED INPUT\n"
+            f'Read the complete input JSON from the attached file "{attachment_name}". '
+            "Do not answer before reading the file."
+            if attachment_name
+            else f"INPUT JSON\n{serialized_payload}"
+        )
         prompt = (
             f"SYSTEM TASK\n{instruction}\n\n"
             "OUTPUT CONTRACT\n"
             f"{output_contract}\n"
             "Return JSON only. Do not use Markdown fences, commentary, prefaces, or trailing notes.\n\n"
-            "INPUT JSON\n"
-            f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
+            f"{input_section}"
         )
         try:
             response = web_bridge_service.submit_prompt(
@@ -97,6 +105,14 @@ class WebTranslationService:
                 model=self.model_name,
                 project_url=self.project_url,
                 conversation_mode="continue" if self._conversation_started else "start",
+                attachments=(
+                    [{
+                        "name": attachment_name,
+                        "mime_type": "application/json",
+                        "content": serialized_payload,
+                    }]
+                    if attachment_name else None
+                ),
             )
             self._last_raw_response = response
             self._conversation_started = True
@@ -149,6 +165,7 @@ class WebTranslationService:
                 "third_person_reference; terminology items require source_term and preferred_translation; "
                 "names items require source_name, name_type, canonical_name."
             ),
+            attachment_name="step3-analysis.json",
         )
         profile = DialogueProfileOutput.model_validate(parsed).model_dump(mode="json")
         return DialogueAnalysisResponse(profile, f"Chrome extension · {self.provider_name}")
@@ -216,6 +233,7 @@ class WebTranslationService:
                 "A JSON array. Each correction object has id (integer), corrected_text (string), issue_type "
                 "(string), and reason (string). Return [] when no correction is required."
             ),
+            attachment_name="step3-review.json",
         )
         try:
             if isinstance(parsed, dict):

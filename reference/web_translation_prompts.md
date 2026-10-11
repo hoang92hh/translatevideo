@@ -1,6 +1,6 @@
 # Web translation prompts
 
-Chỉnh nội dung dưới từng tiêu đề nếu cần. Giữ nguyên đúng ba tiêu đề `ANALYSIS`, `TRANSLATION`, `REVIEW` và các biến trong dấu ngoặc nhọn.
+Chỉnh nội dung dưới từng tiêu đề nếu cần. Giữ nguyên đúng ba tiêu đề `ANALYSIS`, `TRANSLATION`, `REVIEW` và các biến trong dấu ngoặc nhọn. Ứng dụng tự thêm tên file đính kèm cho `ANALYSIS`/`REVIEW` và output contract; không cần ghi cứng tên file trong các phần dưới đây.
 
 ## ANALYSIS
 

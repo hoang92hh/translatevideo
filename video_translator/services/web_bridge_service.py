@@ -198,6 +198,7 @@ class WebBridgeService:
         model: str = "",
         project_url: str = "",
         conversation_mode: str = "start",
+        attachments: list[dict[str, str]] | None = None,
         timeout: float = 240.0,
     ) -> str:
         self.start()
@@ -216,6 +217,22 @@ class WebBridgeService:
                 "Nạp extension, mở một tab provider đã đăng nhập và chờ vài giây rồi chạy lại.",
             )
         job_id = str(uuid4())
+        normalized_attachments: list[dict[str, str]] = []
+        for attachment in attachments or []:
+            name = str(attachment.get("name", "")).strip()
+            content_value = str(attachment.get("content", ""))
+            mime_type = str(attachment.get("mime_type", "application/json")).strip()
+            if not name or not content_value:
+                raise ValueError("Attachment phải có name và content không trống.")
+            if len(content_value.encode("utf-8")) > 8 * 1024 * 1024:
+                raise UserFacingError(
+                    "File đính kèm quá lớn",
+                    f"{name} vượt quá giới hạn 8 MB của Web Bridge.",
+                    "Giảm kích thước transcript hoặc chia project thành phần nhỏ hơn.",
+                )
+            normalized_attachments.append(
+                {"name": name, "content": content_value, "mime_type": mime_type}
+            )
         payload = {
             "job_id": job_id,
             "provider": provider,
@@ -224,7 +241,7 @@ class WebBridgeService:
             "model": "" if model.startswith("Theo model") else model,
             "project_url": project_url,
             "conversation_mode": conversation_mode,
-            "options": {},
+            "options": {"attachments": normalized_attachments} if normalized_attachments else {},
         }
         record = _JobRecord(payload)
         with self._condition:

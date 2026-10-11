@@ -1,6 +1,7 @@
 import { BaseProvider } from "../base_provider.js";
 import { chatgptSelectors as S } from "./chatgpt_selectors.js";
 import { readChatGPTModelState, selectChatGPTModel } from "./chatgpt_models.js";
+import { attachComposerFiles } from "../../core/composer_attachments.js";
 
 const error = (code, message) => Object.assign(new Error(message), { code });
 const normalize = (text) => text.replace(/\r\n?/g, "\n").trim();
@@ -62,11 +63,20 @@ export class ChatGPTProvider extends BaseProvider {
     if (typeof content !== "string" || !content.trim()) {
       throw error("INVALID_REQUEST", "Prompt must be a non-blank string.");
     }
-    if (Object.keys(options).length) throw error("UNSUPPORTED_OPTION", "Options are not supported.");
+    if (Object.keys(options).some(key => key !== "attachments")) {
+      throw error("UNSUPPORTED_OPTION", "Only composer attachments are supported.");
+    }
     if (!(await this.isReady())) throw error("PROVIDER_NOT_READY", "ChatGPT is not ready or is generating.");
-    const composer = this.find(S.composer);
+    let composer = this.find(S.composer);
     if (normalize(this.composerText(composer))) {
       throw error("COMPOSER_NOT_EMPTY", "Clear the existing draft before starting a job.");
+    }
+    if (options.attachments?.length) {
+      await attachComposerFiles(this.doc, composer, options.attachments, { log: this.log });
+      composer = this.find(S.composer);
+      if (!composer || !this.editable(composer)) {
+        throw error("COMPOSER_NOT_FOUND", "ChatGPT composer disappeared after attachment upload.");
+      }
     }
     this.prompt = content;
     composer.focus();

@@ -56,6 +56,10 @@ riêng trong cùng cuộc trò chuyện thuộc Project và kết quả JSON đ�
 lưu riêng trong `project.json` của project video hiện tại. Không đóng hoặc tải lại tab trong lúc job đang chạy;
 extension không tự gửi lại prompt khi không chắc request trước đã được thực thi hay chưa.
 
+Để tránh dán nội dung quá dài vào composer, giai đoạn phân tích đính kèm `step3-analysis.json` và giai
+đoạn kiểm duyệt đính kèm `step3-review.json`. Các batch dịch vẫn được gửi trực tiếp và chịu sự điều khiển
+của `Segments / batch`. File chỉ được tạo trong bộ nhớ cho lượt chat, không được thêm vào Project Sources.
+
 Ba chỉ dẫn ngắn cho giai đoạn phân tích, dịch và kiểm duyệt nằm tại
 [`reference/web_translation_prompts.md`](../reference/web_translation_prompts.md). Có thể sửa nội dung dưới
 từng tiêu đề, nhưng phải giữ nguyên ba tiêu đề và các biến trong dấu ngoặc nhọn.

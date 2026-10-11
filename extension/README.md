@@ -22,6 +22,11 @@ mới từ URL Project; các request phân tích, dịch theo batch và kiểm d
 trong cùng cuộc trò chuyện. Extension chỉ tiếp tục URL cuộc trò chuyện được ghi nhận từ request đầu;
 nếu tab đã chuyển sang chat khác, nó quay lại URL Project.
 
+Giai đoạn phân tích gửi dữ liệu bằng `step3-analysis.json` và giai đoạn kiểm duyệt dùng
+`step3-review.json`; extension tạo hai file này trong bộ nhớ và đính kèm vào đúng lượt chat. Các batch
+dịch vẫn gửi JSON trực tiếp trong prompt. Nếu file đính kèm chưa được giao diện web xác nhận sẵn sàng,
+extension dừng job trước khi bấm Send.
+
 Nếu Step 3 báo chưa kết nối, tải lại tab provider sau khi nạp extension và chờ vài giây. Có thể xem
 Service worker console tại `chrome://extensions` để kiểm tra log `[JOB]`.
 

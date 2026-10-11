@@ -14,6 +14,8 @@ from .translation_provider import (
     registered_translation_providers,
 )
 from .translation_workflow import TranslationWorkflow
+from .web_bridge_service import web_bridge_service
+from .web_translation_service import WebTranslationService
 
 __all__ = [
     "AudioSeparatorService",
@@ -27,6 +29,8 @@ __all__ = [
     "TextToSpeechService",
     "TranslationProvider",
     "TranslationWorkflow",
+    "WebTranslationService",
+    "web_bridge_service",
     "create_translation_provider",
     "register_translation_provider",
     "registered_translation_providers",

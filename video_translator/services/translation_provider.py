@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from ..models import Segment
 
@@ -61,7 +61,7 @@ class TranslationProvider(Protocol):
     ) -> TranslationResponse: ...
 
 
-TranslationProviderFactory = Callable[[str, str, str], TranslationProvider]
+TranslationProviderFactory = Callable[[str, str, str, dict[str, Any]], TranslationProvider]
 _PROVIDER_FACTORIES: dict[str, TranslationProviderFactory] = {}
 
 
@@ -78,11 +78,12 @@ def create_translation_provider(
     model_name: str,
     source_language: str,
     target_language: str,
+    options: dict[str, Any] | None = None,
 ) -> TranslationProvider:
     factory = _PROVIDER_FACTORIES.get(name)
     if factory is None:
         raise RuntimeError(f"Translation provider chưa được đăng ký: {name}")
-    return factory(model_name, source_language, target_language)
+    return factory(model_name, source_language, target_language, options or {})
 
 
 def registered_translation_providers() -> tuple[str, ...]:

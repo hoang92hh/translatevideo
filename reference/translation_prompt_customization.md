@@ -7,6 +7,7 @@ dịch ở Step 03 và chức năng AI rút gọn câu tại Step 05.
 
 | Muốn thay đổi | File và vị trí chính |
 |---|---|
+| Ba prompt của ChatGPT Web và Claude Web | `reference/web_translation_prompts.md` → `ANALYSIS`, `TRANSLATION`, `REVIEW` |
 | Prompt phân tích speaker, quan hệ, cách xưng hô, thuật ngữ và tên riêng | `video_translator/services/google_translation_service.py` → `analyze_dialogue()` |
 | Prompt dịch từng batch | `video_translator/services/google_translation_service.py` → `translate_batch()` |
 | Prompt kiểm duyệt toàn bộ bản dịch | `video_translator/services/google_translation_service.py` → `review_translation()` |

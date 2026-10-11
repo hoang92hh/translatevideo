@@ -1,0 +1,310 @@
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Callable
+
+from pydantic import ValidationError
+
+from ..config.web_translation import (
+    CHATGPT_EXTENSION_ID,
+    CHATGPT_WEB_PROVIDER_NAME,
+    CLAUDE_EXTENSION_ID,
+    CLAUDE_WEB_PROVIDER_NAME,
+    project_url_error,
+)
+from ..config.translation_stage_prompts import render_web_translation_prompt
+from ..errors import UserFacingError
+from ..models import Segment
+from .google_translation_service import (
+    DialogueProfileOutput,
+    GoogleTranslationService,
+    TranslationCorrection,
+    TranslationItem,
+)
+from .translation_provider import (
+    DialogueAnalysisResponse,
+    TranslationResponse,
+    TranslationReviewResponse,
+    register_translation_provider,
+)
+from .web_bridge_service import web_bridge_service
+
+
+ProgressCallback = Callable[[int, str], None]
+
+
+class WebTranslationService:
+    """TranslationProvider adapter backed by an authenticated provider website."""
+
+    def __init__(
+        self,
+        provider_name: str,
+        provider_id: str,
+        model_name: str,
+        source_language: str,
+        target_language: str,
+        options: dict[str, Any] | None = None,
+    ) -> None:
+        self.provider_name = provider_name
+        self.provider_id = provider_id
+        self.model_name = model_name
+        self.source_language = source_language
+        self.target_language = target_language
+        self.project_url = str((options or {}).get("project_url", "")).strip()
+        self._conversation_started = False
+        self._last_raw_response = ""
+
+    @staticmethod
+    def _parse_json(text: str) -> object:
+        cleaned = text.strip()
+        fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned, re.IGNORECASE)
+        if fenced:
+            cleaned = fenced.group(1).strip()
+        starts = [position for position in (cleaned.find("["), cleaned.find("{")) if position >= 0]
+        if not starts:
+            raise ValueError("Phản hồi không chứa JSON object hoặc array.")
+        parsed, _end = json.JSONDecoder().raw_decode(cleaned[min(starts) :])
+        return parsed
+
+    def _request_json(
+        self,
+        instruction: str,
+        payload: object,
+        output_contract: str,
+        *,
+        require_project: bool = True,
+    ) -> object:
+        url_error = project_url_error(self.provider_name, self.project_url)
+        if require_project and url_error:
+            raise UserFacingError(
+                "URL Project chưa hợp lệ",
+                url_error,
+                "Mở Project trên trang web, sao chép URL trên thanh địa chỉ rồi dán vào Step 3.",
+            )
+        prompt = (
+            f"SYSTEM TASK\n{instruction}\n\n"
+            "OUTPUT CONTRACT\n"
+            f"{output_contract}\n"
+            "Return JSON only. Do not use Markdown fences, commentary, prefaces, or trailing notes.\n\n"
+            "INPUT JSON\n"
+            f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
+        )
+        try:
+            response = web_bridge_service.submit_prompt(
+                self.provider_id,
+                prompt,
+                model=self.model_name,
+                project_url=self.project_url,
+                conversation_mode="continue" if self._conversation_started else "start",
+            )
+            self._last_raw_response = response
+            self._conversation_started = True
+            return self._parse_json(response)
+        except UserFacingError:
+            raise
+        except (ValueError, json.JSONDecodeError, ValidationError) as exc:
+            raise UserFacingError(
+                f"Kết quả {self.provider_name} không hợp lệ",
+                "Web provider không trả về JSON đúng cấu trúc mà workflow yêu cầu.",
+                "Mở cuộc trò chuyện mới, giữ ô nhập trống và chạy lại Step 3.",
+                f"{exc!r}\n\nRaw response:\n{response[:4000] if 'response' in locals() else ''}",
+            ) from exc
+
+    @staticmethod
+    def _translation_map(parsed: object) -> dict[int, str]:
+        if not isinstance(parsed, list):
+            raise ValueError("Kết quả phải là một JSON array.")
+        result: dict[int, str] = {}
+        for item in parsed:
+            value = TranslationItem.model_validate(item)
+            text = value.translated_text.strip()
+            if value.id in result or not text:
+                raise ValueError(f"ID trùng hoặc nội dung trống: {value.id}")
+            result[value.id] = text
+        return result
+
+    def analyze_dialogue(
+        self,
+        segments: list[Segment],
+        proper_name_policy: dict[str, object],
+    ) -> DialogueAnalysisResponse:
+        payload = {
+            "source_language": self.source_language,
+            "target_language": self.target_language,
+            "proper_name_policy": proper_name_policy,
+            "full_transcript": GoogleTranslationService._full_transcript(segments),
+        }
+        parsed = self._request_json(
+            render_web_translation_prompt(
+                "ANALYSIS",
+                source_language=self.source_language,
+                target_language=self.target_language,
+            ),
+            payload,
+            (
+                "One object with keys: story_summary, global_style, speakers, addressing_rules, terminology, "
+                "names, uncertainties. speakers items require speaker_id, story_role, default_self_reference; "
+                "addressing_rules items require from_speaker, to_speaker, self_reference, direct_address, "
+                "third_person_reference; terminology items require source_term and preferred_translation; "
+                "names items require source_name, name_type, canonical_name."
+            ),
+        )
+        profile = DialogueProfileOutput.model_validate(parsed).model_dump(mode="json")
+        return DialogueAnalysisResponse(profile, f"Chrome extension · {self.provider_name}")
+
+    def translate_batch(
+        self,
+        segments: list[Segment],
+        dialogue_profile: dict[str, object],
+        context_before: list[Segment],
+        context_after: list[Segment],
+        previous_translations: dict[int, str],
+        proper_name_policy: dict[str, object],
+    ) -> TranslationResponse:
+        payload = {
+            "source_language": self.source_language,
+            "target_language": self.target_language,
+            "dialogue_profile": dialogue_profile,
+            "proper_name_policy": proper_name_policy,
+            "speaker_context_for_targets": GoogleTranslationService._speaker_context(
+                segments, dialogue_profile
+            ),
+            "context_before": [GoogleTranslationService._segment_payload(item) for item in context_before],
+            "segments_to_translate": [GoogleTranslationService._segment_payload(item) for item in segments],
+            "context_after": [GoogleTranslationService._segment_payload(item) for item in context_after],
+            "previous_translations": previous_translations,
+        }
+        parsed = self._request_json(
+            render_web_translation_prompt(
+                "TRANSLATION",
+                source_language=self.source_language,
+                target_language=self.target_language,
+            ),
+            payload,
+            'A JSON array containing only objects of the form {"id": integer, "translated_text": string}.',
+        )
+        return TranslationResponse(
+            self._translation_map(parsed),
+            f"Chrome extension · {self.provider_name}",
+        )
+
+    def review_translation(
+        self,
+        segments: list[Segment],
+        dialogue_profile: dict[str, object],
+        proper_name_policy: dict[str, object],
+    ) -> TranslationReviewResponse:
+        payload = {
+            "source_language": self.source_language,
+            "target_language": self.target_language,
+            "dialogue_profile": dialogue_profile,
+            "proper_name_policy": proper_name_policy,
+            "speaker_context": GoogleTranslationService._speaker_context(segments, dialogue_profile),
+            "full_translation": GoogleTranslationService._full_transcript(
+                segments, include_translation=True
+            ),
+        }
+        parsed = self._request_json(
+            render_web_translation_prompt(
+                "REVIEW",
+                source_language=self.source_language,
+                target_language=self.target_language,
+            ),
+            payload,
+            (
+                "A JSON array. Each correction object has id (integer), corrected_text (string), issue_type "
+                "(string), and reason (string). Return [] when no correction is required."
+            ),
+        )
+        try:
+            if isinstance(parsed, dict):
+                if set(parsed) != {"corrections"} or not isinstance(parsed["corrections"], list):
+                    raise ValueError(
+                        "Review object chỉ được chứa một trường corrections có giá trị là JSON array."
+                    )
+                parsed = parsed["corrections"]
+            if not isinstance(parsed, list):
+                raise ValueError("Kết quả review phải là một JSON array.")
+            corrections: dict[int, str] = {}
+            issues: list[dict[str, Any]] = []
+            for item in parsed:
+                value = TranslationCorrection.model_validate(item)
+                text = value.corrected_text.strip()
+                if value.id in corrections or not text:
+                    raise ValueError(f"Correction trùng hoặc trống: {value.id}")
+                corrections[value.id] = text
+                issues.append(value.model_dump(mode="json"))
+        except (ValueError, ValidationError, KeyError) as exc:
+            raise UserFacingError(
+                f"Kết quả review từ {self.provider_name} không hợp lệ",
+                "Provider không trả về danh sách correction đúng cấu trúc.",
+                "Kiểm tra chỉ dẫn trong Project có yêu cầu một định dạng JSON khác hay không rồi chạy lại Step 3.",
+                f"{exc!r}\n\nRaw response:\n{self._last_raw_response[:4000]}",
+            ) from exc
+        return TranslationReviewResponse(
+            corrections,
+            issues,
+            f"Chrome extension · {self.provider_name}",
+        )
+
+    def rewrite_for_timing(
+        self,
+        items: list[dict[str, object]],
+        batch_size: int = 30,
+        progress: ProgressCallback | None = None,
+    ) -> TranslationResponse:
+        if not items:
+            raise UserFacingError(
+                "Chưa chọn segment",
+                "Không có segment nào được chọn để AI chỉnh sửa.",
+                "Đánh dấu ít nhất một checkbox rồi thử lại.",
+            )
+        rewritten: dict[int, str] = {}
+        size = max(1, batch_size)
+        batches = [items[index : index + size] for index in range(0, len(items), size)]
+        for index, batch in enumerate(batches, start=1):
+            if progress:
+                progress(5 + int((index - 1) / len(batches) * 88), f"AI đang rút gọn batch {index}/{len(batches)}…")
+            parsed = self._request_json(
+                (
+                    f"Rewrite current_translation in {self.target_language} so synthesized speech fits the "
+                    "measured window at or below target_speed. Preserve essential meaning, negation, intent, "
+                    "proper names, numbers, and causality. Return every input ID exactly once."
+                ),
+                batch,
+                'A JSON array containing only objects of the form {"id": integer, "translated_text": string}.',
+                require_project=False,
+            )
+            batch_result = self._translation_map(parsed)
+            expected = {int(item["id"]) for item in batch}
+            if set(batch_result) != expected:
+                raise ValueError(
+                    f"Web provider trả sai ID; thiếu {sorted(expected - set(batch_result))}, "
+                    f"dư {sorted(set(batch_result) - expected)}"
+                )
+            rewritten.update(batch_result)
+        if progress:
+            progress(95, "AI đã trả về nội dung rút gọn.")
+        return TranslationResponse(rewritten, f"Chrome extension · {self.provider_name}")
+
+
+def _factory(provider_name: str, provider_id: str):
+    return lambda model_name, source_language, target_language, options: WebTranslationService(
+        provider_name,
+        provider_id,
+        model_name,
+        source_language,
+        target_language,
+        options,
+    )
+
+
+register_translation_provider(
+    CHATGPT_WEB_PROVIDER_NAME,
+    _factory(CHATGPT_WEB_PROVIDER_NAME, CHATGPT_EXTENSION_ID),
+)
+register_translation_provider(
+    CLAUDE_WEB_PROVIDER_NAME,
+    _factory(CLAUDE_WEB_PROVIDER_NAME, CLAUDE_EXTENSION_ID),
+)

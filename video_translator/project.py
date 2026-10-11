@@ -49,6 +49,7 @@ class VideoProject:
     created_at: str
     updated_at: str
     pipeline: dict[str, Any] = field(default_factory=dict)
+    translation_project_urls: dict[str, str] = field(default_factory=dict)
     audio_candidates: list[dict[str, Any]] = field(default_factory=list)
     selected_audio_candidate_id: str = ""
     selected_audio_stem: str = ""

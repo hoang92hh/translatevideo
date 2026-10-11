@@ -629,7 +629,7 @@ class GoogleTranslationService:
 
 register_translation_provider(
     GEMINI_PROVIDER_NAME,
-    lambda model_name, source_language, target_language: GoogleTranslationService(
+    lambda model_name, source_language, target_language, _options: GoogleTranslationService(
         model_name,
         source_language,
         target_language,

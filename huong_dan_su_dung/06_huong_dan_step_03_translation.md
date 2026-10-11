@@ -1,6 +1,6 @@
 # Hướng dẫn Step 03 — Translation
 
-Step 03 dùng Google Gemini để dịch các segment được chọn ở Step 02. ID, timestamp,
+Step 03 dùng Google Gemini API, ChatGPT Web hoặc Claude Web để dịch các segment được chọn ở Step 02. ID, timestamp,
 `speaker_id`, `merge_parts` và source text được giữ nguyên; chỉ trường
 `translated_text` được bổ sung.
 
@@ -39,14 +39,33 @@ biến môi trường trên máy đó.
   lại toàn bộ kết quả sau khi dịch. Tắt tùy chọn này để dùng luồng một lượt nhanh và
   tiết kiệm request hơn; khi đó không có hồ sơ nhân vật do AI phân tích.
 
-Local Model hiện chưa được triển khai và bị vô hiệu hóa trên giao diện.
+Ba provider được hiển thị dạng tab giống Step 04. Nút **Đặt làm mặc định** lưu provider sẽ được chọn
+khi mở ứng dụng lần sau.
+
+## 2.1. Thiết lập ChatGPT Web và Claude Web
+
+1. Cài extension trong thư mục `extension` theo [`extension/README.md`](../extension/README.md).
+2. Mở TransLanguage để bridge nội bộ tại `127.0.0.1:8765` khởi động.
+3. Đăng nhập ChatGPT hoặc Claude trên Chrome, chỉ để một tab của provider cần dùng và để ô nhập trống.
+4. Chọn tab **ChatGPT Web** hoặc **Claude Web** tại Step 03. Trạng thái phải hiển thị extension đã kết nối.
+5. Mở Project đã cấu hình chỉ dẫn/file trên trang web, sao chép URL trên thanh địa chỉ và dán vào ô **Project URL**.
+6. Chọn model trực tiếp trên trang web rồi chạy Step 03.
+
+Ứng dụng không đọc cookie hoặc token đăng nhập. Mỗi giai đoạn của workflow được gửi thành một prompt
+riêng trong cùng cuộc trò chuyện thuộc Project và kết quả JSON được kiểm tra lại như với Gemini. URL được
+lưu riêng trong `project.json` của project video hiện tại. Không đóng hoặc tải lại tab trong lúc job đang chạy;
+extension không tự gửi lại prompt khi không chắc request trước đã được thực thi hay chưa.
+
+Ba chỉ dẫn ngắn cho giai đoạn phân tích, dịch và kiểm duyệt nằm tại
+[`reference/web_translation_prompts.md`](../reference/web_translation_prompts.md). Có thể sửa nội dung dưới
+từng tiêu đề, nhưng phải giữ nguyên ba tiêu đề và các biến trong dấu ngoặc nhọn.
 
 Danh sách model, model mặc định và model kiểm tra kết nối được khai báo tập trung tại
 `video_translator/config/gemini.py`. Khi Google bổ sung hoặc ngừng cung cấp model, cập
 nhật các hằng số `GEMINI_MODELS`, `GEMINI_DEFAULT_MODEL` và
 `GEMINI_CONNECTION_TEST_MODEL` trong file này.
 
-### 2.1. Giá tham khảo
+### 2.2. Giá tham khảo
 
 Giá dưới đây là giá Standard cho mỗi 1 triệu token, tham chiếu ngày 04/10/2026:
 

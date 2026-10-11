@@ -5,19 +5,11 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
-from ...config.gemini import (
-    GEMINI_DEFAULT_MODEL,
-    GEMINI_MODEL_IDS,
-    GEMINI_PROVIDER_NAME,
-    gemini_model_note,
-)
-from ...config.translation import PROPER_NAME_MODE_AUTO, PROPER_NAME_MODES
 from ...errors import UserFacingError
-from ...models import StepId
-from ...services.credential_service import GOOGLE_GEMINI, CredentialService
+from ...models import StepId, StepStatus
 from ..components import Card
-from ..settings_dialog import ProviderSettingsDialog
-from ..specs import FieldSpec, ProviderSpec, StepSpec
+from ..specs import StepSpec
+from ..translation_components import TranslationProviderSelector
 from .base import StepPage
 
 
@@ -27,75 +19,70 @@ class TranslationStepPage(StepPage):
         "03",
         "Translation",
         "Dịch theo batch và giữ nguyên ID của từng segment.",
-        (
-            ProviderSpec(GEMINI_PROVIDER_NAME, (
-                FieldSpec("model", "Model", "choice", GEMINI_DEFAULT_MODEL, GEMINI_MODEL_IDS),
-                FieldSpec("batch_size", "Segments / batch", "int", 30),
-                FieldSpec(
-                    "proper_name_mode",
-                    "Quy tắc tên riêng",
-                    "choice",
-                    PROPER_NAME_MODE_AUTO,
-                    PROPER_NAME_MODES,
-                ),
-                FieldSpec(
-                    "context_consistency",
-                    "Chế độ chất lượng — phân tích toàn truyện và kiểm duyệt",
-                    "bool",
-                    True,
-                ),
-            )),
-            ProviderSpec("Local Model — Chưa triển khai", available=False),
-            ProviderSpec("Provider khác (sắp có)", available=False),
-        ),
     )
 
     def __init__(self, state) -> None:
+        self._loaded_project_id: str | None = None
         super().__init__(state)
-        model_control = self.provider_panel.controls[0].get("model")
-        if isinstance(model_control, QComboBox):
-            model_control.currentTextChanged.connect(self._update_model_note)
-            self._update_model_note(model_control.currentText())
+        self.translation_selector.provider_changed.connect(self._provider_changed)
+        self.translation_selector.credentials_changed.connect(self._update_run_availability)
+        self.translation_selector.status_changed.connect(self._update_run_availability)
+        self.translation_selector.project_url_changed.connect(self._save_project_url)
 
-    def build_special_card(self) -> Card:
-        card = Card("Google Gemini", "Credential dùng chung cho toàn bộ tool và không lưu trong project.")
-        row = QHBoxLayout()
-        self.credential_status = QLabel()
-        self.credential_status.setWordWrap(True)
-        settings_button = QPushButton("Mở cài đặt API")
-        settings_button.clicked.connect(self._open_provider_settings)
-        row.addWidget(self.credential_status, 1)
-        row.addWidget(settings_button)
-        card.content_layout.addLayout(row)
-        self.model_note = QLabel()
-        self.model_note.setObjectName("muted")
-        self.model_note.setWordWrap(True)
-        card.content_layout.addWidget(self.model_note)
-        return card
+    def _build_settings_column(self) -> QVBoxLayout:
+        column = QVBoxLayout()
+        input_card = Card("Đầu vào", "Kết quả từ step trước được kết nối tự động.")
+        self.input_summary = QLabel()
+        self.input_summary.setObjectName("inputValue")
+        self.input_summary.setWordWrap(True)
+        input_card.content_layout.addWidget(self.input_summary)
+        column.addWidget(input_card)
+        self.translation_selector = TranslationProviderSelector()
+        column.addWidget(self.translation_selector)
+        column.addStretch()
+        return column
 
-    def _update_model_note(self, model_id: str) -> None:
-        self.model_note.setText(gemini_model_note(model_id))
+    def settings(self) -> dict[str, object]:
+        settings = self.translation_selector.settings()
+        provider = str(settings.get("provider", ""))
+        if "project_url" in settings:
+            self._save_project_url(provider, str(settings["project_url"]))
+        return settings
 
     def refresh(self) -> None:
         super().refresh()
-        if not getattr(self, "_credential_configured", False):
-            self.run_button.setEnabled(False)
-            self.run_button.setToolTip("Cấu hình Google API key trong Cài đặt → API & Providers.")
-        else:
-            self.run_button.setToolTip("")
+        project_id = self.state.project.id if self.state.project else None
+        if project_id != self._loaded_project_id:
+            urls = self.state.project.translation_project_urls if self.state.project else {}
+            self.translation_selector.set_project_urls(urls)
+            self._loaded_project_id = project_id
+        self.translation_selector.refresh_status()
+        self._update_run_availability()
+
+    def _save_project_url(self, provider: str, url: str) -> None:
+        if not self.state.project:
+            return
+        if self.state.project.translation_project_urls.get(provider, "") == url:
+            return
+        self.state.project.translation_project_urls[provider] = url
+        self.state.save_project()
+
+    def _provider_changed(self, _provider: str) -> None:
+        self._update_run_availability()
+
+    def _update_run_availability(self) -> None:
+        status = self.state.statuses[self.spec.step]
+        ready = self.translation_selector.is_ready()
+        self.run_button.setEnabled(
+            ready
+            and self.state.can_run(self.spec.step)
+            and status != StepStatus.RUNNING
+        )
+        self.run_button.setToolTip(
+            "" if ready else self.translation_selector.unavailable_reason()
+        )
 
     def refresh_special(self) -> None:
-        configured = False
-        try:
-            info = CredentialService.get(GOOGLE_GEMINI, include_value=False)
-        except UserFacingError as exc:
-            self.credential_status.setText(f"Không thể kiểm tra · {exc.error_message.message}")
-        else:
-            configured = info.configured
-            self.credential_status.setText(
-                f"Đã cấu hình · {info.source}" if configured else "Chưa cấu hình Google API key"
-            )
-        self._credential_configured = configured
         if hasattr(self, "translation_combo") and not getattr(self, "_processing", False):
             self._refresh_translations()
 
@@ -143,12 +130,6 @@ class TranslationStepPage(StepPage):
         actions.addStretch()
         layout.addLayout(actions)
         return container
-
-    def _open_provider_settings(self) -> None:
-        dialog = ProviderSettingsDialog(self)
-        dialog.credentials_changed.connect(self.refresh)
-        dialog.exec()
-        self.refresh()
 
     def _refresh_translations(self, prefer_selected: bool = False) -> None:
         current = self.translation_combo.currentData()

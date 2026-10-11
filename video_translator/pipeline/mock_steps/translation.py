@@ -35,6 +35,7 @@ def execute(
         model_name,
         state.source_language,
         state.target_language,
+        settings,
     )
     workflow = TranslationWorkflow(translation_provider, batch_size)
     response = workflow.run(
@@ -60,6 +61,7 @@ def execute(
         "target_language": state.target_language,
         "provider": provider,
         "model": model_name,
+        "project_url": str(settings.get("project_url", "")),
         "batch_size": batch_size,
         "translation_strategy": (
             "full_dialogue_roles_v3" if consistency_enabled else "timing_aware_v1"
@@ -96,6 +98,7 @@ def execute(
         "target_language": state.target_language,
         "provider": provider,
         "model": model_name,
+        "project_url": str(settings.get("project_url", "")),
         "analysis_performed": consistency_enabled,
         "proper_name_policy": response.proper_name_policy,
         "dialogue_profile": response.dialogue_profile,
@@ -128,6 +131,7 @@ def execute(
     metadata = {
         "provider": provider,
         "model": model_name,
+        "project_url": str(settings.get("project_url", "")),
         "batch_size": batch_size,
         "translation_strategy": (
             "full_dialogue_roles_v3" if consistency_enabled else "timing_aware_v1"

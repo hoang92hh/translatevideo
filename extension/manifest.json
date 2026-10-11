@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "MyTool Bridge Extension",
+  "version": "0.8.1",
+  "minimum_chrome_version": "120",
+  "description": "Local Bridge for ChatGPT and Claude web prompts.",
+  "permissions": [
+    "alarms",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "core/content_runner.js",
+        "core/provider_factory.js",
+        "core/execution_errors.js",
+        "providers/base_provider.js",
+        "providers/chatgpt/chatgpt_provider.js",
+        "providers/chatgpt/chatgpt_selectors.js",
+        "providers/chatgpt/chatgpt_models.js",
+        "providers/chatgpt/project_actions.js",
+        "providers/chatgpt/project_source_actions.js",
+        "providers/claude/claude_config.js",
+        "providers/claude/claude_provider.js",
+        "providers/claude/claude_selectors.js"
+      ],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://claude.ai/*"
+      ]
+    }
+  ]
+}

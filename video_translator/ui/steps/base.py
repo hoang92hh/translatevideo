@@ -49,7 +49,8 @@ class StepPage(QWidget):
         content_layout.addLayout(self._build_settings_column(), 2)
         content_layout.addLayout(self._build_result_column(), 3)
         scroll.setWidget(content)
-        root.addWidget(scroll)
+        root.addWidget(scroll, 1)
+        root.addLayout(self._build_run_actions())
         self.refresh()
 
     def _build_header(self) -> QHBoxLayout:
@@ -124,14 +125,16 @@ class StepPage(QWidget):
         if result_extra:
             output_card.content_layout.addWidget(result_extra)
         column.addWidget(output_card)
+        return column
+
+    def _build_run_actions(self) -> QHBoxLayout:
         actions = QHBoxLayout()
         actions.addStretch()
         self.run_button = QPushButton(f"Chạy step {self.spec.number}")
         self.run_button.setObjectName("primaryButton")
         self.run_button.clicked.connect(lambda: self.run_requested.emit(self.spec.step.value))
         actions.addWidget(self.run_button)
-        column.addLayout(actions)
-        return column
+        return actions
 
     def build_special_card(self) -> Card | None:
         return None
@@ -179,15 +182,25 @@ class StepPage(QWidget):
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
         self.input_summary.setText(self.state.input_summary(self.spec.step))
-        self.refresh_special()
         result = self.state.results.get(self.spec.step)
+        self.show_candidate_result(result)
+        self.refresh_special()
+        self.run_button.setEnabled(self.state.can_run(self.spec.step) and status != StepStatus.RUNNING)
+
+    def show_candidate_result(self, result: StepResult | None) -> None:
         if result:
             self._show_result(result)
-        else:
-            self.result_summary.setText("Chưa có kết quả")
-            self.artifacts.clear()
-            self.table.setRowCount(0)
-        self.run_button.setEnabled(self.state.can_run(self.spec.step) and status != StepStatus.RUNNING)
+            active = self.state.results.get(self.spec.step)
+            if active is None or active.artifacts != result.artifacts:
+                for row in range(self.table.rowCount()):
+                    for column in range(self.table.columnCount()):
+                        item = self.table.item(row, column)
+                        if item:
+                            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return
+        self.result_summary.setText("Chưa có kết quả")
+        self.artifacts.clear()
+        self.table.setRowCount(0)
 
     def _show_result(self, result: StepResult) -> None:
         self.result_summary.setText(result.summary)
@@ -219,8 +232,12 @@ class StepPage(QWidget):
             return
         text = self.table.item(row, column).text()
         if column == 4:
+            if text == result.segments[row].source_text:
+                return
             result.segments[row].source_text = text
         else:
+            if text == result.segments[row].translated_text:
+                return
             result.segments[row].translated_text = text
         index = STEP_ORDER.index(self.spec.step)
         if index + 1 < len(STEP_ORDER):

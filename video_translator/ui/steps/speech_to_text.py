@@ -136,6 +136,7 @@ class SpeechToTextStepPage(StepPage):
         candidate = self._current_transcript()
         if not candidate:
             self.transcript_info.setText("Chưa có transcript")
+            self.show_candidate_result(None)
             return
         status = "Sẵn sàng" if Path(candidate.path).is_file() else "File không tồn tại"
         model = str(candidate.metadata.get("model", ""))
@@ -146,6 +147,9 @@ class SpeechToTextStepPage(StepPage):
             if value
         )
         self.transcript_info.setText(f"{details}\n{candidate.path}")
+        self.show_candidate_result(
+            self.state.candidate_result(StepId.STT, candidate.id)
+        )
 
     def _current_transcript(self):
         return self.state.transcript_candidate(str(self.transcript_combo.currentData() or ""))

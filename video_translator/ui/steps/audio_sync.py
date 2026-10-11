@@ -146,6 +146,7 @@ class AudioSyncStepPage(StepPage):
             self._loaded_manifest_signature = None
             self.sync_info.setText("Chưa có output Step 5")
             self._fill_segments([])
+            self.show_candidate_result(None)
             return
         manifest = Path(candidate.path)
         try:
@@ -154,6 +155,9 @@ class AudioSyncStepPage(StepPage):
         except OSError:
             signature = None
         if signature and signature == self._loaded_manifest_signature and self._candidate_payload:
+            self.show_candidate_result(
+                self.state.candidate_result(StepId.SYNC, candidate.id)
+            )
             return
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
@@ -162,6 +166,7 @@ class AudioSyncStepPage(StepPage):
             self._loaded_manifest_signature = None
             self.sync_info.setText(f"Không thể đọc manifest: {exc}")
             self._fill_segments([])
+            self.show_candidate_result(None)
             return
         self._candidate_payload = payload
         self._loaded_manifest_signature = signature
@@ -170,6 +175,9 @@ class AudioSyncStepPage(StepPage):
         self.sync_info.setText(f"{status} · {candidate.segment_count} segment\n{candidate.folder}")
         raw_segments = payload.get("segments", [])
         self._fill_segments(raw_segments if isinstance(raw_segments, list) else [])
+        self.show_candidate_result(
+            self.state.candidate_result(StepId.SYNC, candidate.id)
+        )
 
     def _fill_segments(self, segments: list[object]) -> None:
         valid = [item for item in segments if isinstance(item, dict)]

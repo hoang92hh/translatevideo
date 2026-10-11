@@ -3,7 +3,17 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...config.tts import (
     EDGE_TTS_PROVIDER,
@@ -59,7 +69,12 @@ class TtsComponentSelector(QWidget):
         self.default_label = QLabel()
         self.default_label.setObjectName("muted")
         root.addWidget(self.default_label)
-        root.addWidget(self.stack)
+        self.component_scroll = QScrollArea()
+        self.component_scroll.setWidgetResizable(True)
+        self.component_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.component_scroll.setFixedHeight(460)
+        self.component_scroll.setWidget(self.stack)
+        root.addWidget(self.component_scroll)
         saved = default_tts_provider()
         index = next(
             (position for position, item in enumerate(self.components) if item.provider_name == saved),

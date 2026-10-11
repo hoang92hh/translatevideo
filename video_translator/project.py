@@ -141,6 +141,7 @@ class ProjectService:
         if not manifest_path.is_file():
             raise ValueError("Không tìm thấy project.json.")
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data.pop("pipeline_statuses", None)
         data["root"] = str(manifest_path.parent)
         project = VideoProject(**data)
         for folder in PROJECT_FOLDERS:

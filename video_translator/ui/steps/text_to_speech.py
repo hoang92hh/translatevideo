@@ -177,10 +177,14 @@ class TextToSpeechStepPage(StepPage):
         if not candidate:
             self.tts_info.setText("Chưa có output TTS")
             self._clear_segments()
+            self.show_candidate_result(None)
             return
         status = "Sẵn sàng" if Path(candidate.path).is_file() else "Manifest không tồn tại"
         device = str(candidate.metadata.get("actual_device", ""))
         self.tts_info.setText(f"{candidate.provider} · {candidate.voice} · {device} · {candidate.segment_count} segment · {status}\n{candidate.folder}")
+        self.show_candidate_result(
+            self.state.candidate_result(StepId.TTS, candidate.id)
+        )
         self._load_candidate_segments(candidate.path)
 
     def _load_candidate_segments(self, manifest_path: str) -> None:

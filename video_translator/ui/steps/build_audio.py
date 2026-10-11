@@ -145,6 +145,7 @@ class BuildAudioStepPage(StepPage):
         if not candidate:
             self.audio_info.setText("Chưa có output Step 6")
             self._set_player_enabled(False)
+            self.show_candidate_result(None)
             return
         path = Path(candidate.audio_file)
         status = "Sẵn sàng để nghe" if path.is_file() else "File audio không tồn tại"
@@ -153,6 +154,9 @@ class BuildAudioStepPage(StepPage):
             f"{candidate.duration_seconds:.2f}s · {status}\n{path}"
         )
         self._set_player_enabled(path.is_file())
+        self.show_candidate_result(
+            self.state.candidate_result(StepId.BUILD_AUDIO, candidate.id)
+        )
 
     def _toggle_play(self) -> None:
         candidate = self._current_candidate()

@@ -1294,7 +1294,11 @@ class ProjectState(QObject):
         ]
         return max(valid, key=lambda item: item.created_at, default=None)
 
-    def _result_from_render(self, candidate_id: str) -> StepResult | None:
+    def _result_from_render(
+        self,
+        candidate_id: str,
+        require_selected_source: bool = True,
+    ) -> StepResult | None:
         candidate = self.render_candidate(candidate_id)
         if not candidate:
             return None
@@ -1311,10 +1315,16 @@ class ProjectState(QObject):
         if (
             duration <= 0
             or not source_build_audio_id
-            or source_build_audio_id != self.selected_build_audio_candidate_id
+            or (
+                require_selected_source
+                and source_build_audio_id != self.selected_build_audio_candidate_id
+            )
         ):
             return None
         source = self.results.get(StepId.BUILD_AUDIO)
+        source_id = str(source.metadata.get("build_audio_candidate_id", "")) if source else ""
+        if source_id != source_build_audio_id:
+            source = self._result_from_build_audio(source_build_audio_id)
         subtitle = Path(candidate.subtitle_file) if candidate.subtitle_file else None
         artifacts = {
             "output_video": str(video),
@@ -1468,6 +1478,32 @@ class ProjectState(QObject):
         if index == 0:
             return None
         return self.results.get(STEP_ORDER[index - 1])
+
+    def candidate_result(self, step: StepId, candidate_id: str) -> StepResult | None:
+        active = self.results.get(step)
+        candidate_keys = {
+            StepId.STT: "transcript_candidate_id",
+            StepId.TRANSLATE: "translation_candidate_id",
+            StepId.TTS: "tts_candidate_id",
+            StepId.SYNC: "sync_candidate_id",
+            StepId.BUILD_AUDIO: "build_audio_candidate_id",
+            StepId.RENDER: "render_candidate_id",
+        }
+        key = candidate_keys.get(step, "")
+        if active and key and str(active.metadata.get(key, "")) == candidate_id:
+            return active
+        loaders = {
+            StepId.STT: self._result_from_transcript,
+            StepId.TRANSLATE: self._result_from_translation,
+            StepId.TTS: self._result_from_tts,
+            StepId.BUILD_AUDIO: self._result_from_build_audio,
+        }
+        if step == StepId.SYNC:
+            return self._result_from_sync(candidate_id, allow_incomplete=True)
+        if step == StepId.RENDER:
+            return self._result_from_render(candidate_id, require_selected_source=False)
+        loader = loaders.get(step)
+        return loader(candidate_id) if loader else None
 
     def input_summary(self, step: StepId) -> str:
         if step == StepId.EXTRACT:

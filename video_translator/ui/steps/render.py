@@ -248,6 +248,7 @@ class RenderStepPage(StepPage):
         candidate = self._current_candidate()
         if not candidate:
             self.render_info.setText("Chưa có output Step 7")
+            self.show_candidate_result(None)
             return
         voice_volume = round(float(candidate.metadata.get("voice_volume", 1.0)) * 100)
         components = ["Hình ảnh", f"Voice mới {voice_volume}%"]
@@ -267,6 +268,9 @@ class RenderStepPage(StepPage):
         self.render_info.setText(
             f"{' + '.join(components)} · {candidate.duration_seconds:.2f}s · {status}\n"
             f"{candidate.video_file}"
+        )
+        self.show_candidate_result(
+            self.state.candidate_result(StepId.RENDER, candidate.id)
         )
 
     def _open_video(self) -> None:

@@ -172,6 +172,7 @@ class TranslationStepPage(StepPage):
         if not candidate:
             self.translation_info.setText("Chưa có bản dịch")
             self.save_changes_button.setEnabled(False)
+            self.show_candidate_result(None)
             return
         status = "Sẵn sàng" if Path(candidate.path).is_file() else "File không tồn tại"
         model = str(candidate.metadata.get("model", ""))
@@ -197,6 +198,9 @@ class TranslationStepPage(StepPage):
             ""
             if is_selected_input
             else "Chọn candidate này làm input Step 4 trước khi chỉnh sửa và lưu."
+        )
+        self.show_candidate_result(
+            self.state.candidate_result(StepId.TRANSLATE, candidate.id)
         )
 
     def _current_translation(self):

@@ -321,8 +321,9 @@ export class ClaudeProvider extends BaseProvider {
       const value = assistant ? this.responseText(assistant) : "";
       const responseFile = this.responseFileName
         ? hasResponseFile(responseTurn, this.responseFileName) : false;
+      const contentReady = this.responseFileName ? responseFile : Boolean(value);
       const complete = copyVisible && !stopVisible && !streaming && composerEditable
-        && Boolean(value || responseFile);
+        && contentReady;
       const now = Date.now();
 
       lastState = {
@@ -332,6 +333,8 @@ export class ClaudeProvider extends BaseProvider {
         stop_visible: stopVisible,
         streaming,
         composer_editable: composerEditable,
+        response_file_required: Boolean(this.responseFileName),
+        response_file_found: responseFile,
         stable_ms: stableSince ? now - stableSince : 0,
       };
 
@@ -348,11 +351,16 @@ export class ClaudeProvider extends BaseProvider {
         const finalControls = finalAssistant ? this.completionControls(finalAssistant) : null;
         const finalTurn = finalAssistant?.closest(S.turn) || finalAssistant;
         const finalValue = finalAssistant ? this.responseText(finalAssistant) : "";
+        const finalResponseFile = this.responseFileName
+          ? hasResponseFile(finalTurn, this.responseFileName) : false;
+        const finalContentReady = this.responseFileName
+          ? finalResponseFile : Boolean(finalValue);
         const finalComplete = finalAssistant === assistant
           && Boolean(finalControls && this.find(S.copyAction, finalControls))
           && !this.find(S.stop)
           && !(finalTurn && this.find(S.streaming, finalTurn))
-          && this.editable(this.activeComposer());
+          && this.editable(this.activeComposer())
+          && finalContentReady;
         if (finalComplete && finalValue === stableValue) {
           this.text = finalValue;
           this.finished = true;

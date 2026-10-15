@@ -59,10 +59,42 @@ export function findResponseDownloadButton(root, expectedName) {
   ) || null;
 }
 
+function comparableArtifactName(value) {
+  return normalizedName(value)
+    .replace(/\.json$/iu, "")
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[\s_-]+/gu, "");
+}
+
+function labelName(node, prefix) {
+  const label = normalizedName(node?.getAttribute("aria-label"));
+  return label.startsWith(prefix) ? label.slice(prefix.length).trim() : "";
+}
+
+export function findClaudeArtifactDownloadButton(root, expectedName) {
+  if (!root || !expectedName) return null;
+  const expected = comparableArtifactName(expectedName);
+  const cards = [...root.querySelectorAll('[data-sheet-kind="json"]')];
+  for (const card of cards) {
+    const open = card.querySelector(
+      'button[data-testid="file-card-open"][aria-label^="View "]',
+    );
+    const download = card.querySelector('button[aria-label^="Download "]');
+    if (!open || !download || download.disabled
+        || download.getAttribute("aria-disabled") === "true") continue;
+    const openName = comparableArtifactName(labelName(open, "View "));
+    const downloadName = comparableArtifactName(labelName(download, "Download "));
+    if (openName === expected && downloadName === expected) return download;
+  }
+  return null;
+}
+
 export function hasResponseFile(root, expectedName) {
   return Boolean(
     findResponseFile(root, expectedName)
-    || findResponseDownloadButton(root, expectedName),
+    || findResponseDownloadButton(root, expectedName)
+    || findClaudeArtifactDownloadButton(root, expectedName),
   );
 }
 
@@ -165,7 +197,8 @@ async function downloadResponseButton(win, button, expectedName, makeError) {
 export async function readResponseFile(win, root, expectedName, makeError) {
   const link = findResponseFile(root, expectedName);
   if (link) return readResponseLink(win, link, expectedName, makeError);
-  const button = findResponseDownloadButton(root, expectedName);
+  const button = findResponseDownloadButton(root, expectedName)
+    || findClaudeArtifactDownloadButton(root, expectedName);
   if (button) return downloadResponseButton(win, button, expectedName, makeError);
   throw makeError(
     "RESPONSE_FILE_NOT_FOUND",

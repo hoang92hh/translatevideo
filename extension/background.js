@@ -59,11 +59,16 @@ function updateDownloadRecord(record, item) {
 async function reconcileResponseDownload(record) {
   if (record.status === "complete" || record.status === "error") return;
   const items = await chrome.downloads.search({
-    startedAfter: new Date(record.createdAt - 1000).toISOString(),
+    startedAfter: new Date(record.createdAt - 1).toISOString(),
     orderBy: ["-startTime"],
     limit: 50,
   });
-  const matches = items.filter(item => downloadMatches(item, record.expectedName));
+  const matches = items.filter(item => {
+    const startedAt = Date.parse(item.startTime || "");
+    return Number.isFinite(startedAt)
+      && startedAt >= record.createdAt
+      && downloadMatches(item, record.expectedName);
+  });
   if (!matches.length) return;
   updateDownloadRecord(record, matches[0]);
 }

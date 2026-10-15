@@ -219,6 +219,7 @@ export class ChatGPTProvider extends BaseProvider {
     if (!this.sent) throw error("PROMPT_SEND_FAILED", "Prompt has not been sent.");
     this.log("WAITING RESPONSE");
     let sawAssistant = false;
+    let lastState = {};
     const deadline = this.startedAt + this.timeoutMs;
     while (Date.now() < deadline) {
       await this.observe(() => {
@@ -247,8 +248,18 @@ export class ChatGPTProvider extends BaseProvider {
       const value = assistant ? this.responseText(assistant) : "";
       const responseFile = this.responseFileName
         ? hasResponseFile(responseTurn, this.responseFileName) : false;
-      if (copyVisible && !stillGenerating && (value || responseFile)
-          && this.editable(this.find(S.composer))) {
+      const composerEditable = this.editable(this.find(S.composer));
+      const contentReady = this.responseFileName ? responseFile : Boolean(value);
+      lastState = {
+        assistant_found: Boolean(assistant),
+        response_length: value.length,
+        copy_visible: Boolean(copyVisible),
+        still_generating: Boolean(stillGenerating),
+        composer_editable: composerEditable,
+        response_file_required: Boolean(this.responseFileName),
+        response_file_found: responseFile,
+      };
+      if (copyVisible && !stillGenerating && contentReady && composerEditable) {
         this.text = value;
         this.finished = true;
         this.log("RESPONSE COMPLETE");
@@ -257,7 +268,7 @@ export class ChatGPTProvider extends BaseProvider {
     }
     throw error(
       "RESPONSE_TIMEOUT",
-      "ChatGPT response did not reach a completed state before the deadline.",
+      `ChatGPT response did not reach a completed state before the deadline. ${JSON.stringify(lastState)}`,
     );
   }
 

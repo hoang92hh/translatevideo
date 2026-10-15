@@ -2,6 +2,7 @@ import { BaseProvider } from "../base_provider.js";
 import { chatgptSelectors as S } from "./chatgpt_selectors.js";
 import { readChatGPTModelState, selectChatGPTModel } from "./chatgpt_models.js";
 import { attachComposerFiles } from "../../core/composer_attachments.js";
+import { hasResponseFile, readResponseFile } from "../../core/response_files.js";
 
 const error = (code, message) => Object.assign(new Error(message), { code });
 const normalize = (text) => text.replace(/\r\n?/g, "\n").trim();
@@ -64,9 +65,10 @@ export class ChatGPTProvider extends BaseProvider {
     if (typeof content !== "string" || !content.trim()) {
       throw error("INVALID_REQUEST", "Prompt must be a non-blank string.");
     }
-    if (Object.keys(options).some(key => key !== "attachments")) {
-      throw error("UNSUPPORTED_OPTION", "Only composer attachments are supported.");
+    if (Object.keys(options).some(key => !["attachments", "response_file_name"].includes(key))) {
+      throw error("UNSUPPORTED_OPTION", "Only composer attachments and response files are supported.");
     }
+    this.responseFileName = String(options.response_file_name || "").trim();
     if (!(await this.isReady())) throw error("PROVIDER_NOT_READY", "ChatGPT is not ready or is generating.");
     let composer = this.find(S.composer);
     if (normalize(this.composerText(composer))) {
@@ -243,7 +245,10 @@ export class ChatGPTProvider extends BaseProvider {
       const stillGenerating = this.find(S.stop)
         || (responseTurn && this.find(S.streaming, responseTurn));
       const value = assistant ? this.responseText(assistant) : "";
-      if (copyVisible && !stillGenerating && value && this.editable(this.find(S.composer))) {
+      const responseFile = this.responseFileName
+        ? hasResponseFile(responseTurn, this.responseFileName) : false;
+      if (copyVisible && !stillGenerating && (value || responseFile)
+          && this.editable(this.find(S.composer))) {
         this.text = value;
         this.finished = true;
         this.log("RESPONSE COMPLETE");
@@ -258,6 +263,14 @@ export class ChatGPTProvider extends BaseProvider {
 
   async getResponse() {
     if (!this.finished) throw error("PROVIDER_ERROR", "No confirmed completed response is available.");
+    if (this.responseFileName) {
+      const assistant = this.currentAssistant();
+      const responseRoot = assistant?.closest(S.turn) || assistant;
+      const file = await readResponseFile(
+        this.win, responseRoot, this.responseFileName, error,
+      );
+      return { text: this.text, file };
+    }
     return this.text;
   }
 

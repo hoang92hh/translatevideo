@@ -36,8 +36,10 @@ biến môi trường trên máy đó.
   - `Giữ nguyên chữ gốc`: không chuyển tự tên riêng.
 - `Chế độ chất lượng — phân tích toàn truyện và kiểm duyệt`: bật mặc định. Khi bật,
   Step 03 phân tích mọi speaker trước khi dịch và kiểm duyệt
-  lại toàn bộ kết quả sau khi dịch. Tắt tùy chọn này để dùng luồng một lượt nhanh và
-  tiết kiệm request hơn; khi đó không có hồ sơ nhân vật do AI phân tích.
+  lại toàn bộ kết quả sau khi dịch. Khi tắt với ChatGPT Web hoặc Claude Web, mỗi batch có số
+  segment đúng theo ô `Segments / batch`, được gửi bằng một file JSON; AI đọc trọn batch,
+  tự phân tích ngữ cảnh và speaker rồi trả một file JSON kết quả riêng. Ứng dụng xác thực file
+  trước khi gửi batch kế tiếp. Gemini API vẫn trả dữ liệu có cấu trúc trực tiếp qua API.
 
 Ba provider được hiển thị dạng tab giống Step 04. Nút **Đặt làm mặc định** lưu provider sẽ được chọn
 khi mở ứng dụng lần sau.
@@ -61,6 +63,13 @@ phân tích dùng `step3-analysis.json`, mỗi batch dịch dùng file có dạn
 `step3-translation-0121-0140.json`, và giai đoạn kiểm duyệt dùng `step3-review.json`. Kích thước batch vẫn
 do `Segments / batch` điều khiển. Các file chỉ được tạo trong bộ nhớ cho lượt chat, không được thêm vào
 Project Sources.
+
+Ở chế độ chất lượng bị tắt, ChatGPT Web và Claude Web phải trả từng batch bằng file có tên dạng
+`step3-translation-result-0121-0140.json`. Extension tải và xác thực file trước khi ứng dụng gửi batch
+tiếp theo trong cùng cuộc trò chuyện.
+Riêng ChatGPT, extension xác định resource card bằng đúng tên file batch, theo dõi download trước khi
+bấm nút tải và bỏ qua mọi file có tên thuộc batch khác. File được Chrome tự đổi thành hậu tố `(1)`,
+`(2)` do trùng tên vẫn được chấp nhận sau khi đối chiếu phần tên batch gốc.
 
 Ba chỉ dẫn ngắn cho giai đoạn phân tích, dịch và kiểm duyệt nằm tại
 [`reference/web_translation_prompts.md`](../reference/web_translation_prompts.md). Có thể sửa nội dung dưới

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -199,6 +201,7 @@ class WebBridgeService:
         project_url: str = "",
         conversation_mode: str = "start",
         attachments: list[dict[str, str]] | None = None,
+        response_file_name: str = "",
         timeout: float = 240.0,
     ) -> str:
         self.start()
@@ -233,6 +236,11 @@ class WebBridgeService:
             normalized_attachments.append(
                 {"name": name, "content": content_value, "mime_type": mime_type}
             )
+        options: dict[str, Any] = {}
+        if normalized_attachments:
+            options["attachments"] = normalized_attachments
+        if response_file_name:
+            options["response_file_name"] = response_file_name
         payload = {
             "job_id": job_id,
             "provider": provider,
@@ -241,7 +249,7 @@ class WebBridgeService:
             "model": "" if model.startswith("Theo model") else model,
             "project_url": project_url,
             "conversation_mode": conversation_mode,
-            "options": {"attachments": normalized_attachments} if normalized_attachments else {},
+            "options": options,
         }
         record = _JobRecord(payload)
         with self._condition:
@@ -264,6 +272,68 @@ class WebBridgeService:
                 "Kiểm tra đăng nhập, đóng bớt tab cùng provider và để ô nhập trống trước khi chạy lại.",
                 json.dumps(result, ensure_ascii=False),
             )
+        if response_file_name:
+            response_file = result.get("file")
+            if not isinstance(response_file, dict):
+                raise UserFacingError(
+                    "Web provider không trả về file",
+                    f"Không tìm thấy file kết quả {response_file_name} trong phản hồi.",
+                    "Kiểm tra phản hồi trên trang web rồi chạy lại Step 3; prompt sẽ không tự gửi lại.",
+                )
+            actual_name = str(response_file.get("name", "")).strip()
+            file_content = str(response_file.get("content", ""))
+            download_path = str(response_file.get("path", "")).strip()
+            if actual_name != response_file_name:
+                raise UserFacingError(
+                    "File kết quả không hợp lệ",
+                    f"Cần file {response_file_name}, nhưng extension nhận được {actual_name or 'file không tên'}.",
+                    "Chạy lại Step 3 và giữ nguyên tên file mà ứng dụng yêu cầu.",
+                )
+            if not file_content and download_path:
+                path = Path(download_path)
+                expected = Path(response_file_name)
+                duplicate_pattern = re.compile(
+                    rf"^{re.escape(expected.stem)}(?: \(\d+\))?{re.escape(expected.suffix)}$",
+                    re.IGNORECASE,
+                )
+                if not path.is_absolute() or not duplicate_pattern.fullmatch(path.name):
+                    raise UserFacingError(
+                        "Đường dẫn file kết quả không hợp lệ",
+                        f"Chrome trả về đường dẫn không khớp batch hiện tại: {download_path}",
+                        "Không mở file này; tải lại extension rồi chạy lại Step 3.",
+                    )
+                try:
+                    if not path.is_file():
+                        raise FileNotFoundError(download_path)
+                    if path.stat().st_size > 8 * 1024 * 1024:
+                        raise UserFacingError(
+                            "File kết quả quá lớn",
+                            f"{path.name} vượt quá giới hạn 8 MB của Web Bridge.",
+                            "Giảm Segments / batch rồi chạy lại Step 3.",
+                        )
+                    file_content = path.read_text(encoding="utf-8-sig")
+                except UserFacingError:
+                    raise
+                except (OSError, UnicodeError) as exc:
+                    raise UserFacingError(
+                        "Không thể đọc file kết quả",
+                        f"Ứng dụng không thể đọc file Chrome đã tải: {download_path}",
+                        "Kiểm tra file trong thư mục Downloads rồi chạy lại Step 3.",
+                        repr(exc),
+                    ) from exc
+            if not file_content:
+                raise UserFacingError(
+                    "File kết quả trống",
+                    f"{response_file_name} không có nội dung để xử lý.",
+                    "Chạy lại Step 3 hoặc giảm Segments / batch.",
+                )
+            if len(file_content.encode("utf-8")) > 8 * 1024 * 1024:
+                raise UserFacingError(
+                    "File kết quả quá lớn",
+                    f"{actual_name} vượt quá giới hạn 8 MB của Web Bridge.",
+                    "Giảm Segments / batch rồi chạy lại Step 3.",
+                )
+            return file_content
         text = str(result.get("text", "")).strip()
         if not text:
             raise UserFacingError(

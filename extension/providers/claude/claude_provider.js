@@ -1,6 +1,7 @@
 import { BaseProvider } from "../base_provider.js";
 import { claudeSelectors as S } from "./claude_selectors.js";
 import { attachComposerFiles } from "../../core/composer_attachments.js";
+import { hasResponseFile, readResponseFile } from "../../core/response_files.js";
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const normalize = value => (value || "").replace(/\r\n?/g, "\n").trim();
@@ -135,9 +136,10 @@ export class ClaudeProvider extends BaseProvider {
     if (typeof content !== "string" || !content.trim()) {
       throw fail("INVALID_REQUEST", "Prompt must be a non-blank string.");
     }
-    if (Object.keys(options).some(key => key !== "attachments")) {
-      throw fail("UNSUPPORTED_OPTION", "Only composer attachments are supported.");
+    if (Object.keys(options).some(key => !["attachments", "response_file_name"].includes(key))) {
+      throw fail("UNSUPPORTED_OPTION", "Only composer attachments and response files are supported.");
     }
+    this.responseFileName = String(options.response_file_name || "").trim();
     this.attachmentNames = Array.isArray(options.attachments)
       ? options.attachments.map(item => String(item?.name || "").trim()).filter(Boolean)
       : [];
@@ -317,7 +319,10 @@ export class ClaudeProvider extends BaseProvider {
       const streaming = Boolean(responseTurn && this.find(S.streaming, responseTurn));
       const composerEditable = this.editable(this.activeComposer());
       const value = assistant ? this.responseText(assistant) : "";
-      const complete = copyVisible && !stopVisible && !streaming && composerEditable && Boolean(value);
+      const responseFile = this.responseFileName
+        ? hasResponseFile(responseTurn, this.responseFileName) : false;
+      const complete = copyVisible && !stopVisible && !streaming && composerEditable
+        && Boolean(value || responseFile);
       const now = Date.now();
 
       lastState = {
@@ -373,6 +378,14 @@ export class ClaudeProvider extends BaseProvider {
 
   async getResponse() {
     if (!this.finished) throw fail("PROVIDER_ERROR", "No confirmed Claude response is available.");
+    if (this.responseFileName) {
+      const assistant = this.currentAssistant();
+      const responseRoot = assistant?.closest(S.turn) || assistant;
+      const file = await readResponseFile(
+        this.win, responseRoot, this.responseFileName, fail,
+      );
+      return { text: this.text, file };
+    }
     return this.text;
   }
 

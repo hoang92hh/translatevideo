@@ -44,6 +44,7 @@ class TranslationProvider(Protocol):
         context_after: list[Segment],
         previous_translations: dict[int, str],
         proper_name_policy: dict[str, object],
+        response_file: bool = False,
     ) -> TranslationResponse: ...
 
     def review_translation(

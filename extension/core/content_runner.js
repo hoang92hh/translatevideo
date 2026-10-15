@@ -140,6 +140,7 @@ async function execute(job, record) {
     }
     const provider = factory.create(job.provider, {
       log: (step) => { record.steps.push(step); console.info("[JOB]", job.job_id, step); },
+      timeoutMs: job.options?.response_file_name ? 600000 : undefined,
     });
     if (!(await provider.isReady())) {
       throw executionError(
@@ -162,7 +163,12 @@ async function execute(job, record) {
     await provider.setPrompt(job.content, job.options);
     await provider.sendPrompt();
     await provider.waitForResponse();
-    record.result = { job_id: job.job_id, status: "completed", text: await provider.getResponse() };
+    const response = await provider.getResponse();
+    record.result = {
+      job_id: job.job_id,
+      status: "completed",
+      ...(typeof response === "string" ? { text: response } : response),
+    };
   } catch (error) {
     record.result = failure(job.job_id, error);
   } finally {

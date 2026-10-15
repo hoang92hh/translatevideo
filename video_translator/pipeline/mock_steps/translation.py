@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ...config.translation import PROPER_NAME_MODE_AUTO, resolve_proper_name_policy
+from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME, CLAUDE_WEB_PROVIDER_NAME
 from ...models import StepId, StepResult, TranslationCandidate
 from ...services import TranslationWorkflow, create_translation_provider
 from ...state import ProjectState
@@ -23,6 +24,15 @@ def execute(
     model_name = str(settings.get("model", GEMINI_DEFAULT_MODEL))
     batch_size = max(1, int(settings.get("batch_size", 30)))
     consistency_enabled = bool(settings.get("context_consistency", True))
+    file_batch_mode = not consistency_enabled and provider in {
+        CHATGPT_WEB_PROVIDER_NAME,
+        CLAUDE_WEB_PROVIDER_NAME,
+    }
+    translation_strategy = (
+        "full_dialogue_roles_v3"
+        if consistency_enabled
+        else "contextual_file_batches_v1" if file_batch_mode else "timing_aware_v1"
+    )
     proper_name_mode = str(settings.get("proper_name_mode", PROPER_NAME_MODE_AUTO))
     proper_name_policy = resolve_proper_name_policy(
         state.source_language,
@@ -63,9 +73,7 @@ def execute(
         "model": model_name,
         "project_url": str(settings.get("project_url", "")),
         "batch_size": batch_size,
-        "translation_strategy": (
-            "full_dialogue_roles_v3" if consistency_enabled else "timing_aware_v1"
-        ),
+        "translation_strategy": translation_strategy,
         "context_consistency": consistency_enabled,
         "dialogue_profile_path": str(profile_path),
         "dialogue_profile": response.dialogue_profile,
@@ -133,9 +141,7 @@ def execute(
         "model": model_name,
         "project_url": str(settings.get("project_url", "")),
         "batch_size": batch_size,
-        "translation_strategy": (
-            "full_dialogue_roles_v3" if consistency_enabled else "timing_aware_v1"
-        ),
+        "translation_strategy": translation_strategy,
         "context_consistency": consistency_enabled,
         "dialogue_profile": response.dialogue_profile,
         "proper_name_policy": response.proper_name_policy,

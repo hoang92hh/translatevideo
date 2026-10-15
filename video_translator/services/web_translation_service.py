@@ -141,6 +141,7 @@ class WebTranslationService:
         *,
         require_project: bool = True,
         attachment_name: str = "",
+        response_attachment_name: str = "",
     ) -> object:
         url_error = project_url_error(self.provider_name, self.project_url)
         if require_project and url_error:
@@ -163,12 +164,19 @@ class WebTranslationService:
             if self.provider_name == CLAUDE_WEB_PROVIDER_NAME
             else ""
         )
+        response_instruction = (
+            f'Create a downloadable JSON file named exactly "{response_attachment_name}". '
+            "Put only the JSON required by the output contract in that file. "
+            "Do not print, preview, or wrap the JSON in the chat response; return the file itself."
+            if response_attachment_name
+            else "Return JSON only. Do not use Markdown fences, commentary, prefaces, or trailing notes."
+        )
         prompt = (
             f"SYSTEM TASK\n{instruction}\n\n"
             "OUTPUT CONTRACT\n"
             f"{output_contract}\n"
             f"{quote_requirement}"
-            "Return JSON only. Do not use Markdown fences, commentary, prefaces, or trailing notes.\n\n"
+            f"{response_instruction}\n\n"
             f"{input_section}"
         )
         try:
@@ -186,6 +194,8 @@ class WebTranslationService:
                     }]
                     if attachment_name else None
                 ),
+                response_file_name=response_attachment_name,
+                timeout=660.0 if response_attachment_name else 240.0,
             )
             self._last_raw_response = response
             self._conversation_started = True
@@ -262,6 +272,7 @@ class WebTranslationService:
         context_after: list[Segment],
         previous_translations: dict[int, str],
         proper_name_policy: dict[str, object],
+        response_file: bool = False,
     ) -> TranslationResponse:
         payload = {
             "source_language": self.source_language,
@@ -271,22 +282,42 @@ class WebTranslationService:
             "speaker_context_for_targets": GoogleTranslationService._speaker_context(
                 segments, dialogue_profile
             ),
-            "context_before": [GoogleTranslationService._segment_payload(item) for item in context_before],
+            "context_before": (
+                []
+                if response_file
+                else [GoogleTranslationService._segment_payload(item) for item in context_before]
+            ),
             "segments_to_translate": [GoogleTranslationService._segment_payload(item) for item in segments],
-            "context_after": [GoogleTranslationService._segment_payload(item) for item in context_after],
-            "previous_translations": previous_translations,
+            "context_after": (
+                []
+                if response_file
+                else [GoogleTranslationService._segment_payload(item) for item in context_after]
+            ),
+            "previous_translations": {} if response_file else previous_translations,
         }
-        parsed = self._request_json(
-            render_web_translation_prompt(
+        instruction = render_web_translation_prompt(
                 "TRANSLATION",
                 source_language=self.source_language,
                 target_language=self.target_language,
-            ),
+            )
+        if response_file:
+            instruction += (
+                " Read every segments_to_translate item in the attached file before translating. "
+                "First infer the story situation, speaker roles, relationships, forms of address, names, "
+                "terminology, tone, and continuity across this complete batch. Then translate each segment "
+                "using that batch-wide analysis. Perform the analysis internally and return only translations."
+            )
+        input_name = f"step3-translation-{segments[0].id:04d}-{segments[-1].id:04d}.json"
+        output_name = (
+            f"step3-translation-result-{segments[0].id:04d}-{segments[-1].id:04d}.json"
+            if response_file else ""
+        )
+        parsed = self._request_json(
+            instruction,
             payload,
             'A JSON array containing only objects of the form {"id": integer, "translated_text": string}.',
-            attachment_name=(
-                f"step3-translation-{segments[0].id:04d}-{segments[-1].id:04d}.json"
-            ),
+            attachment_name=input_name,
+            response_attachment_name=output_name,
         )
         return TranslationResponse(
             self._translation_map(parsed),

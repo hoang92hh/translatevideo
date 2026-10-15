@@ -232,6 +232,7 @@ export class ProviderExecutor {
     const active = { job_id: job.job_id, tabId, startedAt: Date.now(),
       action: job.action, projectName: job.action === "create_project" ? job.content : null,
       provider: job.provider, projectUrl: job.project_url || "",
+      responseFileName: String(job.options?.response_file_name || ""),
       initialProjectId: initialTab ? projectFromUrl(initialTab.url, job.content)?.id : null };
     await chrome.storage.session.set({ [ACTIVE_KEY]: active });
     if (job.action === "create_project") {
@@ -268,7 +269,8 @@ export class ProviderExecutor {
       throw executionError("PROJECT_CREATE_FAILED", "Could not confirm the new project URL. Check ChatGPT.");
     }
     let loggedSteps = 0;
-    const executionTimeout = active.action === "configure_project_from_folder" ? 420000 : 200000;
+    const executionTimeout = active.action === "configure_project_from_folder"
+      ? 420000 : active.responseFileName ? 620000 : 200000;
     while (Date.now() - active.startedAt < executionTimeout) {
       let record;
       try { record = await message(active.tabId, { type: "MYTOOL_STATUS", job_id: active.job_id }); }

@@ -28,6 +28,15 @@ Cả ba giai đoạn gửi input bằng file JSON đính kèm. Giai đoạn phâ
 trong bộ nhớ và đính kèm vào đúng lượt chat; không thêm chúng vào Project Sources. Nếu file đính kèm
 chưa được giao diện web xác nhận sẵn sàng, extension dừng job trước khi bấm Send.
 
+Khi tắt chế độ chất lượng, mỗi batch dịch yêu cầu provider tạo file kết quả thật có tên dạng
+`step3-translation-result-0121-0140.json`. Extension chỉ nhận file nằm trong phản hồi mới nhất,
+tải nội dung file và gửi về ứng dụng; batch kế tiếp chỉ được gửi sau khi file trước hợp lệ.
+Với ChatGPT, extension ghép đúng resource card bằng tên file của batch hiện tại, đăng ký theo dõi
+download trước khi bấm nút **Download file**, rồi chỉ chấp nhận download mới có đúng basename đó
+(hoặc hậu tố `(1)`, `(2)` do Chrome tránh ghi đè). File của batch khác không được nhận thay thế.
+Nếu sự kiện tạo download xuất hiện trước khi Chrome xác định tên file, extension đối soát lại các
+download phát sinh sau thời điểm bắt đầu batch và chỉ trả đường dẫn của đúng file batch hiện tại.
+
 Nếu Step 3 báo chưa kết nối, tải lại tab provider sau khi nạp extension và chờ vài giây. Có thể xem
 Service worker console tại `chrome://extensions` để kiểm tra log `[JOB]`.
 

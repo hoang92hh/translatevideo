@@ -172,6 +172,7 @@ class TranslationWorkflow:
                 after,
                 recent_translations,
                 resolved_name_policy,
+                response_file=not consistency_enabled,
             )
             batch_result = self._validate_translations(response.translations, batch, "dịch")
             translated.update(batch_result)

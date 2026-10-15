@@ -163,15 +163,14 @@ class TranslationStepPage(StepPage):
         status = "Sẵn sàng" if Path(candidate.path).is_file() else "File không tồn tại"
         model = str(candidate.metadata.get("model", ""))
         strategy = str(candidate.metadata.get("translation_strategy", ""))
-        quality_mode = (
-            "Chất lượng: phân tích toàn truyện"
-            if candidate.metadata.get("context_consistency", False)
-            else (
-                "Theo batch: phân tích và nhận file kết quả"
-                if strategy == "contextual_file_batches_v1"
-                else "Nhanh: dịch một lượt"
-            )
-        )
+        if strategy == "project_file_single_batch_v1":
+            quality_mode = "Toàn project: phân tích ngữ cảnh và nhận 1 file"
+        elif strategy == "contextual_file_batches_v1":
+            quality_mode = "Theo batch: phân tích ngữ cảnh và nhận từng file"
+        elif candidate.metadata.get("context_consistency", False):
+            quality_mode = "Chất lượng: phân tích toàn truyện"
+        else:
+            quality_mode = "Nhanh: dịch một lượt"
         details = " · ".join(
             value
             for value in (model, f"{candidate.segment_count} segment", quality_mode, status)

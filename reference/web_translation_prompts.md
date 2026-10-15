@@ -10,9 +10,10 @@ Chỉnh nội dung dưới từng tiêu đề nếu cần. Giữ nguyên đúng 
 
 Đọc toàn bộ input JSON đính kèm. Dịch chỉ các `segments_to_translate` từ {source_language} sang {target_language}. Tuân thủ hồ sơ hội thoại, chỉ dẫn và tài liệu của Project; giữ đúng ý nghĩa, tên riêng, cách xưng hô và ngữ cảnh. Trả mỗi ID đích đúng một lần, không trả ID ngữ cảnh.
 
-Khi Step 03 chạy với chế độ chất lượng bị tắt, ứng dụng bổ sung yêu cầu AI đọc trọn batch,
-tự phân tích câu chuyện, speaker và quan hệ trong batch trước khi dịch. Mỗi request dùng số lượng
-segment từ ô `Segments / batch`, nhận một file JSON kết quả riêng rồi mới gửi batch kế tiếp.
+Với ChatGPT Web và Claude Web, ứng dụng bổ sung yêu cầu AI đọc trọn file, tự phân tích câu chuyện,
+speaker và quan hệ trước khi dịch. Checkbox toàn project tạo một request chứa mọi segment; khi bỏ chọn,
+mỗi request dùng số lượng từ ô `Segments / batch`. Ứng dụng chỉ gửi lượt kế tiếp sau khi nhận và xác thực
+file JSON kết quả của lượt hiện tại.
 
 ## REVIEW
 

@@ -22,17 +22,13 @@ def execute(
 ) -> StepResult:
     provider = str(settings.get("provider", GEMINI_PROVIDER_NAME))
     model_name = str(settings.get("model", GEMINI_DEFAULT_MODEL))
-    batch_size = max(1, int(settings.get("batch_size", 30)))
-    consistency_enabled = bool(settings.get("context_consistency", True))
-    file_batch_mode = not consistency_enabled and provider in {
+    configured_batch_size = max(1, int(settings.get("batch_size", 30)))
+    web_file_mode = provider in {
         CHATGPT_WEB_PROVIDER_NAME,
         CLAUDE_WEB_PROVIDER_NAME,
     }
-    translation_strategy = (
-        "full_dialogue_roles_v3"
-        if consistency_enabled
-        else "contextual_file_batches_v1" if file_batch_mode else "timing_aware_v1"
-    )
+    all_project_segments = web_file_mode and bool(settings.get("all_project_segments", True))
+    consistency_enabled = False if web_file_mode else bool(settings.get("context_consistency", True))
     proper_name_mode = str(settings.get("proper_name_mode", PROPER_NAME_MODE_AUTO))
     proper_name_policy = resolve_proper_name_policy(
         state.source_language,
@@ -40,6 +36,14 @@ def execute(
         proper_name_mode,
     )
     segments = previous_segments(state, StepId.TRANSLATE)
+    batch_size = len(segments) if all_project_segments and segments else configured_batch_size
+    translation_strategy = (
+        "project_file_single_batch_v1"
+        if all_project_segments
+        else "contextual_file_batches_v1" if web_file_mode
+        else "full_dialogue_roles_v3" if consistency_enabled
+        else "timing_aware_v1"
+    )
     translation_provider = create_translation_provider(
         provider,
         model_name,
@@ -73,6 +77,8 @@ def execute(
         "model": model_name,
         "project_url": str(settings.get("project_url", "")),
         "batch_size": batch_size,
+        "configured_batch_size": configured_batch_size,
+        "all_project_segments": all_project_segments,
         "translation_strategy": translation_strategy,
         "context_consistency": consistency_enabled,
         "dialogue_profile_path": str(profile_path),
@@ -141,6 +147,8 @@ def execute(
         "model": model_name,
         "project_url": str(settings.get("project_url", "")),
         "batch_size": batch_size,
+        "configured_batch_size": configured_batch_size,
+        "all_project_segments": all_project_segments,
         "translation_strategy": translation_strategy,
         "context_consistency": consistency_enabled,
         "dialogue_profile": response.dialogue_profile,

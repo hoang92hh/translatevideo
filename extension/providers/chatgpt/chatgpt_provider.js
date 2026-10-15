@@ -45,6 +45,50 @@ export class ChatGPTProvider extends BaseProvider {
     return element.tagName === "TEXTAREA" ? element.value : element.innerText;
   }
 
+  composerRoot(composer) {
+    return composer?.closest('[data-testid="composer"], [data-type="unified-composer"], form')
+      || composer?.parentElement
+      || null;
+  }
+
+  sendButtons(composer) {
+    const root = this.composerRoot(composer);
+    return root ? [...root.querySelectorAll(S.send)] : [];
+  }
+
+  enabledSendButton(composer) {
+    const candidates = this.sendButtons(composer).filter(button =>
+      this.visible(button)
+      && !button.disabled
+      && button.getAttribute("aria-disabled") !== "true"
+      && !button.closest("[inert], [hidden]"));
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  sendState(composer) {
+    const root = this.composerRoot(composer);
+    const buttons = this.sendButtons(composer);
+    return JSON.stringify({
+      composer_found: Boolean(composer),
+      composer_root_found: Boolean(root),
+      prompt_matches: Boolean(
+        composer && this.prompt
+        && comparable(this.composerText(composer)) === comparable(this.prompt)
+      ),
+      send_button_count: buttons.length,
+      send_buttons: buttons.map(button => ({
+        visible: this.visible(button),
+        disabled: Boolean(button.disabled),
+        aria_disabled: button.getAttribute("aria-disabled"),
+        aria_label: button.getAttribute("aria-label"),
+        data_testid: button.getAttribute("data-testid"),
+        type: button.getAttribute("type"),
+        role: button.getAttribute("role"),
+        inside_inert: Boolean(button.closest("[inert]")),
+      })),
+    });
+  }
+
   async isReady() {
     if (this.find(S.signedOut)) return false;
     const composer = this.find(S.composer);
@@ -189,13 +233,20 @@ export class ChatGPTProvider extends BaseProvider {
   async sendPrompt() {
     if (this.sent) throw error("DUPLICATE_EXECUTION", "sendPrompt may only be attempted once.");
     if (!this.prompt) throw error("PROMPT_SEND_FAILED", "No prompt has been prepared.");
-    const button = await this.observe(() => {
-      const candidate = this.find(S.send);
-      return candidate && !candidate.disabled && candidate.getAttribute("aria-disabled") !== "true"
-        ? candidate : null;
-    }, 10000, () => error("PROMPT_SEND_FAILED", "No enabled Send button; prompt was not retried."));
+    await this.observe(() => {
+      const current = this.find(S.composer);
+      return current && this.enabledSendButton(current) ? true : null;
+    }, 10000, () => {
+      const current = this.find(S.composer);
+      return error(
+        "PROMPT_SEND_FAILED",
+        `No unique enabled Send button; prompt was not retried. ${this.sendState(current)}`,
+      );
+    });
     const composer = this.find(S.composer);
-    if (!composer || comparable(this.composerText(composer)) !== comparable(this.prompt) || this.find(S.stop)) {
+    const button = this.enabledSendButton(composer);
+    if (!composer || comparable(this.composerText(composer)) !== comparable(this.prompt)
+        || !button || this.find(S.stop)) {
       throw error("PROMPT_SEND_FAILED", "Composer changed or generation is already active.");
     }
     this.beforeAssistantKeys = new Set(this.assistantTurns().map(

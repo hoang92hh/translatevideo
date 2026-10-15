@@ -43,6 +43,12 @@ Với job yêu cầu file, extension chỉ xác nhận phản hồi hoàn tất 
 
 Nếu Step 3 báo chưa kết nối, tải lại tab provider sau khi nạp extension và chờ vài giây. Có thể xem
 Service worker console tại `chrome://extensions` để kiểm tra log `[JOB]`.
+Từ phiên bản 0.15.0, nếu background đã kết nối nhưng content script trong tab provider bị mất sau khi
+reload extension, extension tự chèn lại `content.js` vào frame chính rồi kiểm tra lại trước khi báo lỗi.
+Thao tác phục hồi này không tự gửi lại prompt.
+Từ phiên bản 0.16.0, ChatGPT adapter tìm tất cả nút Send trong đúng composer và chỉ bấm khi có
+duy nhất một nút đang hiển thị, không disabled. Log lỗi kèm thuộc tính các nút ứng viên để chẩn đoán
+khi giao diện ChatGPT thay đổi.
 
 ## Phạm vi hiện tại
 

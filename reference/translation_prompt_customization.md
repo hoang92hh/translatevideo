@@ -32,11 +32,12 @@ dịch ở Step 03 và chức năng AI rút gọn câu tại Step 05.
 2. `translate_batch()` dịch từng batch bằng hồ sơ chung và ngữ cảnh chồng lấn.
 3. `review_translation()` đọc toàn bộ bản dịch một lần và chỉ trả các ID cần sửa.
 
-Khi người dùng tắt chế độ chất lượng, workflow bỏ qua bước phân tích toàn truyện và kiểm duyệt.
-Với ChatGPT Web và Claude Web, từng batch vẫn được gửi bằng file theo giá trị `Segments / batch`;
-AI tự phân tích toàn bộ batch trước khi dịch và phải trả file JSON thật có tên do ứng dụng chỉ định.
-Ứng dụng chỉ gửi batch tiếp theo sau khi extension tải, parse và xác thực đủ ID của file hiện tại.
-Gemini API vẫn trả structured response trực tiếp qua API.
+ChatGPT Web và Claude Web luôn bỏ qua bước phân tích toàn truyện và kiểm duyệt riêng. Khi checkbox
+**Dịch toàn bộ segment của project trong một lượt** được bật, toàn bộ project được gửi bằng một file;
+khi bỏ chọn, từng file dùng giá trị `Segments / batch`. AI tự phân tích toàn bộ nội dung file trước khi
+dịch và phải trả file JSON thật có tên do ứng dụng chỉ định. Ứng dụng chỉ gửi lượt tiếp theo sau khi
+extension tải, parse và xác thực đủ ID của file hiện tại. Gemini giữ workflow chất lượng và structured
+response trực tiếp qua API.
 
 Workflow là phần dùng chung, không chứa prompt riêng của Gemini. Prompt Gemini nằm
 trong `GoogleTranslationService`. Adapter ChatGPT hoặc Claude sau này phải triển khai

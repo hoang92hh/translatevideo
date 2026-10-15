@@ -24,14 +24,42 @@ async function message(tabId, body, timeoutMs = 5000) {
   } finally { clearTimeout(timer); }
 }
 
+function isProviderUrl(url) {
+  try {
+    const origin = new URL(url).origin;
+    return [...targets.values()].some(target => target.origin === origin);
+  } catch {
+    return false;
+  }
+}
+
+async function restoreContentScript(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (tab.status !== "complete" || !isProviderUrl(tab.url)) return false;
+  await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    files: ["content.js"],
+  });
+  console.info("[Bridge] Content script restored in provider tab", tabId);
+  return true;
+}
+
 async function ready(tabId, expectedRoot = null) {
+  let restored = false;
   for (let i = 0; i < 40; i++) {
     try {
       const tab = await chrome.tabs.get(tabId);
       const ping = await message(tabId, { type: "MYTOOL_PING" });
       if (ping?.ready && tab.status === "complete" &&
           (!expectedRoot || ping.url === expectedRoot || ping.url?.startsWith(expectedRoot + "/"))) return;
-    } catch {}
+    } catch {
+      if (!restored) {
+        try {
+          restored = await restoreContentScript(tabId);
+          if (restored) await sleep(250);
+        } catch {}
+      }
+    }
     await sleep(500);
   }
   throw executionError("CONTENT_SCRIPT_NOT_READY", "Reload the provider tab after loading the extension.");

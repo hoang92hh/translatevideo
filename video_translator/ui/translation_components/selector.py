@@ -54,7 +54,7 @@ class _ProviderComponent(QWidget):
 
 
 class _CommonTranslationComponent(_ProviderComponent):
-    def _add_common_controls(self, form: QFormLayout) -> None:
+    def _add_common_controls(self, form: QFormLayout, *, web_file_mode: bool = False) -> None:
         self.batch_size = QSpinBox()
         self.batch_size.setRange(1, 1000)
         self.batch_size.setValue(30)
@@ -63,17 +63,27 @@ class _CommonTranslationComponent(_ProviderComponent):
         self.proper_name_mode.addItems(PROPER_NAME_MODES)
         self.proper_name_mode.setCurrentText(PROPER_NAME_MODE_AUTO)
         form.addRow("Quy tắc tên riêng", self.proper_name_mode)
-        self.context_consistency = QCheckBox("Phân tích toàn truyện và kiểm duyệt kết quả")
-        self.context_consistency.setChecked(True)
-        form.addRow("Chế độ chất lượng", self.context_consistency)
+        if web_file_mode:
+            self.all_project_segments = QCheckBox("Dịch toàn bộ segment của project trong một lượt")
+            self.all_project_segments.toggled.connect(self.batch_size.setDisabled)
+            self.all_project_segments.setChecked(True)
+            form.addRow("Phạm vi dịch", self.all_project_segments)
+        else:
+            self.context_consistency = QCheckBox("Phân tích toàn truyện và kiểm duyệt kết quả")
+            self.context_consistency.setChecked(True)
+            form.addRow("Chế độ chất lượng", self.context_consistency)
 
     def _common_settings(self) -> dict[str, Any]:
-        return {
+        settings = {
             "provider": self.provider_name,
             "batch_size": self.batch_size.value(),
             "proper_name_mode": self.proper_name_mode.currentText(),
-            "context_consistency": self.context_consistency.isChecked(),
         }
+        if hasattr(self, "all_project_segments"):
+            settings["all_project_segments"] = self.all_project_segments.isChecked()
+        else:
+            settings["context_consistency"] = self.context_consistency.isChecked()
+        return settings
 
 
 class _GeminiComponent(_CommonTranslationComponent):
@@ -158,7 +168,7 @@ class _WebComponent(_CommonTranslationComponent):
         self.project_url = QLineEdit()
         self.project_url.setPlaceholderText(f"URL Project trên {website}")
         form.addRow("Project URL", self.project_url)
-        self._add_common_controls(form)
+        self._add_common_controls(form, web_file_mode=True)
         card.content_layout.addLayout(form)
         note = QLabel(
             "Trước khi chạy: nạp extension, đăng nhập, chỉ để một tab của provider và để ô nhập trống. "

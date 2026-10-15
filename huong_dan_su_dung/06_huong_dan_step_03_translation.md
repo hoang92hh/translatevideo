@@ -26,7 +26,8 @@ biến môi trường trên máy đó.
 - `gemini-3.8-flash`: mạnh hơn cho tác vụ phức tạp nhưng chi phí cao hơn.
 - `gemini-2.5-flash`: model legacy; Google giới hạn quyền truy cập đối với project mới.
 - `gemini-2.5-pro`: model legacy cho suy luận phức tạp, thường không cần cho subtitle và có chi phí cao.
-- `Segments / batch`: số segment gửi trong mỗi request. Giá trị mặc định là 30.
+- `Segments / batch`: số segment gửi trong mỗi request. Giá trị mặc định là 30. Với ChatGPT Web
+  và Claude Web, giá trị này chỉ có hiệu lực khi bỏ chọn **Dịch toàn bộ segment của project trong một lượt**.
 - `Quy tắc tên riêng`:
   - `Tự động theo ngôn ngữ đích` (mặc định): Chinese → Vietnamese ưu tiên âm
     Hán–Việt; Chinese → English, Spanish và các ngôn ngữ khác ưu tiên Pinyin cho
@@ -34,12 +35,11 @@ biến môi trường trên máy đó.
   - `Hán–Việt`: buộc dùng âm Hán–Việt.
   - `Pinyin`: buộc dùng Hanyu Pinyin không dấu thanh.
   - `Giữ nguyên chữ gốc`: không chuyển tự tên riêng.
-- `Chế độ chất lượng — phân tích toàn truyện và kiểm duyệt`: bật mặc định. Khi bật,
-  Step 03 phân tích mọi speaker trước khi dịch và kiểm duyệt
-  lại toàn bộ kết quả sau khi dịch. Khi tắt với ChatGPT Web hoặc Claude Web, mỗi batch có số
-  segment đúng theo ô `Segments / batch`, được gửi bằng một file JSON; AI đọc trọn batch,
-  tự phân tích ngữ cảnh và speaker rồi trả một file JSON kết quả riêng. Ứng dụng xác thực file
-  trước khi gửi batch kế tiếp. Gemini API vẫn trả dữ liệu có cấu trúc trực tiếp qua API.
+- Trên tab Gemini, `Chế độ chất lượng — phân tích toàn truyện và kiểm duyệt` giữ nguyên hành vi cũ.
+- Trên tab ChatGPT Web và Claude Web, **Dịch toàn bộ segment của project trong một lượt** được bật
+  mặc định. Khi bật, Step 03 gửi toàn bộ project trong một file và bỏ qua `Segments / batch`;
+  khi bỏ chọn, ứng dụng chia tuần tự theo đúng giá trị batch. Cả hai chế độ đều yêu cầu AI đọc trọn
+  file, tự phân tích ngữ cảnh và speaker, rồi trả một file JSON kết quả được xác thực trước lượt tiếp theo.
 
 Ba provider được hiển thị dạng tab giống Step 04. Nút **Đặt làm mặc định** lưu provider sẽ được chọn
 khi mở ứng dụng lần sau.
@@ -53,25 +53,24 @@ khi mở ứng dụng lần sau.
 5. Mở Project đã cấu hình chỉ dẫn/file trên trang web, sao chép URL trên thanh địa chỉ và dán vào ô **Project URL**.
 6. Chọn model trực tiếp trên trang web rồi chạy Step 03.
 
-Ứng dụng không đọc cookie hoặc token đăng nhập. Mỗi giai đoạn của workflow được gửi thành một prompt
-riêng trong cùng cuộc trò chuyện thuộc Project và kết quả JSON được kiểm tra lại như với Gemini. URL được
+Ứng dụng không đọc cookie hoặc token đăng nhập. Mỗi file dịch được gửi thành một prompt riêng trong
+cùng cuộc trò chuyện thuộc Project và kết quả JSON được kiểm tra lại như với Gemini. URL được
 lưu riêng trong `project.json` của project video hiện tại. Không đóng hoặc tải lại tab trong lúc job đang chạy;
 extension không tự gửi lại prompt khi không chắc request trước đã được thực thi hay chưa.
 
-Để tránh dán nội dung dài vào composer, cả ba giai đoạn đều gửi input bằng file JSON đính kèm. Giai đoạn
-phân tích dùng `step3-analysis.json`, mỗi batch dịch dùng file có dạng
-`step3-translation-0121-0140.json`, và giai đoạn kiểm duyệt dùng `step3-review.json`. Kích thước batch vẫn
-do `Segments / batch` điều khiển. Các file chỉ được tạo trong bộ nhớ cho lượt chat, không được thêm vào
-Project Sources.
+Để tránh dán nội dung dài vào composer, web provider gửi input bằng file JSON đính kèm có dạng
+`step3-translation-0121-0140.json`. Khi chọn toàn project, chỉ có một file từ ID đầu đến ID cuối;
+khi bỏ chọn, `Segments / batch` quyết định số segment của từng file. Các file chỉ được tạo trong bộ nhớ
+cho lượt chat, không được thêm vào Project Sources.
 
-Ở chế độ chất lượng bị tắt, ChatGPT Web và Claude Web phải trả từng batch bằng file có tên dạng
+ChatGPT Web và Claude Web phải trả từng lượt bằng file có tên dạng
 `step3-translation-result-0121-0140.json`. Extension tải và xác thực file trước khi ứng dụng gửi batch
 tiếp theo trong cùng cuộc trò chuyện.
 Riêng ChatGPT, extension xác định resource card bằng đúng tên file batch, theo dõi download trước khi
 bấm nút tải và bỏ qua mọi file có tên thuộc batch khác. File được Chrome tự đổi thành hậu tố `(1)`,
 `(2)` do trùng tên vẫn được chấp nhận sau khi đối chiếu phần tên batch gốc.
 
-Ba chỉ dẫn ngắn cho giai đoạn phân tích, dịch và kiểm duyệt nằm tại
+Các chỉ dẫn cho giai đoạn phân tích, dịch và kiểm duyệt nằm tại
 [`reference/web_translation_prompts.md`](../reference/web_translation_prompts.md). Có thể sửa nội dung dưới
 từng tiêu đề, nhưng phải giữ nguyên ba tiêu đề và các biến trong dấu ngoặc nhọn.
 
@@ -97,7 +96,7 @@ quota và rate limit riêng; project đã bật billing sẽ tính phí theo tok
 
 ## 3. Quy tắc xử lý
 
-Khi bật chế độ nhất quán toàn bộ hội thoại, Step 03 chạy ba giai đoạn:
+Khi bật chế độ chất lượng trên tab Gemini, Step 03 chạy ba giai đoạn:
 
 1. **Phân tích tổng quan**: với tối đa 250 segment, AI nhận toàn bộ transcript. Khi dài
    hơn, ứng dụng lấy tối đa 250 segment đại diện trải đều từ đầu đến cuối, ưu tiên giữ
@@ -119,10 +118,9 @@ Khi bật chế độ nhất quán toàn bộ hội thoại, Step 03 chạy ba g
    do; câu đúng không bị viết lại chỉ vì khác phong cách.
 
 Ứng dụng điều phối, chia batch, kiểm tra ID và lưu kết quả; provider AI xử lý phần hiểu
-ngữ nghĩa. Workflow dùng giao diện `TranslationProvider` trung lập. Gemini là provider
-đang hoạt động; extension ChatGPT, Claude hoặc provider khác có thể đăng ký adapter cùng
-giao diện về sau mà không thay đổi ba giai đoạn. Ứng dụng không đọc hoặc lưu token/cookie
-phiên đăng nhập của extension.
+ngữ nghĩa. Workflow dùng giao diện `TranslationProvider` trung lập. Gemini có thể chạy ba giai đoạn;
+ChatGPT Web và Claude Web chỉ chạy các lượt dịch bằng file, theo toàn project hoặc theo batch.
+Ứng dụng không đọc hoặc lưu token/cookie phiên đăng nhập của extension.
 
 Gemini nhận từng batch dưới dạng danh sách gồm ID, source text, timestamp bắt đầu,
 timestamp kết thúc và thời lượng của từng segment, sau đó trả structured JSON.
@@ -175,9 +173,9 @@ Output mới tự động trở thành input Step 04. Khối **Chọn output b�
 Nút **Lưu thay đổi** chỉ hoạt động với candidate có nhãn `[Input Step 4]`. Nếu đang
 xem candidate khác, cần nhấn **Dùng làm input Step 4** trước rồi mới chỉnh sửa và lưu.
 
-Manifest phiên bản 3 lưu thêm `dialogue_profile`, `proper_name_policy`, trạng thái
-`context_consistency`, chiến lược dịch, số request của từng giai đoạn và danh sách lỗi
-đã được giai đoạn kiểm duyệt sửa để đối chiếu.
+Manifest phiên bản 3 lưu thêm `dialogue_profile`, `proper_name_policy`, `context_consistency`,
+`all_project_segments`, batch được cấu hình/batch thực tế, chiến lược dịch, số request của từng
+giai đoạn và danh sách lỗi đã được giai đoạn kiểm duyệt sửa để đối chiếu.
 Candidate phiên bản cũ vẫn được đọc bình thường.
 
 Khi cần thay đổi prompt, payload, schema hoặc chỉ dẫn gửi provider, xem bản đồ file/hàm

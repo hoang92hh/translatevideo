@@ -948,6 +948,7 @@ def repair_sync_segments(
             repair_root,
             target_language,
             (lambda value, message: progress(min(55, 3 + value // 2), message)) if progress else None,
+            session_key=str(sync_payload.get("candidate_id") or sync_manifest.resolve()),
         )
     service = AudioSyncService()
     outcomes: dict[int, SyncOutcome | None] = {}

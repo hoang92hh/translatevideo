@@ -20,7 +20,14 @@ from video_translator.config.tts import (
 from video_translator.config.speaker_profiles import resolve_speaker_profile
 
 
+_CURRENT_REQUEST_ID = ""
+_VIENEU_MODELS: dict[str, Any] = {}
+_PIPER_VOICES: dict[str, Any] = {}
+
+
 def emit(payload: dict[str, Any]) -> None:
+    if _CURRENT_REQUEST_ID and "request_id" not in payload:
+        payload = {**payload, "request_id": _CURRENT_REQUEST_ID}
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
@@ -110,7 +117,11 @@ def run_vieneu(settings: dict[str, Any], segments: list[dict[str, Any]], output:
     from vieneu import Vieneu
     import soundfile as sf
 
-    model = Vieneu(backend=backend)
+    model = _VIENEU_MODELS.get(backend)
+    if model is None:
+        emit({"type": "progress", "value": 1, "message": "Đang nạp model VieNeu-TTS…"})
+        model = Vieneu(backend=backend)
+        _VIENEU_MODELS[backend] = model
     files: list[str] = []
     segment_results: list[dict[str, Any]] = []
     speed = float(settings.get("speed", 1.0))
@@ -184,7 +195,6 @@ def run_piper(settings: dict[str, Any], segments: list[dict[str, Any]], output: 
         "volume": float(settings.get("volume", 1.0)),
         "normalize_audio": bool(settings.get("normalize_audio", True)),
     }
-    voice_cache: dict[str, Any] = {}
     files: list[str] = []
     segment_results: list[dict[str, Any]] = []
     for index, item in enumerate(segments, start=1):
@@ -192,12 +202,12 @@ def run_piper(settings: dict[str, Any], segments: list[dict[str, Any]], output: 
         model_path = Path(profile["voice"]).expanduser().resolve()
         config_path = Path(f"{model_path}.json")
         cache_key = str(model_path)
-        if cache_key not in voice_cache:
-            voice_cache[cache_key] = PiperVoice.load(
+        if cache_key not in _PIPER_VOICES:
+            _PIPER_VOICES[cache_key] = PiperVoice.load(
                 str(model_path),
                 config_path=str(config_path),
             )
-        voice = voice_cache[cache_key]
+        voice = _PIPER_VOICES[cache_key]
         requested_speaker_id = profile.get("piper_speaker_id")
         speaker_id = int(requested_speaker_id) if requested_speaker_id is not None else None
         actual_speaker_id = speaker_id
@@ -330,9 +340,8 @@ def run_melo(settings: dict[str, Any], segments: list[dict[str, Any]], output: P
     }
 
 
-def main() -> None:
+def handle_request(request: dict[str, Any]) -> None:
     try:
-        request = json.loads(sys.stdin.readline())
         provider = str(request["provider"])
         settings = dict(request.get("settings", {}))
         segments = list(request.get("segments", []))
@@ -360,6 +369,24 @@ def main() -> None:
             message = f"Thiếu module Python: {exc.name}."
             suggestion = "Cài dependency Step 4 theo tài liệu cài đặt rồi khởi động lại ứng dụng."
         emit({"type": "error", "title": "Không thể tạo giọng nói", "message": message, "suggestion": suggestion, "technical_detail": traceback.format_exc()})
+
+
+def main() -> None:
+    global _CURRENT_REQUEST_ID
+    for raw_line in sys.stdin:
+        try:
+            request = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(request, dict):
+            continue
+        if request.get("type") == "shutdown":
+            break
+        _CURRENT_REQUEST_ID = str(request.get("request_id", ""))
+        try:
+            handle_request(request)
+        finally:
+            _CURRENT_REQUEST_ID = ""
 
 
 if __name__ == "__main__":

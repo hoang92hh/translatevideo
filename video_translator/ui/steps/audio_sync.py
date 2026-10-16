@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...models import StepId, StepResult
+from ...services.text_to_speech_service import release_tts_session
 from ..sync_repair_dialog import SyncRepairDialog
 from ..specs import FieldSpec, ProviderSpec, StepSpec
 from .base import StepPage
@@ -237,6 +238,7 @@ class AudioSyncStepPage(StepPage):
         dialog.show()
 
     def _clear_repair_dialog(self, dialog: SyncRepairDialog) -> None:
+        release_tts_session(dialog.candidate_id)
         if self._repair_dialog is dialog:
             self._repair_dialog = None
 

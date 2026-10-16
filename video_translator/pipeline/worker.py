@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from typing import Any
 
 from PySide6.QtCore import QThread, Signal
@@ -19,7 +18,6 @@ from .mock_pipeline import MockPipeline
 class PipelineWorker(QThread):
     succeeded = Signal(object)
     failed = Signal(object)
-    cancelled = Signal(object)
     progress_changed = Signal(int, str)
 
     def __init__(
@@ -34,17 +32,8 @@ class PipelineWorker(QThread):
         self.step = step
         self.state = state
         self.settings = settings
-        self._cancel_requested = threading.Event()
-
-    def cancel(self) -> None:
-        self._cancel_requested.set()
 
     def _progress(self, value: int, message: str) -> None:
-        if self._cancel_requested.is_set() and self.step in {
-            StepId.TRANSLATE,
-            StepId.SYNC,
-        }:
-            raise PipelineCancelled()
         self.progress_changed.emit(value, message)
 
     def run(self) -> None:
@@ -55,23 +44,10 @@ class PipelineWorker(QThread):
                 self.settings,
                 self._progress,
             )
-        except PipelineCancelled:
-            self.cancelled.emit(None)
-            return
         except Exception as exc:
-            if self._cancel_requested.is_set():
-                self.cancelled.emit(None)
-                return
             self.failed.emit(error_payload(exc))
             return
-        if self._cancel_requested.is_set():
-            self.cancelled.emit(result)
-            return
         self.succeeded.emit(result)
-
-
-class PipelineCancelled(Exception):
-    """Internal cooperative cancellation marker; never shown as a processing error."""
 
 
 class AudioSyncAiRewriteWorker(QThread):

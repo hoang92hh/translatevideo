@@ -55,6 +55,9 @@ class AudioSyncStepPage(StepPage):
         super().__init__(state)
 
     def build_result_extra(self) -> QWidget:
+        # Step 5 có thể chứa hàng trăm segment. Không hiển thị bảng chung của
+        # StepPage để tránh dựng hàng nghìn cell mỗi khi đổi candidate.
+        self.table.setVisible(False)
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 8, 0, 0)
@@ -103,12 +106,11 @@ class AudioSyncStepPage(StepPage):
         return container
 
     def _show_result(self, result: StepResult) -> None:
-        super()._show_result(result)
-        for row in range(self.table.rowCount()):
-            for column in range(self.table.columnCount()):
-                item = self.table.item(row, column)
-                if item:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.result_summary.setText(result.summary)
+        self.artifacts.setPlainText(
+            "\n".join(f"{name}:  {path}" for name, path in result.artifacts.items())
+        )
+        self.table.setRowCount(0)
 
     def refresh_special(self) -> None:
         if hasattr(self, "sync_combo") and not self._repairing:
@@ -199,7 +201,22 @@ class AudioSyncStepPage(StepPage):
 
     def _open_repair_dialog(self, show_all: bool = False) -> None:
         candidate = self._current_candidate()
-        if not candidate or not self._candidate_payload:
+        if not candidate:
+            QMessageBox.information(
+                self,
+                "Không có output",
+                "Chưa có candidate Step 5 để xử lý.",
+            )
+            return
+        if not Path(candidate.path).is_file() or not self._candidate_payload:
+            self._loaded_manifest_signature = None
+            self._candidate_changed()
+        if not Path(candidate.path).is_file() or not self._candidate_payload:
+            QMessageBox.warning(
+                self,
+                "Không thể mở danh sách",
+                "Manifest Step 5 không tồn tại hoặc chưa thể đọc. Hãy làm mới output rồi thử lại.",
+            )
             return
         if self._repair_dialog and self._repair_dialog.isVisible():
             self._repair_dialog.raise_()
@@ -216,9 +233,16 @@ class AudioSyncStepPage(StepPage):
         dialog.process_requested.connect(lambda texts: self.batch_repair_requested.emit(candidate.id, texts))
         dialog.borrow_requested.connect(lambda: self.neighbor_borrow_requested.emit(candidate.id))
         dialog.drafts_changed.connect(lambda texts: self._save_repair_drafts(candidate.id, texts))
-        dialog.finished.connect(lambda *_: setattr(self, "_repair_dialog", None))
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda *_args, target=dialog: self._clear_repair_dialog(target)
+        )
         self._repair_dialog = dialog
         dialog.show()
+
+    def _clear_repair_dialog(self, dialog: SyncRepairDialog) -> None:
+        if self._repair_dialog is dialog:
+            self._repair_dialog = None
 
     def _save_repair_drafts(self, candidate_id: str, texts: dict[int, str]) -> None:
         candidate = self.state.sync_candidate(candidate_id)

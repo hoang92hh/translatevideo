@@ -35,8 +35,6 @@ QPushButton:hover { background: #263650; border-color: #4a6389; }
 QPushButton:disabled { color: #5f6b7d; background: #151c29; border-color: #252d3a; }
 QPushButton#primaryButton { background: #0284c7; color: white; border: 1px solid #38bdf8; padding: 10px 18px; }
 QPushButton#primaryButton:hover { background: #0ea5e9; }
-QPushButton#stopButton { background: #7f1d1d; color: white; border: 1px solid #ef4444; padding: 10px 18px; }
-QPushButton#stopButton:hover { background: #991b1b; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QListWidget {
     background: #0b1220; border: 1px solid #2a3850; border-radius: 7px; padding: 8px;
     selection-background-color: #0369a1;
@@ -51,7 +49,16 @@ QProgressBar {
 QProgressBar::chunk { background: #0284c7; border-radius: 5px; }
 QListWidget#recentProjects::item { padding: 12px; border-bottom: 1px solid #202c41; }
 QListWidget#recentProjects::item:hover { background: #162237; }
-QTableWidget { background: #0b1220; alternate-background-color: #101827; border: 1px solid #29364d; border-radius: 8px; gridline-color: #253047; selection-background-color: #164e63; }
+QTableWidget {
+    background: #0b1220; alternate-background-color: #101827; color: #e8edf6;
+    border: 1px solid #29364d; border-radius: 8px; gridline-color: #253047;
+    selection-background-color: #164e63; selection-color: #ffffff;
+}
+QTableView {
+    background: #0c111b; alternate-background-color: #0c111b; color: #e8edf6;
+    border: 1px solid #29364d; border-radius: 8px; gridline-color: #253047;
+    selection-background-color: #164e63; selection-color: #ffffff;
+}
 QHeaderView::section { background: #182235; color: #aab6c9; border: none; border-bottom: 1px solid #33415a; padding: 9px; font-weight: 700; }
 QTabWidget::pane { border: none; }
 QTabBar::tab { background: #101725; color: #8996aa; padding: 13px 18px; border-bottom: 2px solid transparent; }

@@ -189,8 +189,8 @@ Kết quả mong đợi:
 No broken requirements found.
 ```
 
-Nếu một trong các bước trên lỗi, chưa nên chạy toàn bộ pipeline. Xem mục 11 để
-xử lý theo đúng backend bị lỗi.
+Nếu một trong các bước trên lỗi, chưa nên chạy chuỗi từ step đến cuối. Xem mục 11
+để xử lý theo đúng backend bị lỗi.
 
 ## 6. Chuẩn bị model cho Step 1 và Step 2
 

@@ -85,8 +85,8 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 
 ## Trạng thái hiện tại
 
-- Có thể chạy riêng từng step, chạy toàn bộ pipeline, hoặc dùng nút **Chạy từ Step XX đến cuối** trên mỗi trang để chạy lại step đang chọn rồi tự động nối tiếp tới Step 07. Nếu chuỗi bị dừng do lỗi, giao diện chuyển tới step lỗi và hiện nút **Continue** để tiếp tục từ step chưa hoàn thành sau khi người dùng xử lý.
-- Khi một step đang chạy, nút **Dừng pipeline** yêu cầu dừng an toàn. Step 03 dừng ở ranh giới request/batch và Step 05 dừng ở ranh giới segment; các tác vụ FFmpeg/STT/TTS đang chạy được phép hoàn tất tác vụ con hiện tại để tránh hỏng file. Output của step bị dừng không được đăng ký, thư mục candidate mới bị xóa và trạng thái hợp lệ trước khi chạy được khôi phục. Lần chạy sau luôn bắt đầu lại step đó từ đầu.
+- Có thể chạy riêng từng step hoặc dùng nút **Chạy từ Step XX đến cuối** trên mỗi trang để chạy lại step đang chọn rồi tự động nối tiếp tới Step 07. Nếu chuỗi dừng do lỗi, giao diện chuyển tới step lỗi và hiện nút **Continue** để tiếp tục từ step chưa hoàn thành sau khi người dùng xử lý.
+- Step đang chạy sẽ hoàn tất hoặc trả lỗi; giao diện không cung cấp thao tác dừng thủ công giữa chừng. Nhãn trên thanh đầu trang hiển thị vị trí của tab hiện tại, hoặc step liền trước nếu tab hiện tại chưa có kết quả.
 - Giao diện và mock handler của mỗi step nằm trong module riêng.
 - Cấu hình hiển thị theo provider được chọn.
 - Bảng segment giữ ID xuyên suốt pipeline và cho phép chỉnh sửa nội dung.

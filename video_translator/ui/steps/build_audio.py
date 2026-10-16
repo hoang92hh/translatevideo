@@ -34,6 +34,8 @@ class BuildAudioStepPage(StepPage):
         super().__init__(state)
 
     def build_result_extra(self) -> QWidget:
+        # Step 6 chỉ cần voice track hoàn chỉnh, không cần bảng từng segment.
+        self.table.setVisible(False)
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 8, 0, 0)
@@ -99,12 +101,7 @@ class BuildAudioStepPage(StepPage):
         return container
 
     def _show_result(self, result: StepResult) -> None:
-        super()._show_result(result)
-        for row in range(self.table.rowCount()):
-            for column in range(self.table.columnCount()):
-                item = self.table.item(row, column)
-                if item:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._show_result_without_segments(result)
 
     def prepare_run(self) -> None:
         self._release_player("Đã giải phóng trình phát để chạy lại Step 6…")
@@ -154,9 +151,6 @@ class BuildAudioStepPage(StepPage):
             f"{candidate.duration_seconds:.2f}s · {status}\n{path}"
         )
         self._set_player_enabled(path.is_file())
-        self.show_candidate_result(
-            self.state.candidate_result(StepId.BUILD_AUDIO, candidate.id)
-        )
 
     def _toggle_play(self) -> None:
         candidate = self._current_candidate()

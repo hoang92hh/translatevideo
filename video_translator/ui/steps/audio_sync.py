@@ -106,11 +106,7 @@ class AudioSyncStepPage(StepPage):
         return container
 
     def _show_result(self, result: StepResult) -> None:
-        self.result_summary.setText(result.summary)
-        self.artifacts.setPlainText(
-            "\n".join(f"{name}:  {path}" for name, path in result.artifacts.items())
-        )
-        self.table.setRowCount(0)
+        self._show_result_without_segments(result)
 
     def refresh_special(self) -> None:
         if hasattr(self, "sync_combo") and not self._repairing:

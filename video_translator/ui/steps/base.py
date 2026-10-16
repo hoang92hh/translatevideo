@@ -49,6 +49,10 @@ class StepPage(QWidget):
         content_layout.setSpacing(16)
         content_layout.addLayout(self._build_settings_column(), 2)
         content_layout.addLayout(self._build_result_column(), 3)
+        if self.table.isHidden():
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
         scroll.setWidget(content)
         root.addWidget(scroll, 1)
         root.addLayout(self._build_run_actions())
@@ -125,7 +129,11 @@ class StepPage(QWidget):
         result_extra = self.build_result_extra()
         if result_extra:
             output_card.content_layout.addWidget(result_extra)
-        column.addWidget(output_card)
+        if self.table.isHidden():
+            column.addWidget(output_card, 0, Qt.AlignmentFlag.AlignTop)
+            column.addStretch(1)
+        else:
+            column.addWidget(output_card)
         return column
 
     def _build_run_actions(self) -> QHBoxLayout:
@@ -217,6 +225,8 @@ class StepPage(QWidget):
         self.result_summary.setText("Chưa có kết quả")
         self.artifacts.clear()
         self.table.setRowCount(0)
+        if self.table.isHidden():
+            self._fit_compact_artifacts()
 
     def _show_result(self, result: StepResult) -> None:
         self.result_summary.setText(result.summary)
@@ -239,6 +249,19 @@ class StepPage(QWidget):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
         self._updating_table = False
+
+    def _show_result_without_segments(self, result: StepResult) -> None:
+        self.result_summary.setText(result.summary)
+        self.artifacts.setPlainText(
+            "\n".join(f"{name}:  {path}" for name, path in result.artifacts.items())
+        )
+        self.table.setRowCount(0)
+        self._fit_compact_artifacts()
+
+    def _fit_compact_artifacts(self) -> None:
+        line_count = max(1, self.artifacts.toPlainText().count("\n") + 1)
+        line_height = self.artifacts.fontMetrics().lineSpacing()
+        self.artifacts.setFixedHeight(min(92, max(44, 18 + line_count * line_height)))
 
     def _table_cell_changed(self, row: int, column: int) -> None:
         if self._updating_table or column not in (4, 5):

@@ -111,6 +111,8 @@ class RenderStepPage(StepPage):
         return card
 
     def build_result_extra(self) -> QWidget:
+        # Step 7 chỉ cần thông tin video đầu ra, không cần bảng từng segment.
+        self.table.setVisible(False)
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 8, 0, 0)
@@ -201,12 +203,7 @@ class RenderStepPage(StepPage):
             self._refresh_outputs(prefer_selected=True)
 
     def _show_result(self, result: StepResult) -> None:
-        super()._show_result(result)
-        for row in range(self.table.rowCount()):
-            for column in range(self.table.columnCount()):
-                item = self.table.item(row, column)
-                if item:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._show_result_without_segments(result)
 
     def _background_toggled(self, checked: bool) -> None:
         self.background_volume.setEnabled(self._background_available and checked)
@@ -268,9 +265,6 @@ class RenderStepPage(StepPage):
         self.render_info.setText(
             f"{' + '.join(components)} · {candidate.duration_seconds:.2f}s · {status}\n"
             f"{candidate.video_file}"
-        )
-        self.show_candidate_result(
-            self.state.candidate_result(StepId.RENDER, candidate.id)
         )
 
     def _open_video(self) -> None:

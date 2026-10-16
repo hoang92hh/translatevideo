@@ -140,11 +140,7 @@ class TranslationStepPage(StepPage):
         return container
 
     def _show_result(self, result: StepResult) -> None:
-        self.result_summary.setText(result.summary)
-        self.artifacts.setPlainText(
-            "\n".join(f"{name}:  {path}" for name, path in result.artifacts.items())
-        )
-        self.table.setRowCount(0)
+        self._show_result_without_segments(result)
 
     def _refresh_translations(self, prefer_selected: bool = False) -> None:
         current = self.translation_combo.currentData()

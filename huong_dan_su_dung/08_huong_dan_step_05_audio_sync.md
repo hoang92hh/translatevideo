@@ -17,10 +17,10 @@ Với mỗi segment, Step 5 thực hiện theo thứ tự:
 
 Các lựa chọn nằm tại **Thiết lập project → Step 05**:
 
-- **Auto Extend Video to Match TTS**: mặc định tắt để giữ hành vi cũ.
+- **Auto Extend Video to Match TTS**: mặc định bật cho project mới. Khi bật, Step 5 không báo lỗi chỉ vì TTS cần tốc độ cao hơn giới hạn; phần thời gian còn thiếu được chuyển sang kế hoạch kéo dài hình ảnh.
 - **Freeze Frame**: giữ nguyên tốc độ đoạn nguồn và đóng băng khung hình cuối của riêng đoạn thiếu thời gian.
 - **Slow Motion**: chỉ làm chậm đoạn hình ảnh tương ứng, không làm chậm toàn bộ video.
-- **Hybrid**: ưu tiên slow motion tới **Tốc độ video tối thiểu**, sau đó chỉ freeze phần còn thiếu khi có khoảng nghỉ hình ảnh ít nhất 0,12 giây; nếu không có vị trí bảo thủ này, segment được đưa về **Cần sửa**. Chọn rõ **Freeze Frame** cho phép freeze ở cuối segment ngay cả khi không có khoảng nghỉ.
+- **Hybrid**: ưu tiên slow motion tới **Tốc độ video tối thiểu**, sau đó freeze chính xác phần còn thiếu trong giới hạn **Freeze tối đa mỗi segment**. Khi có khoảng nghỉ, điểm freeze được đặt trong khoảng nghỉ; nếu không có, Step 7 freeze ở cuối segment để tránh phải sửa tay.
 
 Step 5 chỉ tính và lưu `video_timing_plan`; video nguồn chưa bị chỉnh ở bước này. Mỗi phần thời gian được thêm làm dịch toàn bộ voice, cảnh và subtitle phía sau nhưng không đổi tốc độ của các cảnh đó. Nếu phần thiếu vượt giới hạn của chế độ đã chọn, segment vẫn ở trạng thái **Cần sửa** thay vì kéo dài vô hạn. Step 7 mới áp dụng kế hoạch lên bản video đầu ra; file nguồn luôn được giữ nguyên.
 

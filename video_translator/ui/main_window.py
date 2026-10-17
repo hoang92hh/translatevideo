@@ -471,6 +471,9 @@ class MainWindow(QMainWindow):
         video_id = self.batch_state.project.video_id
         if isinstance(payload, dict):
             error = str(payload.get("message") or payload.get("detail") or payload)
+            technical_detail = str(payload.get("technical_detail") or "").strip()
+            if step == StepId.RENDER and technical_detail:
+                error = f"{error}\n\nChi tiết FFmpeg:\n{technical_detail[-4000:]}"
         else:
             error = str(payload)
         BatchProjectService.update_video_status(

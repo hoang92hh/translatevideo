@@ -47,7 +47,7 @@ class AudioSyncStepPage(StepPage):
                         "auto_extend_video",
                         "Auto Extend Video to Match TTS",
                         "bool",
-                        False,
+                        True,
                     ),
                     FieldSpec(
                         "video_extension_mode",

@@ -54,7 +54,7 @@ def execute(
     max_speed = max(1.0, float(settings.get("max_speed", 1.35)))
     use_gap = bool(settings.get("use_gap", True))
     trim_silence = bool(settings.get("trim_silence", False))
-    auto_extend_video = bool(settings.get("auto_extend_video", False))
+    auto_extend_video = bool(settings.get("auto_extend_video", True))
     video_extension_mode = str(settings.get("video_extension_mode", "Hybrid"))
     min_video_speed = max(0.25, min(1.0, float(settings.get("min_video_speed", 0.85))))
     max_freeze_duration = max(0.0, float(settings.get("max_freeze_duration", 1.5)))

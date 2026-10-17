@@ -676,7 +676,7 @@ def borrow_neighbor_time(
     video_timing_plan = build_video_timing_plan(
         segments,
         source_duration,
-        enabled=bool(payload.get("auto_extend_video", False)),
+        enabled=bool(payload.get("auto_extend_video", True)),
         mode=str(payload.get("video_extension_mode", "Hybrid")),
         min_video_speed=float(payload.get("min_video_speed", 0.85)),
         max_freeze_duration=float(payload.get("max_freeze_duration", 1.5)),
@@ -1004,7 +1004,7 @@ def repair_sync_segments(
                 float(sync_segment.get("allowed_duration", 0.0)),
                 float(sync_payload.get("max_speed", 1.35)),
                 bool(sync_payload.get("trim_silence", False)),
-                allow_overflow=bool(sync_payload.get("auto_extend_video", False)),
+                allow_overflow=bool(sync_payload.get("auto_extend_video", True)),
             )
         except Exception as exc:
             outcome = None
@@ -1086,7 +1086,7 @@ def repair_sync_segments(
     video_timing_plan = build_video_timing_plan(
         [item for item in sync_payload.get("segments", []) if isinstance(item, dict)],
         source_duration,
-        enabled=bool(sync_payload.get("auto_extend_video", False)),
+        enabled=bool(sync_payload.get("auto_extend_video", True)),
         mode=str(sync_payload.get("video_extension_mode", "Hybrid")),
         min_video_speed=float(sync_payload.get("min_video_speed", 0.85)),
         max_freeze_duration=float(sync_payload.get("max_freeze_duration", 1.5)),

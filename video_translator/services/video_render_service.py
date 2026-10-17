@@ -39,22 +39,27 @@ class VideoRenderService:
             end = min(duration, max(start, float(raw.get("source_end", start))))
             slow_duration = max(0.0, float(raw.get("slow_duration", 0.0)))
             freeze_duration = max(0.0, float(raw.get("freeze_duration", 0.0)))
+            slow_edit: dict[str, float | str] | None = None
             if end - start > 0.002 and slow_duration > 0.002:
-                edits.append(
-                    {
-                        "source_start": start,
-                        "source_end": end,
-                        "video_speed": max(
-                            0.25,
-                            min(1.0, float(raw.get("video_speed", 1.0))),
-                        ),
-                        "freeze_duration": 0.0,
-                        "extension_duration": slow_duration,
-                        "strategy": "slow_motion",
-                    }
-                )
+                slow_edit = {
+                    "source_start": start,
+                    "source_end": end,
+                    "video_speed": max(
+                        0.25,
+                        min(1.0, float(raw.get("video_speed", 1.0))),
+                    ),
+                    "freeze_duration": 0.0,
+                    "extension_duration": slow_duration,
+                    "strategy": "slow_motion",
+                }
+                edits.append(slow_edit)
             if freeze_duration > 0.002:
                 freeze_at = max(0.0, min(duration, float(raw.get("freeze_at_source", end))))
+                if slow_edit is not None and freeze_at <= end + 0.002:
+                    slow_edit["freeze_duration"] = freeze_duration
+                    slow_edit["extension_duration"] = slow_duration + freeze_duration
+                    slow_edit["strategy"] = "hybrid"
+                    continue
                 sample_start = max(0.0, freeze_at - 0.04)
                 sample_end = min(duration, max(sample_start + 0.001, freeze_at))
                 edits.append(
@@ -98,34 +103,49 @@ class VideoRenderService:
         duration: float,
     ) -> tuple[list[str], str]:
         filters: list[str] = []
+        pieces: list[tuple[float, float, float, float]] = []
         labels: list[str] = []
         cursor = 0.0
 
-        def add_piece(start: float, end: float, speed: float = 1.0, freeze: float = 0.0) -> None:
+        def collect_piece(
+            start: float,
+            end: float,
+            speed: float = 1.0,
+            freeze: float = 0.0,
+        ) -> None:
             if end - start <= 0.0001:
                 return
-            label = f"vt{len(labels)}"
-            chain = (
-                f"[0:v]trim=start={start:.6f}:end={end:.6f},"
-                f"setpts={(1.0 / speed):.8f}*(PTS-STARTPTS)"
-            )
-            if freeze > 0.0001:
-                chain += f",tpad=stop_mode=clone:stop_duration={freeze:.6f}"
-            filters.append(f"{chain}[{label}]")
-            labels.append(f"[{label}]")
+            pieces.append((start, end, speed, freeze))
 
         for edit in edits:
             start = float(edit["source_start"])
             end = float(edit["source_end"])
-            add_piece(cursor, start)
-            add_piece(
+            collect_piece(cursor, start)
+            collect_piece(
                 start,
                 end,
                 float(edit["video_speed"]),
                 float(edit["freeze_duration"]),
             )
             cursor = end
-        add_piece(cursor, duration)
+        collect_piece(cursor, duration)
+
+        source_labels = [f"vsrc{index}" for index in range(len(pieces))]
+        if len(source_labels) > 1:
+            outputs = "".join(f"[{label}]" for label in source_labels)
+            filters.append(f"[0:v]split={len(source_labels)}{outputs}")
+
+        for index, (start, end, speed, freeze) in enumerate(pieces):
+            label = f"vt{index}"
+            source = f"[{source_labels[index]}]" if len(source_labels) > 1 else "[0:v]"
+            chain = (
+                f"{source}trim=start={start:.6f}:end={end:.6f},"
+                f"setpts={(1.0 / speed):.8f}*(PTS-STARTPTS)"
+            )
+            if freeze > 0.0001:
+                chain += f",tpad=stop_mode=clone:stop_duration={freeze:.6f}"
+            filters.append(f"{chain}[{label}]")
+            labels.append(f"[{label}]")
         filters.append("".join(labels) + f"concat=n={len(labels)}:v=1:a=0[video_timed]")
         return filters, "video_timed"
 
@@ -137,16 +157,49 @@ class VideoRenderService:
         duration: float,
     ) -> tuple[list[str], str]:
         filters: list[str] = []
+        pieces: list[tuple[float, float, float, float]] = []
         labels: list[str] = []
         cursor = 0.0
 
-        def add_piece(start: float, end: float, speed: float = 1.0, freeze: float = 0.0) -> None:
+        def collect_piece(
+            start: float,
+            end: float,
+            speed: float = 1.0,
+            freeze: float = 0.0,
+        ) -> None:
             if end - start <= 0.0001:
                 return
-            label = f"{prefix}t{len(labels)}"
+
+            pieces.append((start, end, speed, freeze))
+
+        for edit in edits:
+            start = float(edit["source_start"])
+            end = float(edit["source_end"])
+            collect_piece(cursor, start)
+            collect_piece(
+                start,
+                end,
+                float(edit["video_speed"]),
+                float(edit["freeze_duration"]),
+            )
+            cursor = end
+        collect_piece(cursor, duration)
+
+        source_labels = [f"{prefix}src{index}" for index in range(len(pieces))]
+        if len(source_labels) > 1:
+            outputs = "".join(f"[{label}]" for label in source_labels)
+            filters.append(f"[{input_index}:a]asplit={len(source_labels)}{outputs}")
+
+        for index, (start, end, speed, freeze) in enumerate(pieces):
+            label = f"{prefix}t{index}"
             piece_duration = (end - start) / speed + freeze
+            source = (
+                f"[{source_labels[index]}]"
+                if len(source_labels) > 1
+                else f"[{input_index}:a]"
+            )
             chain = [
-                f"[{input_index}:a]atrim=start={start:.6f}:end={end:.6f}",
+                f"{source}atrim=start={start:.6f}:end={end:.6f}",
                 "asetpts=PTS-STARTPTS",
                 *self._atempo_filters(speed),
             ]
@@ -160,19 +213,6 @@ class VideoRenderService:
             chain.append("aresample=48000")
             filters.append(",".join(chain) + f"[{label}]")
             labels.append(f"[{label}]")
-
-        for edit in edits:
-            start = float(edit["source_start"])
-            end = float(edit["source_end"])
-            add_piece(cursor, start)
-            add_piece(
-                start,
-                end,
-                float(edit["video_speed"]),
-                float(edit["freeze_duration"]),
-            )
-            cursor = end
-        add_piece(cursor, duration)
         output_label = f"{prefix}_timed"
         filters.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[{output_label}]")
         return filters, output_label
@@ -287,7 +327,7 @@ class VideoRenderService:
         video_map = f"[{video_label}]" if video_label else "0:v:0"
         if edits:
             filter_script.write_text(audio_filter, encoding="utf-8")
-            command.extend(["-filter_complex_script", str(filter_script)])
+            command.extend(["-/filter_complex", str(filter_script)])
         else:
             command.extend(["-filter_complex", audio_filter])
         command.extend(["-map", video_map, "-map", "[audio]"])

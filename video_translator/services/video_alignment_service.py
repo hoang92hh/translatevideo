@@ -68,10 +68,8 @@ def build_video_timing_plan(
                 slow_extension = min(overflow, max(0.0, slow_capacity))
             remaining = max(0.0, overflow - slow_extension)
             if selected_mode in {"Freeze Frame", "Hybrid"}:
-                freeze_is_safe = selected_mode == "Freeze Frame" or following_gap >= 0.12
-                if freeze_is_safe:
-                    freeze_extension = min(remaining, freeze_limit)
-                    remaining -= freeze_extension
+                freeze_extension = min(remaining, freeze_limit)
+                remaining -= freeze_extension
 
             if remaining > 0.002:
                 if not previous_video_limit:
@@ -80,16 +78,10 @@ def build_video_timing_plan(
                 item["status"] = "needs_edit"
                 item["repair_status"] = "too_long"
                 item["sync_error_type"] = "video_extension_limit"
-                if selected_mode == "Hybrid" and following_gap < 0.12 and freeze_limit > 0:
-                    item["error"] = (
-                        f"Voice còn vượt {remaining:.2f}s và không có khoảng nghỉ hình ảnh "
-                        "an toàn để freeze; cần rút gọn bản dịch hoặc dùng Freeze Frame rõ ràng."
-                    )
-                else:
-                    item["error"] = (
-                        f"Voice còn vượt {remaining:.2f}s sau giới hạn {selected_mode}; "
-                        "cần rút gọn bản dịch hoặc tăng giới hạn kéo dài video."
-                    )
+                item["error"] = (
+                    f"Voice còn vượt {remaining:.2f}s sau giới hạn {selected_mode}; "
+                    "cần rút gọn bản dịch hoặc tăng giới hạn kéo dài video."
+                )
             else:
                 extension = overflow
                 video_speed = source_segment_duration / (source_segment_duration + slow_extension)

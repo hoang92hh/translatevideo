@@ -217,6 +217,21 @@ class BatchProjectService:
         data["videos"] = [ProjectVideo(**item) for item in data.get("videos", [])]
         project = BatchProject(**data)
         project.path("output").mkdir(exist_ok=True)
+        normalized = False
+        for video in project.videos:
+            output_count = len(BatchProjectService.render_outputs(project, video.id))
+            if video.output_count != output_count:
+                video.output_count = output_count
+                normalized = True
+            if output_count > 0 and video.status == "pending":
+                video.status = "completed"
+                video.current_step = ""
+                video.failed_step = ""
+                video.restart_step = ""
+                video.last_error = ""
+                normalized = True
+        if normalized:
+            project.save()
         return project
 
     @staticmethod

@@ -36,7 +36,7 @@ STEP_VALUES = [step.value for step in STEP_ORDER]
 
 
 class BatchVideosDialog(QDialog):
-    run_requested = Signal()
+    run_requested = Signal(object)
     video_requested = Signal(str)
 
     def __init__(self, project: BatchProject, parent: QWidget | None = None) -> None:
@@ -45,25 +45,33 @@ class BatchVideosDialog(QDialog):
         self.setWindowTitle("Danh sách video của project")
         self.resize(900, 560)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Nhấp đúp một video để xem các output của video đó trên Step 1–7."))
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(
-            ["Video", "Trạng thái", "Step", "Số output", "Lỗi gần nhất"]
+        helper = QLabel(
+            "Đánh dấu video cần chạy batch. Video hoàn thành sẽ chạy lại từ Step 1; "
+            "video thất bại tiếp tục từ step lỗi. Nhấp đúp để xem output Step 1–7."
         )
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        helper.setWordWrap(True)
+        layout.addWidget(helper)
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Chọn", "Video", "Trạng thái", "Step", "Số output", "Lỗi gần nhất"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.cellDoubleClicked.connect(self._open_row)
+        self.table.itemChanged.connect(self._selection_changed)
         layout.addWidget(self.table)
         actions = QHBoxLayout()
         actions.addStretch()
-        run = QPushButton("Chạy batch")
-        run.setObjectName("primaryButton")
-        run.clicked.connect(self.run_requested.emit)
-        actions.addWidget(run)
+        self.run_button = QPushButton("Chạy batch video đã chọn")
+        self.run_button.setObjectName("primaryButton")
+        self.run_button.setEnabled(False)
+        self.run_button.clicked.connect(self._run_selected)
+        actions.addWidget(self.run_button)
         self.close_button = QPushButton("Đóng")
         self.close_button.clicked.connect(self.accept)
         actions.addWidget(self.close_button)
@@ -71,22 +79,52 @@ class BatchVideosDialog(QDialog):
         self.refresh()
 
     def refresh(self) -> None:
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
         for video in self.project.videos:
             row = self.table.rowCount()
             self.table.insertRow(row)
+            checked = QTableWidgetItem()
+            checked.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            checked.setCheckState(Qt.CheckState.Unchecked)
+            checked.setData(Qt.ItemDataRole.UserRole, video.id)
+            self.table.setItem(row, 0, checked)
             name = QTableWidgetItem(video.name)
             name.setData(Qt.ItemDataRole.UserRole, video.id)
-            self.table.setItem(row, 0, name)
-            self.table.setItem(row, 1, QTableWidgetItem(STATUS_LABELS.get(video.status, video.status)))
-            step = video.failed_step or video.current_step or video.restart_step
+            self.table.setItem(row, 1, name)
+            self.table.setItem(row, 2, QTableWidgetItem(STATUS_LABELS.get(video.status, video.status)))
+            step = (
+                STEP_VALUES[-1]
+                if video.status == "completed"
+                else video.failed_step
+                if video.status == "failed"
+                else video.current_step or video.restart_step
+            )
             step_label = f"Step {STEP_VALUES.index(step) + 1:02d}" if step in STEP_VALUES else "—"
-            self.table.setItem(row, 2, QTableWidgetItem(step_label))
-            self.table.setItem(row, 3, QTableWidgetItem(str(video.output_count)))
-            self.table.setItem(row, 4, QTableWidgetItem(video.last_error))
+            self.table.setItem(row, 3, QTableWidgetItem(step_label))
+            self.table.setItem(row, 4, QTableWidgetItem(str(video.output_count)))
+            self.table.setItem(row, 5, QTableWidgetItem(video.last_error))
+        self.table.blockSignals(False)
+        self._selection_changed()
+
+    def _selected_video_ids(self) -> list[str]:
+        return [
+            str(self.table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.table.rowCount())
+            if self.table.item(row, 0)
+            and self.table.item(row, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+    def _selection_changed(self, _item: QTableWidgetItem | None = None) -> None:
+        self.run_button.setEnabled(bool(self._selected_video_ids()))
+
+    def _run_selected(self) -> None:
+        selected = self._selected_video_ids()
+        if selected:
+            self.run_requested.emit(selected)
 
     def _open_row(self, row: int, _column: int) -> None:
-        item = self.table.item(row, 0)
+        item = self.table.item(row, 1)
         if item:
             self.video_requested.emit(str(item.data(Qt.ItemDataRole.UserRole)))
             self.accept()

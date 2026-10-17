@@ -108,6 +108,7 @@ class SingleVoiceTtsSettings(QWidget):
         device = device_control()
         reference = FilePicker()
         consent = QCheckBox("Tôi có quyền sử dụng giọng tham chiếu")
+        consent.setChecked(True)
         form.addRow(label, voice)
         form.addRow("Tốc độ", speed)
         form.addRow("Thiết bị", device)
@@ -218,7 +219,7 @@ class SingleVoiceTtsSettings(QWidget):
             controls["reference"].field.setText(
                 str(values.get("reference_voice", profile.get("reference_voice", "")))
             )
-            controls["consent"].setChecked(bool(values.get("voice_consent", False)))
+            controls["consent"].setChecked(bool(values.get("voice_consent", True)))
         elif provider == PIPER_PROVIDER:
             self.piper_model.field.setText(str(values.get("model_path", profile.get("model_path", ""))))
             self.piper_speaker.setValue(int(profile.get("piper_speaker_id", 0) or 0))
@@ -239,33 +240,42 @@ class RenderSettings(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         card = Card("Thành phần video", "Thiết lập chung áp dụng cho mọi output trong batch.")
         form = QFormLayout()
-        self.voice_volume = self._slider(100)
+        voice_volume_control, self.voice_volume = self._volume_control(100)
         self.original_voice = QCheckBox("Trộn voice gốc nếu Step 1 có tách Voice")
         self.original_voice.setChecked(True)
-        self.original_voice_volume = self._slider(20)
+        original_voice_volume_control, self.original_voice_volume = self._volume_control(20)
         self.background = QCheckBox("Trộn background nếu Step 1 có tách Background")
         self.background.setChecked(True)
-        self.background_volume = self._slider(80)
+        background_volume_control, self.background_volume = self._volume_control(80)
         self.subtitle = QCheckBox("Tạo subtitle SRT")
         self.burn_subtitle = QCheckBox("Burn subtitle vào video")
         self.subtitle.toggled.connect(self.burn_subtitle.setEnabled)
         self.burn_subtitle.setEnabled(False)
-        form.addRow("Âm lượng voice mới", self.voice_volume)
+        form.addRow("Âm lượng voice mới", voice_volume_control)
         form.addRow("Voice gốc", self.original_voice)
-        form.addRow("Âm lượng voice gốc", self.original_voice_volume)
+        form.addRow("Âm lượng voice gốc", original_voice_volume_control)
         form.addRow("Background", self.background)
-        form.addRow("Âm lượng background", self.background_volume)
+        form.addRow("Âm lượng background", background_volume_control)
         form.addRow("Subtitle", self.subtitle)
         form.addRow("Phụ đề trong hình", self.burn_subtitle)
         card.content_layout.addLayout(form)
         root.addWidget(card)
 
     @staticmethod
-    def _slider(value: int) -> QSlider:
+    def _volume_control(value: int) -> tuple[QWidget, QSlider]:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
         control = QSlider(Qt.Orientation.Horizontal)
         control.setRange(0, 100)
         control.setValue(value)
-        return control
+        value_label = QLabel(f"{value}%")
+        value_label.setMinimumWidth(44)
+        value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        control.valueChanged.connect(lambda current: value_label.setText(f"{current}%"))
+        layout.addWidget(control, 1)
+        layout.addWidget(value_label)
+        return container, control
 
     def values(self) -> dict[str, Any]:
         return {

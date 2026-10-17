@@ -51,7 +51,9 @@ class MainWindow(QMainWindow):
         self.running_all = False
         self.batch_project: BatchProject | None = None
         self.batch_running = False
+        self.batch_status_message = "Sẵn sàng chạy batch"
         self.batch_queue: list[str] = []
+        self.batch_rerun_ids: set[str] = set()
         self.batch_settings: dict[str, dict[str, object]] = {}
         self.active_workers: set[PipelineWorker] = set()
         self.pages: dict[StepId, StepPage] = {}
@@ -86,6 +88,7 @@ class MainWindow(QMainWindow):
         brand.addWidget(product)
         brand.addWidget(self.project_label)
         top_layout.addLayout(brand)
+        top_layout.addStretch()
         video_box = QVBoxLayout()
         video_label = QLabel("Video đang xem")
         video_label.setObjectName("muted")
@@ -94,16 +97,10 @@ class MainWindow(QMainWindow):
         self.video_selector.currentIndexChanged.connect(self._view_video_selected)
         video_box.addWidget(video_label)
         video_box.addWidget(self.video_selector)
-        top_layout.addLayout(video_box)
-        top_layout.addStretch()
         project_button = QPushButton("Projects")
         project_button.clicked.connect(lambda: self.stack.setCurrentWidget(self.project_manager))
         new_button = QPushButton("Project mới")
         new_button.clicked.connect(self.project_manager.create_new)
-        open_button = QPushButton("Mở project")
-        open_button.clicked.connect(self.project_manager.open_existing)
-        save_button = QPushButton("Lưu")
-        save_button.clicked.connect(self.state.save_project)
         settings_button = QPushButton("Cài đặt")
         settings_button.clicked.connect(self._open_provider_settings)
         voice_library_button = QPushButton("Giọng tham chiếu")
@@ -112,29 +109,21 @@ class MainWindow(QMainWindow):
         videos_button.clicked.connect(self._show_batch_videos)
         outputs_button = QPushButton("Outputs")
         outputs_button.clicked.connect(self._show_outputs)
-        batch_button = QPushButton("Chạy batch")
-        batch_button.setObjectName("primaryButton")
-        batch_button.clicked.connect(self._start_batch)
+        self.batch_button = QPushButton("Chạy batch")
+        self.batch_button.setObjectName("primaryButton")
+        self.batch_button.setEnabled(False)
+        self.batch_button.clicked.connect(self._start_batch)
         project_settings_button = QPushButton("Thiết lập project")
         project_settings_button.clicked.connect(self._open_project_settings)
         top_layout.addWidget(project_button)
         top_layout.addWidget(new_button)
-        top_layout.addWidget(open_button)
-        top_layout.addWidget(save_button)
-        top_layout.addWidget(settings_button)
-        top_layout.addWidget(voice_library_button)
-        top_layout.addWidget(videos_button)
-        top_layout.addWidget(outputs_button)
         top_layout.addWidget(project_settings_button)
-        top_layout.addWidget(batch_button)
-        self.progress_label = QLabel("Step 00 / 07")
-        self.progress_label.setObjectName("progressLabel")
-        top_layout.addWidget(self.progress_label)
+        top_layout.addWidget(settings_button)
+        top_layout.addWidget(self.batch_button)
         self.continue_button = QPushButton("Continue")
         self.continue_button.setObjectName("primaryButton")
         self.continue_button.clicked.connect(self._continue_pipeline)
         self.continue_button.setVisible(False)
-        top_layout.addWidget(self.continue_button)
         root.addWidget(top)
 
         self.tabs = QTabWidget()
@@ -150,7 +139,24 @@ class MainWindow(QMainWindow):
             self.pages[page.spec.step] = page
             self.tabs.addTab(page, f"{page.spec.number}  {page.spec.title}")
         self.tabs.currentChanged.connect(self._tab_changed)
-        root.addWidget(self.tabs)
+        root.addWidget(self.tabs, 1)
+
+        bottom = QFrame()
+        bottom.setObjectName("bottomBar")
+        bottom_layout = QHBoxLayout(bottom)
+        bottom_layout.setContentsMargins(24, 10, 24, 10)
+        bottom_layout.addWidget(voice_library_button)
+        bottom_layout.addWidget(videos_button)
+        bottom_layout.addWidget(outputs_button)
+        bottom_layout.addStretch()
+        bottom_layout.addLayout(video_box)
+        bottom_layout.addStretch()
+        bottom_layout.addWidget(self.continue_button)
+        self.progress_label = QLabel(self.batch_status_message)
+        self.progress_label.setObjectName("progressLabel")
+        self.progress_label.setMinimumWidth(390)
+        bottom_layout.addWidget(self.progress_label)
+        root.addWidget(bottom)
         return workspace
 
     def _open_project(self, project: BatchProject) -> None:
@@ -158,6 +164,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Project trống", "Project không có video nào được chọn.")
             return
         self.batch_project = project
+        self.batch_status_message = f"Sẵn sàng chạy batch · {len(project.videos)} video"
         self.batch_settings = dict(project.batch_settings)
         self.project_manager.add_recent(project.manifest_path)
         self._refresh_video_selector(project.videos[0].id)
@@ -238,8 +245,16 @@ class MainWindow(QMainWindow):
             return
         dialog = BatchVideosDialog(self.batch_project, self)
         dialog.video_requested.connect(self._select_view_video)
-        dialog.run_requested.connect(dialog.accept)
-        dialog.run_requested.connect(lambda: QTimer.singleShot(0, self._start_batch))
+
+        def run_selected(video_ids: object) -> None:
+            selected = [str(video_id) for video_id in list(video_ids)]
+            dialog.accept()
+            QTimer.singleShot(
+                0,
+                lambda target=selected: self._start_selected_batch(target),
+            )
+
+        dialog.run_requested.connect(run_selected)
         dialog.exec()
 
     def _show_outputs(self) -> None:
@@ -258,59 +273,33 @@ class MainWindow(QMainWindow):
         dialog = ProjectSettingsDialog(self.batch_project, self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
-        previous_settings = self.batch_project.batch_settings
         new_settings = dialog.settings_values()
-        settings_restart = next(
-            (
-                step
-                for step in STEP_ORDER
-                if previous_settings.get(step.value) != new_settings.get(step.value)
-            ),
-            None,
-        )
-        language_restart = None
-        if self.batch_project.source_language != dialog.source_language.currentText():
-            language_restart = StepId.STT
-        elif self.batch_project.target_language != dialog.target_language.currentText():
-            language_restart = StepId.TRANSLATE
-        restart_candidates = [
-            step for step in (settings_restart, language_restart) if step is not None
-        ]
-        restart_step = (
-            min(restart_candidates, key=STEP_ORDER.index) if restart_candidates else None
-        )
         self.batch_project.source_language = dialog.source_language.currentText()
         self.batch_project.target_language = dialog.target_language.currentText()
         self.batch_project.batch_settings = new_settings
         self.batch_project.save()
         self.batch_settings = dict(new_settings)
-        if restart_step is not None:
-            for video in self.batch_project.videos:
-                existing = (
-                    StepId(video.restart_step)
-                    if video.restart_step in {step.value for step in STEP_ORDER}
-                    else None
-                )
-                effective = min(
-                    (step for step in (existing, restart_step) if step is not None),
-                    key=STEP_ORDER.index,
-                )
-                video.restart_step = effective.value
-                BatchProjectService.update_video_status(
-                    self.batch_project,
-                    video.id,
-                    "pending",
-                )
         if self.state.project:
             self.state.source_language = self.batch_project.source_language
             self.state.target_language = self.batch_project.target_language
-            if restart_step is not None:
-                self.state.invalidate_from(restart_step)
             self.state.project_changed.emit()
             self.state.save_project()
         self._refresh_header()
 
     def _start_batch(self) -> None:
+        if not self.batch_project:
+            return
+        video_ids = [
+            video.id
+            for video in self.batch_project.videos
+            if video.selected and video.output_count < 1
+        ]
+        self._start_batch_queue(video_ids, rerun=False)
+
+    def _start_selected_batch(self, video_ids: list[str]) -> None:
+        self._start_batch_queue(video_ids, rerun=True)
+
+    def _start_batch_queue(self, video_ids: list[str], *, rerun: bool) -> None:
         if not self.batch_project:
             return
         if self.batch_running:
@@ -329,15 +318,25 @@ class MainWindow(QMainWindow):
             )
             self._open_project_settings()
             return
+        requested = set(video_ids)
         self.batch_queue = [
             video.id
             for video in self.batch_project.videos
-            if video.selected and video.status != "completed"
+            if video.id in requested
         ]
         if not self.batch_queue:
-            QMessageBox.information(self, "Không có video cần xử lý", "Tất cả video đã hoàn thành.")
+            self.batch_status_message = "Không có video cần xử lý"
+            self._refresh_header()
+            QMessageBox.information(
+                self,
+                "Không có video cần xử lý",
+                "Không có video phù hợp với chế độ batch đã chọn.",
+            )
             return
+        self.batch_rerun_ids = set(self.batch_queue) if rerun else set()
         self.batch_running = True
+        self.batch_status_message = "Đang chuẩn bị batch"
+        self._refresh_header()
         self._start_next_batch_video()
 
     def _start_next_batch_video(self) -> None:
@@ -345,8 +344,13 @@ class MainWindow(QMainWindow):
             return
         if not self.batch_queue:
             self.batch_running = False
+            self.batch_rerun_ids.clear()
             completed = sum(video.status == "completed" for video in self.batch_project.videos)
             failed = sum(video.status == "failed" for video in self.batch_project.videos)
+            self.batch_status_message = (
+                f"Batch hoàn thành · Hoàn thành: {completed} · Thất bại: {failed}"
+            )
+            self._refresh_header()
             QMessageBox.information(
                 self,
                 "Batch hoàn thành",
@@ -354,6 +358,8 @@ class MainWindow(QMainWindow):
             )
             return
         video_id = self.batch_queue.pop(0)
+        rerun = video_id in self.batch_rerun_ids
+        self.batch_rerun_ids.discard(video_id)
         record = self.batch_project.video(video_id)
         if not record:
             QTimer.singleShot(0, self._start_next_batch_video)
@@ -362,6 +368,7 @@ class MainWindow(QMainWindow):
             BatchProjectService.update_video_status(
                 self.batch_project, video_id, "failed", "Không tìm thấy video nguồn."
             )
+            self._refresh_header()
             QTimer.singleShot(0, self._start_next_batch_video)
             return
         try:
@@ -371,15 +378,26 @@ class MainWindow(QMainWindow):
             BatchProjectService.update_video_status(
                 self.batch_project, video_id, "failed", str(exc)
             )
+            self._refresh_header()
             QTimer.singleShot(0, self._start_next_batch_video)
             return
-        resumable_steps = [
-            StepId(value)
-            for value in (record.restart_step, record.failed_step, record.current_step)
-            if value in {step.value for step in STEP_ORDER}
-        ]
-        if resumable_steps:
-            resume_step = min(resumable_steps, key=STEP_ORDER.index)
+        resume_step: StepId | None = None
+        if rerun:
+            resume_step = (
+                StepId(record.failed_step)
+                if record.status == "failed"
+                and record.failed_step in {step.value for step in STEP_ORDER}
+                else StepId.EXTRACT
+            )
+        else:
+            resumable_steps = [
+                StepId(value)
+                for value in (record.restart_step, record.failed_step, record.current_step)
+                if value in {step.value for step in STEP_ORDER}
+            ]
+            if resumable_steps:
+                resume_step = min(resumable_steps, key=STEP_ORDER.index)
+        if resume_step is not None:
             self.batch_state.invalidate_from(resume_step)
             self.batch_state.save_project()
             record.restart_step = ""
@@ -393,6 +411,7 @@ class MainWindow(QMainWindow):
         BatchProjectService.update_video_status(
             self.batch_project, video_id, "processing", step=next_step.value
         )
+        self._refresh_header()
         self._execute_batch_step(next_step)
 
     def _execute_batch_step(self, step: StepId) -> None:
@@ -408,6 +427,7 @@ class MainWindow(QMainWindow):
         BatchProjectService.update_video_status(
             self.batch_project, video_id, "processing", step=step.value
         )
+        self._refresh_header()
         settings = dict(self.batch_settings[step.value])
         if step == StepId.STT:
             settings["input_audio"] = self.batch_state.audio_input_path()
@@ -462,6 +482,7 @@ class MainWindow(QMainWindow):
             "completed",
             output_path=output_path,
         )
+        self._refresh_header()
         self._reload_viewed_video(video_id)
         QTimer.singleShot(0, self._start_next_batch_video)
 
@@ -483,6 +504,7 @@ class MainWindow(QMainWindow):
             error=error,
             step=step.value if step else "",
         )
+        self._refresh_header()
         self._reload_viewed_video(video_id)
         QTimer.singleShot(0, self._start_next_batch_video)
 
@@ -964,15 +986,32 @@ class MainWindow(QMainWindow):
         self._refresh_header()
 
     def _refresh_header(self) -> None:
-        current = self.tabs.currentWidget()
-        progress_step = 0
-        if isinstance(current, StepPage):
-            step = current.spec.step
-            current_index = STEP_ORDER.index(step)
-            has_current_output = step in self.state.results
-            is_running = self.state.statuses[step] == StepStatus.RUNNING
-            progress_step = current_index + 1 if has_current_output or is_running else current_index
-        self.progress_label.setText(f"Step {progress_step:02d} / {len(STEP_ORDER):02d}")
+        self._refresh_batch_button()
+        active_batch_video = next(
+            (
+                video
+                for video in self.batch_project.videos
+                if video.status == "processing"
+            ),
+            None,
+        ) if self.batch_project and self.batch_running else None
+        if active_batch_video is not None:
+            step = (
+                StepId(active_batch_video.current_step)
+                if active_batch_video.current_step in {item.value for item in STEP_ORDER}
+                else None
+            )
+            step_text = self._step_status_text(step) if step else "Đang chuẩn bị"
+            self.progress_label.setText(
+                f"Đang chạy batch · {active_batch_video.name} · {step_text}"
+            )
+        elif self.batch_running and self.batch_queue and self.batch_project:
+            queued = self.batch_project.video(self.batch_queue[0])
+            self.progress_label.setText(
+                f"Chờ xử lý · {queued.name}" if queued else "Đang chuẩn bị batch"
+            )
+        else:
+            self.progress_label.setText(self.batch_status_message)
         if (
             all(status == StepStatus.DONE for status in self.state.statuses.values())
             and not self.running_all
@@ -988,6 +1027,28 @@ class MainWindow(QMainWindow):
             )
         else:
             self.project_label.setText("Chưa mở project")
+
+    def _step_status_text(self, step: StepId) -> str:
+        page = self.pages.get(step)
+        title = page.spec.title if page else step.value
+        return f"Step {STEP_ORDER.index(step) + 1:02d}/{len(STEP_ORDER):02d} — {title}"
+
+    def _refresh_batch_button(self) -> None:
+        available = bool(
+            self.batch_project
+            and any(
+                video.selected and video.output_count < 1
+                for video in self.batch_project.videos
+            )
+        )
+        self.batch_button.setEnabled(
+            available and not self.batch_running and not self.active_workers
+        )
+        self.batch_button.setToolTip(
+            "Tạo output lần đầu cho các video chưa có output."
+            if available
+            else "Tất cả video đã có output; dùng Videos để chạy lại video được chọn."
+        )
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.active_workers or self.batch_running:

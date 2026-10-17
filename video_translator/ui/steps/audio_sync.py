@@ -35,7 +35,7 @@ class AudioSyncStepPage(StepPage):
             ProviderSpec(
                 "FFmpeg — Duration Sync",
                 (
-                    FieldSpec("max_speed", "Tốc độ tối đa", "float", 1.35),
+                    FieldSpec("max_speed", "Tốc độ tối đa", "float", 1.25),
                     FieldSpec("use_gap", "Tận dụng khoảng trống kế tiếp", "bool", True),
                     FieldSpec(
                         "trim_silence",

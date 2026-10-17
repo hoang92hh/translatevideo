@@ -53,8 +53,8 @@ class SpeechToTextService:
         device: str,
         language: str | None,
         vad_filter: bool,
-        diarization: bool = True,
-        merge_adjacent_segments: bool = True,
+        diarization: bool = False,
+        merge_adjacent_segments: bool = False,
     ) -> None:
         self.model_name = model_name
         self.device = device
@@ -363,7 +363,7 @@ class SpeechToTextService:
         cls,
         raw_segments: list[dict[str, object]],
         turns: list[dict[str, object]],
-        merge_adjacent_segments: bool = True,
+        merge_adjacent_segments: bool = False,
     ) -> list[TranscriptSegment]:
         word_units: list[dict[str, object]] = []
         for raw_index, raw in enumerate(raw_segments):

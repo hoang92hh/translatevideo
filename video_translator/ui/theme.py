@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QApplication
 APP_STYLE = """
 QWidget { background: #0c111b; color: #e8edf6; font-family: "Segoe UI"; font-size: 13px; }
 QFrame#topBar { background: #111827; border-bottom: 1px solid #253047; }
+QFrame#bottomBar { background: #111827; border-top: 1px solid #253047; }
 QLabel#brand, QLabel#brandLarge { color: #7dd3fc; font-weight: 800; letter-spacing: 2px; }
 QLabel#brand { font-size: 18px; }
 QLabel#brandLarge { font-size: 22px; }

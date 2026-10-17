@@ -57,7 +57,7 @@ class _CommonTranslationComponent(_ProviderComponent):
     def _add_common_controls(self, form: QFormLayout, *, web_file_mode: bool = False) -> None:
         self.batch_size = QSpinBox()
         self.batch_size.setRange(1, 1000)
-        self.batch_size.setValue(30)
+        self.batch_size.setValue(400)
         form.addRow("Segments / batch", self.batch_size)
         self.proper_name_mode = QComboBox()
         self.proper_name_mode.addItems(PROPER_NAME_MODES)

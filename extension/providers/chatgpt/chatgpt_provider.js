@@ -24,6 +24,7 @@ export class ChatGPTProvider extends BaseProvider {
     this.finished = false;
     this.cancelled = false;
     this.text = "";
+    this.downloadedResponseFile = null;
   }
 
   visible(element) {
@@ -277,11 +278,21 @@ export class ChatGPTProvider extends BaseProvider {
         const assistant = this.currentAssistant();
         if (!assistant) return null;
         sawAssistant = true;
+        const responseTurn = assistant.closest(S.turn) || assistant;
+        if (this.responseFileName) {
+          const responseFile = hasResponseFile(responseTurn, this.responseFileName);
+          const stillGenerating = this.find(S.stop)
+            || this.find(S.streaming, responseTurn);
+          const composerEditable = this.editable(this.find(S.composer));
+          return responseFile && !stillGenerating && composerEditable ? true : null;
+        }
         const controls = this.completionControls(assistant);
         return controls && this.find(S.copyAction, controls) ? true : null;
       }, Math.max(1, deadline - Date.now()), () => error(
         sawAssistant ? "RESPONSE_TIMEOUT" : "ASSISTANT_RESPONSE_NOT_FOUND",
-        sawAssistant ? "ChatGPT did not show a Copy button before the deadline."
+        sawAssistant && this.responseFileName
+          ? `ChatGPT did not finish preparing ${this.responseFileName} before the deadline.`
+          : sawAssistant ? "ChatGPT did not show a Copy button before the deadline."
           : "No assistant message for this prompt was found before the deadline.",
       ));
 
@@ -310,8 +321,16 @@ export class ChatGPTProvider extends BaseProvider {
         response_file_required: Boolean(this.responseFileName),
         response_file_found: responseFile,
       };
-      if (copyVisible && !stillGenerating && contentReady && composerEditable) {
+      const completionReady = this.responseFileName ? responseFile : copyVisible;
+      if (completionReady && !stillGenerating && contentReady && composerEditable) {
         this.text = value;
+        if (this.responseFileName) {
+          this.log("DOWNLOADING RESPONSE FILE");
+          this.downloadedResponseFile = await readResponseFile(
+            this.win, responseTurn, this.responseFileName, error,
+          );
+          this.log("RESPONSE FILE DOWNLOADED");
+        }
         this.finished = true;
         this.log("RESPONSE COMPLETE");
         return;
@@ -326,12 +345,13 @@ export class ChatGPTProvider extends BaseProvider {
   async getResponse() {
     if (!this.finished) throw error("PROVIDER_ERROR", "No confirmed completed response is available.");
     if (this.responseFileName) {
-      const assistant = this.currentAssistant();
-      const responseRoot = assistant?.closest(S.turn) || assistant;
-      const file = await readResponseFile(
-        this.win, responseRoot, this.responseFileName, error,
-      );
-      return { text: this.text, file };
+      if (!this.downloadedResponseFile) {
+        throw error(
+          "RESPONSE_FILE_DOWNLOAD_FAILED",
+          `The response file ${this.responseFileName} was not downloaded.`,
+        );
+      }
+      return { text: this.text, file: this.downloadedResponseFile };
     }
     return this.text;
   }

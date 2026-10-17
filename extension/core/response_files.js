@@ -43,20 +43,42 @@ export function findResponseFile(root, expectedName) {
 
 export function findResponseDownloadButton(root, expectedName) {
   if (!root || !expectedName) return null;
-  const previewLabel = `Open preview of ${expectedName}`;
-  const preview = [...root.querySelectorAll("button[aria-label]")].find(
-    button => button.getAttribute("aria-label") === previewLabel,
-  );
-  if (!preview) return null;
-  const row = preview.closest('[class~="group/resource-row"]') || preview.parentElement;
-  if (!row) return null;
-  const title = [...row.querySelectorAll("[title]")].find(
-    node => node.getAttribute("title") === expectedName,
-  );
-  if (!title) return null;
-  return [...row.querySelectorAll('button[aria-label="Download file"]')].find(
-    button => !button.disabled && button.getAttribute("aria-disabled") !== "true",
-  ) || null;
+  const expected = normalizedName(expectedName);
+  const namedNodes = [...root.querySelectorAll(
+    '[title], [data-file-name], [download], a[href]',
+  )].filter(node => {
+    if (node.tagName === "A") {
+      return candidateNames(node).some(name =>
+        name === expected || name.endsWith("/" + expected)
+      );
+    }
+    return ["title", "data-file-name", "download"].some(
+      attribute => normalizedName(node.getAttribute(attribute)) === expected,
+    );
+  });
+
+  const enabled = node => !node.disabled
+    && node.getAttribute("aria-disabled") !== "true";
+
+  for (const namedNode of namedNodes) {
+    if (namedNode.matches("a[download]") && enabled(namedNode)) return namedNode;
+
+    const row = namedNode.closest('[class~="group/resource-row"]');
+    if (!row || !root.contains(row)) continue;
+    const preview = [...row.children].find(node =>
+      node.matches('button, [role="button"]')
+    );
+    if (!preview) continue;
+    const actions = [...row.querySelectorAll(
+      'button, [role="button"], a[download]',
+    )].filter(node =>
+      node !== preview
+      && enabled(node)
+      && !node.contains(namedNode)
+    );
+    if (actions.length === 1) return actions[0];
+  }
+  return null;
 }
 
 function comparableArtifactName(value) {
@@ -154,6 +176,17 @@ async function downloadResponseButton(win, button, expectedName, makeError) {
       );
     }
     token = prepared.token;
+    button.focus({ preventScroll: true });
+    await new Promise(resolve => win.requestAnimationFrame(() =>
+      win.requestAnimationFrame(resolve)
+    ));
+    if (!button.isConnected || button.disabled
+        || button.getAttribute("aria-disabled") === "true") {
+      throw makeError(
+        "RESPONSE_FILE_DOWNLOAD_FAILED",
+        `The download action for ${expectedName} is no longer available.`,
+      );
+    }
     button.click();
     const deadline = Date.now() + RESPONSE_FILE_DOWNLOAD_TIMEOUT_MS;
     while (Date.now() < deadline) {
@@ -195,11 +228,11 @@ async function downloadResponseButton(win, button, expectedName, makeError) {
 }
 
 export async function readResponseFile(win, root, expectedName, makeError) {
-  const link = findResponseFile(root, expectedName);
-  if (link) return readResponseLink(win, link, expectedName, makeError);
   const button = findResponseDownloadButton(root, expectedName)
     || findClaudeArtifactDownloadButton(root, expectedName);
   if (button) return downloadResponseButton(win, button, expectedName, makeError);
+  const link = findResponseFile(root, expectedName);
+  if (link) return readResponseLink(win, link, expectedName, makeError);
   throw makeError(
     "RESPONSE_FILE_NOT_FOUND",
     `The assistant did not return the required file ${expectedName}.`,

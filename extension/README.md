@@ -49,6 +49,12 @@ Thao tác phục hồi này không tự gửi lại prompt.
 Từ phiên bản 0.16.0, ChatGPT adapter tìm tất cả nút Send trong đúng composer và chỉ bấm khi có
 duy nhất một nút đang hiển thị, không disabled. Log lỗi kèm thuộc tính các nút ứng viên để chẩn đoán
 khi giao diện ChatGPT thay đổi.
+Từ phiên bản 0.16.1, adapter tìm nút tải file theo đúng tên file và cấu trúc resource card thay vì
+phụ thuộc vào `aria-label` đã dịch. Nút tải chỉ hiện khi hover/focus sẽ được focus trước khi bấm, nên
+Step 3 hoạt động độc lập với ngôn ngữ giao diện ChatGPT trên Chrome.
+Từ phiên bản 0.16.2, nhận diện nút tải không còn so khớp các từ như `Download` hoặc `Tải xuống`.
+Adapter xác định đúng resource row bằng tên file, loại nút preview phủ toàn hàng và chỉ bấm khi còn
+duy nhất một action hợp lệ, nên không phụ thuộc vào bất kỳ ngôn ngữ giao diện nào.
 
 ## Phạm vi hiện tại
 

@@ -120,8 +120,12 @@ def execute(
                 f"{speaker_id}: {path}",
                 "Mỗi model cần file .onnx và file cấu hình .onnx.json nằm cùng thư mục.",
             )
-    if provider in {VIENEU_PROVIDER, MELO_OPENVOICE_PROVIDER} and (
+    if (
+        provider in {VIENEU_PROVIDER, MELO_OPENVOICE_PROVIDER}
+        and not bool(settings.get("single_voice", False))
+        and (
         speaker_profiles or group_profiles or shared_profile
+        )
     ):
         missing_speakers: list[str] = []
         for speaker_id in dict.fromkeys(

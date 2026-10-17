@@ -61,13 +61,17 @@ class AudioTimelineService:
             raise AudioTimelineError("Timeline trống", "Step 6 không nhận được segment audio nào.")
 
         source_video = Path(source_video_path)
-        video_duration = self.ffmpeg.probe_duration(source_video) if source_video.is_file() else None
-        if not video_duration or video_duration <= 0:
+        source_video_duration = self.ffmpeg.probe_duration(source_video) if source_video.is_file() else None
+        if not source_video_duration or source_video_duration <= 0:
             raise AudioTimelineError(
                 "Không đọc được thời lượng video",
                 f"Không thể xác định thời lượng video nguồn: {source_video}",
                 "Kiểm tra file video nguồn và FFprobe rồi chạy lại Step 6.",
             )
+        video_duration = max(
+            source_video_duration,
+            float(payload.get("output_video_duration", source_video_duration)),
+        )
 
         timeline: list[dict[str, Any]] = []
         previous_end = 0.0
@@ -202,6 +206,7 @@ class AudioTimelineService:
             "sample_rate": sample_rate,
             "format": "WAV",
             "video_duration_seconds": video_duration,
+            "source_video_duration_seconds": source_video_duration,
             "batch_size": self.BATCH_SIZE,
         }
 

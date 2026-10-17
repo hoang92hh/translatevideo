@@ -134,12 +134,16 @@ def execute(
     manifest = candidate_folder / "manifest.json"
     candidate_folder.mkdir(parents=True, exist_ok=False)
     try:
+        sync_payload: dict[str, Any] = {}
+        sync_id = build_candidate.source_sync_candidate_id
+        sync_candidate = state.sync_candidate(sync_id)
+        if sync_candidate and Path(sync_candidate.path).is_file():
+            loaded_sync_payload = json.loads(Path(sync_candidate.path).read_text(encoding="utf-8"))
+            if isinstance(loaded_sync_payload, dict):
+                sync_payload = loaded_sync_payload
         if create_subtitle:
             timings: dict[int, dict[str, object]] = {}
-            sync_id = build_candidate.source_sync_candidate_id
-            sync_candidate = state.sync_candidate(sync_id)
-            if sync_candidate and Path(sync_candidate.path).is_file():
-                sync_payload = json.loads(Path(sync_candidate.path).read_text(encoding="utf-8"))
+            if sync_payload:
                 timings = {
                     int(item.get("id", 0)): item
                     for item in sync_payload.get("segments", [])
@@ -157,6 +161,11 @@ def execute(
             background_volume=background_volume,
             subtitle_path=subtitle_output if create_subtitle else None,
             burn_subtitle=burn_subtitle,
+            video_timing_plan=(
+                sync_payload.get("video_timing_plan")
+                if isinstance(sync_payload.get("video_timing_plan"), dict)
+                else None
+            ),
             progress=progress,
         )
         payload = {
@@ -171,6 +180,7 @@ def execute(
             "original_voice_volume": original_voice_volume if original_voice else 0.0,
             "background_file": str(background) if background else "",
             "subtitle_file": str(subtitle_output) if create_subtitle else "",
+            "source_sync_candidate_id": sync_id,
             **result,
         }
         temporary = manifest.with_suffix(".json.part")

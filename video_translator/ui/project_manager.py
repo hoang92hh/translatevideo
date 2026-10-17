@@ -18,12 +18,16 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QHeaderView,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from ..project import PROJECT_FILE, ProjectService, VideoProject
+from ..batch_project import PROJECT_FILE, BatchProjectService
 from .components import Card
+from .project_settings_dialog import ProjectSettingsDialog
 
 
 LANGUAGES = ("Chinese", "English", "Vietnamese", "Spanish", "Japanese", "Korean")
@@ -38,7 +42,7 @@ class NewProjectDialog(QDialog):
         title = QLabel("Project video mới")
         title.setObjectName("dialogTitle")
         root.addWidget(title)
-        help_text = QLabel("Mỗi project quản lý một video gốc và toàn bộ sản phẩm sinh ra từ video đó.")
+        help_text = QLabel("Mỗi project quản lý một danh sách video trong cùng thư mục input.")
         help_text.setObjectName("muted")
         help_text.setWordWrap(True)
         root.addWidget(help_text)
@@ -49,9 +53,9 @@ class NewProjectDialog(QDialog):
         self.name.setPlaceholderText("Ví dụ: gioi-thieu-san-pham")
         form.addRow("Tên project", self.name)
 
-        self.video = QLineEdit()
-        self.video.setPlaceholderText("Chọn video nguồn")
-        form.addRow("Video gốc", self._path_row(self.video, self._choose_video, "Chọn video"))
+        self.input_folder = QLineEdit()
+        self.input_folder.setPlaceholderText("Chọn thư mục chứa video")
+        form.addRow("Thư mục input", self._path_row(self.input_folder, self._choose_input_folder, "Chọn thư mục"))
 
         self.location = QLineEdit(str(Path.cwd() / "projects"))
         form.addRow("Lưu project tại", self._path_row(self.location, self._choose_location, "Chọn thư mục"))
@@ -65,6 +69,14 @@ class NewProjectDialog(QDialog):
         form.addRow("Ngôn ngữ nguồn", self.source_language)
         form.addRow("Ngôn ngữ đích", self.target_language)
         root.addLayout(form)
+        self.video_table = QTableWidget(0, 3)
+        self.video_table.setHorizontalHeaderLabels(["Chọn", "Video", "Trạng thái"])
+        self.video_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.video_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.video_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.video_table.verticalHeader().setVisible(False)
+        self.video_table.setMinimumHeight(220)
+        root.addWidget(self.video_table)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Tạo project")
@@ -83,12 +95,31 @@ class NewProjectDialog(QDialog):
         layout.addWidget(button)
         return widget
 
-    def _choose_video(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn video gốc", "", "Video (*.mp4 *.mov *.mkv *.avi);;Tất cả file (*)")
+    def _choose_input_folder(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Chọn thư mục input", self.input_folder.text())
         if path:
-            self.video.setText(path)
+            self.input_folder.setText(path)
             if not self.name.text().strip():
-                self.name.setText(Path(path).stem)
+                self.name.setText(Path(path).name)
+            self._load_videos(path)
+
+    def _load_videos(self, folder: str) -> None:
+        try:
+            videos = BatchProjectService.scan_input_folder(folder)
+        except Exception as exc:
+            QMessageBox.critical(self, "Không thể đọc thư mục input", str(exc))
+            return
+        self.video_table.setRowCount(0)
+        for video in videos:
+            row = self.video_table.rowCount()
+            self.video_table.insertRow(row)
+            checked = QTableWidgetItem()
+            checked.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            checked.setCheckState(Qt.CheckState.Checked)
+            checked.setData(Qt.ItemDataRole.UserRole, video.path)
+            self.video_table.setItem(row, 0, checked)
+            self.video_table.setItem(row, 1, QTableWidgetItem(video.name))
+            self.video_table.setItem(row, 2, QTableWidgetItem(video.status))
 
     def _choose_location(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Chọn nơi lưu project", self.location.text())
@@ -99,8 +130,11 @@ class NewProjectDialog(QDialog):
         if not self.name.text().strip():
             QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập tên project.")
             return
-        if not Path(self.video.text().strip()).is_file():
-            QMessageBox.warning(self, "Thiếu video", "Vui lòng chọn một video nguồn hợp lệ.")
+        if not Path(self.input_folder.text().strip()).is_dir():
+            QMessageBox.warning(self, "Thiếu input", "Vui lòng chọn một thư mục input hợp lệ.")
+            return
+        if not self._selected_videos():
+            QMessageBox.warning(self, "Chưa chọn video", "Vui lòng chọn ít nhất một video trong danh sách.")
             return
         if not self.location.text().strip():
             QMessageBox.warning(self, "Thiếu thư mục", "Vui lòng chọn nơi lưu project.")
@@ -110,10 +144,18 @@ class NewProjectDialog(QDialog):
             return
         self.accept()
 
-    def values(self) -> dict[str, str]:
+    def _selected_videos(self) -> list[str]:
+        return [
+            str(self.video_table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.video_table.rowCount())
+            if self.video_table.item(row, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+    def values(self) -> dict[str, Any]:
         return {
             "name": self.name.text().strip(),
-            "source_video": self.video.text().strip(),
+            "input_folder": self.input_folder.text().strip(),
+            "selected_videos": self._selected_videos(),
             "parent_folder": self.location.text().strip(),
             "source_language": self.source_language.currentText(),
             "target_language": self.target_language.currentText(),
@@ -133,7 +175,7 @@ class ProjectManagerPage(QWidget):
 
         brand = QLabel("TRANSLANGUAGE")
         brand.setObjectName("brandLarge")
-        title = QLabel("Biến một video thành nhiều ngôn ngữ")
+        title = QLabel("Phiên dịch nhiều video theo batch")
         title.setObjectName("heroTitle")
         subtitle = QLabel("Tạo project mới hoặc tiếp tục một pipeline đã lưu trước đó.")
         subtitle.setObjectName("muted")
@@ -164,11 +206,11 @@ class ProjectManagerPage(QWidget):
         self.refresh_recent()
 
     def create_new(self) -> None:
-        dialog = NewProjectDialog(self)
+        dialog = ProjectSettingsDialog(parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            project = ProjectService.create(**dialog.values())
+            project = BatchProjectService.create(**dialog.values())
         except Exception as exc:
             QMessageBox.critical(self, "Không thể tạo project", str(exc))
             return
@@ -185,7 +227,7 @@ class ProjectManagerPage(QWidget):
 
     def _load(self, path: str) -> None:
         try:
-            project = ProjectService.load(path)
+            project = BatchProjectService.load(path)
         except Exception as exc:
             QMessageBox.critical(self, "Không thể mở project", str(exc))
             self.remove_recent(path)

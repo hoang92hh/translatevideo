@@ -24,7 +24,7 @@ Mỗi lần chạy tạo một candidate riêng:
 <project>\built_audio\audio-<timestamp>-<id>\manifest.json
 ```
 
-Voice track có định dạng WAV mono PCM 48 kHz. Khoảng lặng đầu, giữa và cuối được giữ hoặc bổ sung để file dài đúng bằng video nguồn. Nếu voice cuối vượt quá thời lượng video, Step 06 dừng và yêu cầu cân lại timeline tại Step 05 thay vì cắt mất lời.
+Voice track có định dạng WAV mono PCM 48 kHz. Khoảng lặng đầu, giữa và cuối được giữ hoặc bổ sung để file dài đúng bằng `output_video_duration` do Step 05 tính. Khi Auto Extend tắt, giá trị này bằng thời lượng video nguồn; khi bật, nó gồm cả các khoảng slow/freeze cục bộ. Nếu voice cuối vẫn vượt timeline này, Step 06 dừng và yêu cầu cân lại tại Step 05 thay vì cắt mất lời.
 
 Để không vượt giới hạn độ dài dòng lệnh của Windows khi video có hàng trăm segment, Step 06 ghép theo từng lô tối đa 40 segment rồi ghép các track lô thành output cuối. Ứng dụng đo độ dài câu lệnh thực tế và tự đóng lô sớm hơn nếu đường dẫn project quá dài. Filter graph được truyền bằng `-filter_complex` để tương thích với FFmpeg 9 và các phiên bản cũ phổ biến. File tạm của các lô được tự động xóa sau khi hoàn thành hoặc khi xảy ra lỗi; timestamp và khoảng lặng vẫn giữ theo timeline Step 05.
 

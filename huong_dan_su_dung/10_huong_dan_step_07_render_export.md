@@ -2,6 +2,8 @@
 
 Step 07 lắp ghép các thành phần cuối cùng thành video MP4 hoàn chỉnh. Mỗi lần chạy tạo một output riêng, không ghi đè các lần render trước.
 
+Nếu candidate Step 05 có `video_timing_plan`, đây là bước thực sự áp dụng slow motion hoặc freeze frame. Chỉ các vùng được đánh dấu mới bị biến đổi; phần video phía sau được dịch sang timestamp mới nhưng vẫn chạy ở tốc độ bình thường. Video nguồn không bị ghi đè.
+
 ## Thành phần đầu vào
 
 Hai thành phần luôn bắt buộc và không thể tắt:
@@ -43,7 +45,7 @@ Mỗi lần render thành công tạo một candidate riêng:
 <project>\output\render-<timestamp>-<id>\manifest.json
 ```
 
-Video dùng H.264, audio dùng AAC 48 kHz. Các track được trộn theo đúng timeline, áp dụng giới hạn biên độ để giảm vỡ tiếng, sau đó được bù hoặc cắt theo đúng thời lượng video nguồn. Manifest lưu file và mức âm lượng thực tế của voice mới, voice gốc và background. Audio nhúng trực tiếp trong video nguồn không được map sang output.
+Video dùng H.264, audio dùng AAC 48 kHz. Các track được trộn theo timeline Step 05, áp dụng giới hạn biên độ để giảm vỡ tiếng, sau đó được bù hoặc cắt theo thời lượng đầu ra đã tính. Khi có slow/freeze, stem Voice gốc và Background cũng được retime theo cùng các vùng hình ảnh; phần freeze được đệm im lặng để không phát lặp âm thanh cũ. Manifest lưu kế hoạch đã áp dụng cùng file và mức âm lượng thực tế. Audio nhúng trực tiếp trong video nguồn không được map sang output.
 
 Việc chia text dùng tỷ lệ thời lượng làm mục tiêu và ưu tiên ranh giới từ. Vì vậy
 subtitle không cắt giữa một từ, nhưng số ký tự thực tế của mỗi cue có thể lệch nhẹ

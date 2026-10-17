@@ -142,3 +142,24 @@ class ProviderPanel(Card):
             elif isinstance(control, FilePicker):
                 values[key] = control.value()
         return values
+
+    def set_values(self, values: dict[str, Any]) -> None:
+        provider = str(values.get("provider", ""))
+        index = self.provider_combo.findText(provider)
+        if index >= 0:
+            self.provider_combo.setCurrentIndex(index)
+        controls = self.controls[self.provider_combo.currentIndex()]
+        for key, value in values.items():
+            control = controls.get(key)
+            if isinstance(control, QComboBox):
+                target = control.findText(str(value))
+                if target >= 0:
+                    control.setCurrentIndex(target)
+            elif isinstance(control, QCheckBox):
+                control.setChecked(bool(value))
+            elif isinstance(control, (QSpinBox, QDoubleSpinBox)):
+                control.setValue(value)
+            elif isinstance(control, QLineEdit):
+                control.setText(str(value))
+            elif isinstance(control, FilePicker):
+                control.field.setText(str(value))

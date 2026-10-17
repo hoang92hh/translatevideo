@@ -10,6 +10,7 @@ from uuid import uuid4
 from ...errors import UserFacingError
 from ...models import StepId, StepResult, SyncCandidate
 from ...services import AudioSyncService
+from ...services.video_alignment_service import build_video_timing_plan
 from ...state import ProjectState
 from .common import previous_segments
 
@@ -53,6 +54,10 @@ def execute(
     max_speed = max(1.0, float(settings.get("max_speed", 1.35)))
     use_gap = bool(settings.get("use_gap", True))
     trim_silence = bool(settings.get("trim_silence", False))
+    auto_extend_video = bool(settings.get("auto_extend_video", False))
+    video_extension_mode = str(settings.get("video_extension_mode", "Hybrid"))
+    min_video_speed = max(0.25, min(1.0, float(settings.get("min_video_speed", 0.85))))
+    max_freeze_duration = max(0.0, float(settings.get("max_freeze_duration", 1.5)))
     now = datetime.now(timezone.utc)
     candidate_id = f"sync-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
     candidate_folder = Path(state.workspace_path("synchronized_audio", candidate_id))
@@ -60,6 +65,10 @@ def execute(
     manifest_path = candidate_folder / "manifest.json"
     segment_folder.mkdir(parents=True, exist_ok=False)
     service = AudioSyncService()
+    source_video_duration = service.ffmpeg.probe_duration(state.input_video) or max(
+        (segment.end for segment in segments),
+        default=0.0,
+    )
     payload_segments: list[dict[str, Any]] = []
     error_count = 0
     try:
@@ -132,6 +141,7 @@ def execute(
                 allowed_duration,
                 max_speed,
                 trim_silence,
+                allow_overflow=auto_extend_video,
             )
             if outcome.success:
                 segment.synced_audio_file = str(output)
@@ -196,9 +206,19 @@ def execute(
                     "repair_attempts": 0,
                     "ai_rewrite_count": 0,
                     "error": outcome.error,
+                    "sync_error_type": "" if outcome.success else "audio_duration",
                     "corrected_in_step_5": False,
                 }
             )
+        video_timing_plan = build_video_timing_plan(
+            payload_segments,
+            source_video_duration,
+            enabled=auto_extend_video,
+            mode=video_extension_mode,
+            min_video_speed=min_video_speed,
+            max_freeze_duration=max_freeze_duration,
+        )
+        error_count = sum(1 for item in payload_segments if item.get("status") != "ready")
         source_metadata = dict(state.results[StepId.TTS].metadata)
         metadata = {
             "source_tts_candidate_id": state.selected_tts_candidate_id,
@@ -206,6 +226,12 @@ def execute(
             "max_speed": max_speed,
             "use_gap": use_gap,
             "trim_silence": trim_silence,
+            "auto_extend_video": auto_extend_video,
+            "video_extension_mode": video_extension_mode,
+            "min_video_speed": min_video_speed,
+            "max_freeze_duration": max_freeze_duration,
+            "video_timing_plan": video_timing_plan,
+            "output_video_duration": video_timing_plan["output_duration"],
             "error_count": error_count,
             "status": "completed" if error_count == 0 else "needs_edit",
         }

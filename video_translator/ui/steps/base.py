@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from ...models import STEP_ORDER, StepResult, StepStatus
 from ...state import ProjectState
-from ..components import Card, ProviderPanel
+from ..components import Card
 from ..specs import StepSpec
 
 
@@ -88,8 +88,6 @@ class StepPage(QWidget):
         special_card = self.build_special_card()
         if special_card:
             column.addWidget(special_card)
-        self.provider_panel = ProviderPanel(self.spec.providers)
-        column.addWidget(self.provider_panel)
         column.addStretch()
         return column
 
@@ -138,18 +136,10 @@ class StepPage(QWidget):
 
     def _build_run_actions(self) -> QHBoxLayout:
         actions = QHBoxLayout()
-        actions.addStretch()
-        self.run_button = QPushButton(f"Chạy step {self.spec.number}")
-        self.run_button.setObjectName("primaryButton")
-        self.run_button.clicked.connect(lambda: self.run_requested.emit(self.spec.step.value))
-        actions.addWidget(self.run_button)
-        self.run_from_here_button = QPushButton(
-            f"Chạy từ Step {self.spec.number} đến cuối"
-        )
-        self.run_from_here_button.clicked.connect(
-            lambda: self.run_from_here_requested.emit(self.spec.step.value)
-        )
-        actions.addWidget(self.run_from_here_button)
+        self.run_button = QPushButton(self)
+        self.run_button.hide()
+        self.run_from_here_button = QPushButton(self)
+        self.run_from_here_button.hide()
         return actions
 
     def build_special_card(self) -> Card | None:
@@ -162,7 +152,7 @@ class StepPage(QWidget):
         pass
 
     def settings(self) -> dict[str, Any]:
-        return self.provider_panel.values()
+        return {}
 
     def prepare_run(self) -> None:
         """Cho phép step giải phóng resource trước khi worker bắt đầu."""

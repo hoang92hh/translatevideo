@@ -63,29 +63,52 @@ Mỗi tab nhận kết quả của tab trước. Khi một step được chạy 
 
 ## Project workspace
 
-Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
+Khi tạo project, người dùng chọn một thư mục input và đánh dấu các video nằm trực tiếp
+trong thư mục đó. Ứng dụng không sao chép video nguồn. Danh tính video là đường dẫn
+tuyệt đối cộng tên file; trạng thái `pending`, `processing`, `completed` hoặc `failed`
+được lưu trong `.translanguage-videos.json` ngay tại thư mục input.
 
 ```text
 <project>/
 ├── project.json
-├── input/
-├── extracted/
-├── audio_separation/
-├── transcripts/
-├── translations/
-├── generated_audio/
-├── synchronized_audio/
-├── built_audio/
-├── subtitles/
-├── temp/
+├── <video-name>/
+│   ├── video.json
+│   ├── extracted/
+│   ├── audio_separation/
+│   ├── transcripts/
+│   ├── translations/
+│   ├── generated_audio/
+│   ├── synchronized_audio/
+│   ├── built_audio/
+│   ├── subtitles/
+│   └── temp/
 └── output/
+    ├── <video-name>/
+    │   ├── <render-candidate-1>/
+    │   └── <render-candidate-2>/
+    └── merged/
 ```
 
-`project.json` lưu thông tin project, cặp ngôn ngữ và kết quả hiện tại của pipeline. Màn hình đầu tiên cho phép tạo project, mở `project.json` hoặc chọn lại project gần đây.
+`project.json` lưu danh sách video, cấu hình batch và trạng thái cấp project. Mỗi
+`video.json` giữ pipeline/candidate riêng của một video. Popup **Thiết lập project** gom
+toàn bộ cấu hình Step 1–7 vào một màn hình lớn và được mở ngay trong luồng tạo project.
+Các tab Step 1–7 dùng để kiểm tra output của từng bước và không còn nút chạy riêng. Nút
+**Videos** hiển thị hàng đợi và bắt đầu xử lý tuần tự. Video lỗi được đánh dấu `failed` rồi
+bỏ qua để chạy video tiếp theo. Step 4 tạm thời dùng một cấu hình giọng đọc chung cho mọi
+speaker và video.
+
+Batch dùng trạng thái xử lý riêng và không tự đổi video đang được xem trên các tab Step.
+Select box **Video đang xem** chọn video cần kiểm tra output. Mỗi video lưu Step đang chạy,
+Step lỗi và checkpoint; lần **Chạy batch** tiếp theo bỏ qua video đã hoàn thành, còn video
+chưa hoàn thành hoặc bị lỗi sẽ tiếp tục từ Step sớm nhất cần xử lý lại.
+
+Nút **Outputs** hiển thị một row cho mỗi video. Select box trong row chọn phiên bản
+render cần xem; checkbox chọn các phiên bản cần ghép. Các row được ghép theo thứ tự
+hiển thị và tạo một MP4 mới trong `output/merged/` hoặc vị trí do người dùng chọn.
 
 ## Trạng thái hiện tại
 
-- Có thể chạy riêng từng step hoặc dùng nút **Chạy từ Step XX đến cuối** trên mỗi trang để chạy lại step đang chọn rồi tự động nối tiếp tới Step 07. Nếu chuỗi dừng do lỗi, giao diện chuyển tới step lỗi và hiện nút **Continue** để tiếp tục từ step chưa hoàn thành sau khi người dùng xử lý.
+- Pipeline được chạy tập trung bằng **Chạy batch**. Mỗi video giữ checkpoint riêng; nếu một Step lỗi, video được đánh dấu thất bại, batch chuyển sang video tiếp theo và lần chạy sau tiếp tục từ Step lỗi.
 - Step đang chạy sẽ hoàn tất hoặc trả lỗi; giao diện không cung cấp thao tác dừng thủ công giữa chừng. Nhãn trên thanh đầu trang hiển thị vị trí của tab hiện tại, hoặc step liền trước nếu tab hiện tại chưa có kết quả.
 - Giao diện và mock handler của mỗi step nằm trong module riêng.
 - Cấu hình hiển thị theo provider được chọn.
@@ -108,11 +131,11 @@ Khi tạo project, ứng dụng sao chép video nguồn và tạo cấu trúc:
 - Step 4 tách từng TTS thành component riêng, chọn bằng các nút dạng tab con và có thể đặt một provider làm mặc định cho các lần mở ứng dụng sau. Các provider gồm VieNeu-TTS local cho tiếng Việt, Piper TTS local CPU/ONNX, MeloTTS + OpenVoice V2 local cho English/Spanish/Chinese/Japanese/Korean và Edge TTS online. `SPEAKER_00`, `SPEAKER_01`, `SPEAKER_02` có cấu hình giọng/model riêng; mọi speaker còn lại dùng chung một cấu hình. VieNeu và Melo/OpenVoice dùng audio tham chiếu; Piper dùng cặp voice model `.onnx` + `.onnx.json`, hỗ trợ `speaker_id` của model đa giọng và các tham số `SynthesisConfig` native; Edge dùng voice preset. Ánh xạ này được giữ khi Step 5 tạo lại voice. Mỗi lần chạy thành công tạo một candidate riêng trong `generated_audio/`; candidate mới nhất tự động là input Step 5, còn lỗi không thay đổi input trước đó.
 - `Auto` ở provider local chọn GPU khi runtime CUDA của chính provider khả dụng, nếu không chọn CPU. `CPU` và `GPU` tuân thủ đúng lựa chọn; chế độ `GPU` báo lỗi thay vì fallback CPU.
 - XTTS-v2 chỉ nằm trong danh sách dưới dạng chưa triển khai và có ghi chú chỉ phi thương mại theo Coqui Public Model License.
-- Step 5 cắt khoảng lặng thừa, tận dụng khoảng trống trước segment kế tiếp, tăng tốc trong giới hạn người dùng chọn và chèn khoảng lặng khi audio ngắn hơn timestamp gốc. Mỗi lần chạy tạo candidate riêng trong `synchronized_audio/`.
+- Step 5 cắt khoảng lặng thừa, tận dụng khoảng trống trước segment kế tiếp, tăng tốc trong giới hạn người dùng chọn và chèn khoảng lặng khi audio ngắn hơn timestamp gốc. Trong **Thiết lập project → Step 05**, tùy chọn **Auto Extend Video to Match TTS** có thể lập kế hoạch kéo dài cục bộ bằng `Freeze Frame`, `Slow Motion` hoặc `Hybrid`; chỉ đoạn có voice vượt khung bị biến đổi, còn các đoạn sau chỉ được dịch timestamp. Mỗi lần chạy tạo candidate riêng trong `synchronized_audio/`.
 - Với segment vẫn quá dài, popup sửa lỗi có nút **Vay thời gian lân cận** riêng. Nút này ưu tiên cân B+C; chỉ dùng A+B+C (hoặc A+B khi không có C) nếu thời gian phía sau chưa đủ. Các voice trong nhóm dùng cùng tốc độ tối đa đã cấu hình, giữ nguyên thứ tự, không chồng nhau, lệch tối đa 0,5 giây và không vay qua khoảng nghỉ lớn hơn 1 giây.
 - Segment không thể đặt vừa trong giới hạn tốc độ cùng segment liền trước/sau được đưa vào popup xử lý của Step 5. Nút **Sửa voice/speaker segment khác** mở cùng popup với toàn bộ segment và cho tìm trong nội dung bản dịch; mỗi kết quả kèm segment liền trước/sau. Checkbox, speaker và nội dung nháp được giữ qua nhiều lần tìm. Mọi row đều có thể đổi speaker, sửa bản dịch hoặc chọn để Gemini chỉnh sửa. Checkbox đồng thời quyết định chính xác các row được tạo lại voice; kết quả cập nhật speaker/nội dung/audio trực tiếp trong chuỗi candidate Step 2–5 hiện tại mà không đổi `id`, timestamp hoặc `merge_parts`. Candidate Step 5 chỉ trở thành input Step 6 sau khi hết lỗi.
-- Step 6 đọc `adjusted_start`/`play_duration`, kiểm tra lại không chồng voice và ghép các segment thành một track WAV mono 48 kHz bằng FFmpeg. Mỗi lần chạy tạo một candidate riêng trong `built_audio/`; track được bù khoảng lặng để dài đúng bằng video gốc và có thể nghe thử trước khi chọn làm input Step 7. Step này chỉ xử lý voice, không trộn background hoặc video.
-- Step 7 render MP4 H.264/AAC từ hình ảnh video gốc và voice track Step 6. Hai thành phần này luôn bắt buộc. Background tách ở Step 1 được chọn mặc định khi tồn tại, có thể tắt hoặc điều chỉnh âm lượng; `Original Mix` tuyệt đối không được trộn vào output. Subtitle SRT được chia offline theo tỷ lệ thời lượng trong `merge_parts` và timeline voice đã căn chỉnh, thay vì hiển thị cả segment gộp; burn subtitle là tùy chọn.
+- Step 6 đọc `adjusted_start`/`play_duration`, kiểm tra lại không chồng voice và ghép các segment thành một track WAV mono 48 kHz bằng FFmpeg. Track được bù khoảng lặng tới thời lượng timeline mới do Step 5 tính (hoặc video gốc khi không kéo dài). Step này chỉ xử lý voice, không trộn background hoặc video.
+- Step 7 render MP4 H.264/AAC từ hình ảnh video gốc và voice track Step 6. Khi Step 5 có kế hoạch kéo dài, Step 7 mới thực sự slow/freeze đúng các đoạn cục bộ và retime voice gốc/background tương ứng; file nguồn không bị sửa. Subtitle SRT dùng timeline voice đã căn chỉnh; burn subtitle là tùy chọn.
 - Local Model ở Step 3 được đánh dấu chưa triển khai.
 
 Hướng dẫn chi tiết:

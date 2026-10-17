@@ -15,6 +15,7 @@ from ..errors import UserFacingError
 from .ffmpeg_service import FFmpegError, FFmpegService
 from .text_to_speech_service import TextToSpeechService
 from .translation_provider import create_translation_provider
+from .video_alignment_service import build_video_timing_plan
 
 
 ProgressCallback = Callable[[int, str], None]
@@ -215,6 +216,7 @@ class AudioSyncService:
         allowed_duration: float,
         max_speed: float,
         trim_silence: bool,
+        allow_overflow: bool = False,
     ) -> SyncOutcome:
         source = Path(source_path)
         output = Path(output_path)
@@ -254,7 +256,7 @@ class AudioSyncService:
             self._run_ffmpeg(source, prepared, trim_filter)
             prepared_duration = self.ffmpeg.probe_duration(prepared) or input_duration
             required_speed = prepared_duration / max(allowed_duration, 0.01)
-            if required_speed > max_speed + 0.0001:
+            if required_speed > max_speed + 0.0001 and not allow_overflow:
                 output.unlink(missing_ok=True)
                 return SyncOutcome(
                     success=False,
@@ -275,7 +277,7 @@ class AudioSyncService:
                     ),
                 )
 
-            speed_factor = max(1.0, required_speed)
+            speed_factor = min(max_speed, max(1.0, required_speed))
             natural_after_speed = prepared_duration / speed_factor
             final_duration = (
                 target_duration if natural_after_speed <= target_duration else natural_after_speed
@@ -496,6 +498,7 @@ def apply_neighbor_borrow(
             original_end = float(item.get("end", original_start))
             item["adjusted_start"] = round(adjusted_start, 6)
             item["adjusted_end"] = round(adjusted_end, 6)
+            item["audio_adjusted_start"] = round(adjusted_start, 6)
             item["play_duration"] = round(durations[position], 6)
             item["borrowed_before"] = round(max(0.0, original_start - adjusted_start), 6)
             item["borrowed_after"] = round(max(0.0, adjusted_end - original_end), 6)
@@ -660,9 +663,26 @@ def borrow_neighbor_time(
                 item["status"] = "ready"
                 item["repair_status"] = "resolved"
                 item["error"] = ""
+                item["sync_error_type"] = ""
         claimed.update(selected_group)
         resolved_count += 1
 
+    previous_plan = payload.get("video_timing_plan", {})
+    source_duration = (
+        float(previous_plan.get("source_duration", 0.0))
+        if isinstance(previous_plan, dict)
+        else 0.0
+    )
+    video_timing_plan = build_video_timing_plan(
+        segments,
+        source_duration,
+        enabled=bool(payload.get("auto_extend_video", False)),
+        mode=str(payload.get("video_extension_mode", "Hybrid")),
+        min_video_speed=float(payload.get("min_video_speed", 0.85)),
+        max_freeze_duration=float(payload.get("max_freeze_duration", 1.5)),
+    )
+    payload["video_timing_plan"] = video_timing_plan
+    payload["output_video_duration"] = video_timing_plan["output_duration"]
     error_count = sum(1 for item in segments if item.get("status") != "ready")
     payload["error_count"] = error_count
     payload["status"] = "completed" if error_count == 0 else "needs_edit"
@@ -902,6 +922,7 @@ def repair_sync_segments(
         sync_segment["translated_text"] = text
         sync_segment["target_duration"] = duration
         sync_segment["allowed_duration"] = duration
+        sync_segment["audio_adjusted_start"] = start
         sync_segment["corrected_in_step_5"] = True
         sync_segment["speaker_corrected_in_step_5"] = speaker_id != previous_speaker
 
@@ -925,6 +946,7 @@ def repair_sync_segments(
         sync_segment["play_duration"] = 0.0
         sync_segment["adjusted_start"] = start
         sync_segment["adjusted_end"] = start
+        sync_segment["audio_adjusted_start"] = start
         sync_segment["sync_strategy"] = "zero_duration"
         sync_segment["borrowed_before"] = 0.0
         sync_segment["borrowed_after"] = 0.0
@@ -982,6 +1004,7 @@ def repair_sync_segments(
                 float(sync_segment.get("allowed_duration", 0.0)),
                 float(sync_payload.get("max_speed", 1.35)),
                 bool(sync_payload.get("trim_silence", False)),
+                allow_overflow=bool(sync_payload.get("auto_extend_video", False)),
             )
         except Exception as exc:
             outcome = None
@@ -1015,6 +1038,7 @@ def repair_sync_segments(
             sync_segment["status"] = "needs_edit"
             sync_segment["repair_status"] = "error"
             sync_segment["error"] = errors[segment_id]
+            sync_segment["sync_error_type"] = "audio_processing"
         else:
             if not outcome.success:
                 sync_segment["seq"] = current_seq + 1
@@ -1022,6 +1046,7 @@ def repair_sync_segments(
             sync_segment["status"] = "ready" if outcome.success else "needs_edit"
             sync_segment["repair_status"] = "resolved" if outcome.success else "too_long"
             sync_segment["error"] = outcome.error
+            sync_segment["sync_error_type"] = "" if outcome.success else "audio_duration"
             sync_segment["input_duration"] = outcome.input_duration
             sync_segment["prepared_duration"] = outcome.prepared_duration
             sync_segment["output_duration"] = outcome.output_duration
@@ -1033,6 +1058,7 @@ def repair_sync_segments(
             sync_segment["adjusted_end"] = (
                 float(sync_segment.get("start", 0.0)) + sync_segment["play_duration"]
             )
+            sync_segment["audio_adjusted_start"] = float(sync_segment.get("start", 0.0))
             sync_segment["sync_strategy"] = "local"
             sync_segment["borrowed_before"] = 0.0
             sync_segment["borrowed_after"] = 0.0
@@ -1051,6 +1077,22 @@ def repair_sync_segments(
             )
             sync_segment["silence_trim_decision"] = outcome.silence_trim_decision
 
+    previous_plan = sync_payload.get("video_timing_plan", {})
+    source_duration = (
+        float(previous_plan.get("source_duration", 0.0))
+        if isinstance(previous_plan, dict)
+        else 0.0
+    )
+    video_timing_plan = build_video_timing_plan(
+        [item for item in sync_payload.get("segments", []) if isinstance(item, dict)],
+        source_duration,
+        enabled=bool(sync_payload.get("auto_extend_video", False)),
+        mode=str(sync_payload.get("video_extension_mode", "Hybrid")),
+        min_video_speed=float(sync_payload.get("min_video_speed", 0.85)),
+        max_freeze_duration=float(sync_payload.get("max_freeze_duration", 1.5)),
+    )
+    sync_payload["video_timing_plan"] = video_timing_plan
+    sync_payload["output_video_duration"] = video_timing_plan["output_duration"]
     error_count = sum(1 for item in sync_segments.values() if item.get("status") != "ready")
     sync_payload["error_count"] = error_count
     sync_payload["status"] = "completed" if error_count == 0 else "needs_edit"

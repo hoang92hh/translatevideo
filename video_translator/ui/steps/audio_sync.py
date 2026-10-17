@@ -43,6 +43,31 @@ class AudioSyncStepPage(StepPage):
                         "bool",
                         False,
                     ),
+                    FieldSpec(
+                        "auto_extend_video",
+                        "Auto Extend Video to Match TTS",
+                        "bool",
+                        False,
+                    ),
+                    FieldSpec(
+                        "video_extension_mode",
+                        "Chế độ kéo dài hình ảnh",
+                        "choice",
+                        "Hybrid",
+                        ("Freeze Frame", "Slow Motion", "Hybrid"),
+                    ),
+                    FieldSpec(
+                        "min_video_speed",
+                        "Tốc độ video tối thiểu",
+                        "float",
+                        0.85,
+                    ),
+                    FieldSpec(
+                        "max_freeze_duration",
+                        "Freeze tối đa mỗi segment (giây)",
+                        "float",
+                        1.5,
+                    ),
                 ),
             ),
         ),
@@ -171,7 +196,18 @@ class AudioSyncStepPage(StepPage):
         self._loaded_manifest_signature = signature
         errors = int(payload.get("error_count", 0))
         status = "Hoàn thành" if not errors else f"Cần sửa {errors} segment"
-        self.sync_info.setText(f"{status} · {candidate.segment_count} segment\n{candidate.folder}")
+        plan = payload.get("video_timing_plan", {})
+        extension_text = ""
+        if isinstance(plan, dict) and bool(plan.get("enabled", False)):
+            extension = float(plan.get("total_extension", 0.0))
+            edits = plan.get("edits", [])
+            edit_count = len(edits) if isinstance(edits, list) else 0
+            extension_text = (
+                f" · Video +{extension:.2f}s/{edit_count} đoạn ({plan.get('mode', 'Hybrid')})"
+            )
+        self.sync_info.setText(
+            f"{status} · {candidate.segment_count} segment{extension_text}\n{candidate.folder}"
+        )
         raw_segments = payload.get("segments", [])
         self._fill_segments(raw_segments if isinstance(raw_segments, list) else [])
         self.show_candidate_result(

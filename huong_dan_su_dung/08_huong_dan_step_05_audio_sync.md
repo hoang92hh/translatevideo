@@ -13,6 +13,17 @@ Với mỗi segment, Step 5 thực hiện theo thứ tự:
 5. Nếu audio vẫn dài, tăng tốc nhưng không vượt quá **Tốc độ tối đa**.
 6. Nếu audio ngắn hơn khung gốc, chèn khoảng lặng ở cuối.
 
+## Tự động kéo dài video theo TTS
+
+Các lựa chọn nằm tại **Thiết lập project → Step 05**:
+
+- **Auto Extend Video to Match TTS**: mặc định tắt để giữ hành vi cũ.
+- **Freeze Frame**: giữ nguyên tốc độ đoạn nguồn và đóng băng khung hình cuối của riêng đoạn thiếu thời gian.
+- **Slow Motion**: chỉ làm chậm đoạn hình ảnh tương ứng, không làm chậm toàn bộ video.
+- **Hybrid**: ưu tiên slow motion tới **Tốc độ video tối thiểu**, sau đó chỉ freeze phần còn thiếu khi có khoảng nghỉ hình ảnh ít nhất 0,12 giây; nếu không có vị trí bảo thủ này, segment được đưa về **Cần sửa**. Chọn rõ **Freeze Frame** cho phép freeze ở cuối segment ngay cả khi không có khoảng nghỉ.
+
+Step 5 chỉ tính và lưu `video_timing_plan`; video nguồn chưa bị chỉnh ở bước này. Mỗi phần thời gian được thêm làm dịch toàn bộ voice, cảnh và subtitle phía sau nhưng không đổi tốc độ của các cảnh đó. Nếu phần thiếu vượt giới hạn của chế độ đã chọn, segment vẫn ở trạng thái **Cần sửa** thay vì kéo dài vô hạn. Step 7 mới áp dụng kế hoạch lên bản video đầu ra; file nguồn luôn được giữ nguyên.
+
 Manifest ghi riêng `detected_leading_silence`, `detected_trailing_silence`, `trimmed_leading_silence`, `trimmed_trailing_silence` và `silence_trim_decision` cho từng segment để có thể kiểm tra quyết định của Step 5.
 
 Luồng chạy Step 5 thông thường không tự động cân lại các hàng xóm. Nếu một segment vẫn quá dài, có thể dùng nút **Vay thời gian lân cận** riêng trong popup sửa lỗi. Mỗi segment lỗi B được thử với C trước; chỉ khi B+C chưa đủ mới thử A+B+C, hoặc A+B nếu không có C. Mọi voice trong nhóm được tạo lại từ audio Step 4 với cùng **Tốc độ tối đa**, phát lần lượt và không chồng nhau. Mỗi segment chỉ được lệch tối đa 0,5 giây; khoảng nghỉ lớn hơn 1 giây là ranh giới không vay qua.
@@ -68,7 +79,7 @@ Nếu còn bất kỳ row nào ở trạng thái **Chờ tạo voice**, ứng d�
 
 Khi lỗi cuối cùng được xử lý xong, candidate tự động hoàn thành và trở thành input Step 6.
 
-Các trường `adjusted_start`, `adjusted_end`, `play_duration`, `borrowed_before`, `borrowed_after` và `sync_strategy` trong manifest mô tả lịch phát đã cân. Step 6 chỉ ghép audio theo lịch này và kiểm tra lại điều kiện không chồng voice.
+Các trường `adjusted_start`, `adjusted_end`, `play_duration`, `borrowed_before`, `borrowed_after`, `timeline_offset` và `sync_strategy` trong manifest mô tả lịch phát đã cân. `video_timing_plan` lưu các vùng nguồn, tốc độ hình ảnh, thời lượng slow/freeze và tổng thời lượng đầu ra. Step 6 chỉ ghép audio theo lịch này và kiểm tra lại điều kiện không chồng voice.
 
 ## Phạm vi của bản sửa
 

@@ -6,10 +6,8 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from ...errors import UserFacingError
-from ...models import StepId, StepResult, StepStatus
-from ..components import Card
+from ...models import StepId, StepResult
 from ..specs import StepSpec
-from ..translation_components import TranslationProviderSelector
 from ..translation_editor_dialog import TranslationEditorDialog
 from .base import StepPage
 
@@ -23,70 +21,13 @@ class TranslationStepPage(StepPage):
     )
 
     def __init__(self, state) -> None:
-        self._loaded_project_id: str | None = None
         super().__init__(state)
-        self.translation_selector.provider_changed.connect(self._provider_changed)
-        self.translation_selector.credentials_changed.connect(self._update_run_availability)
-        self.translation_selector.status_changed.connect(self._update_run_availability)
-        self.translation_selector.project_url_changed.connect(self._save_project_url)
 
     def _build_settings_column(self) -> QVBoxLayout:
-        column = QVBoxLayout()
-        input_card = Card("Đầu vào", "Kết quả từ step trước được kết nối tự động.")
-        self.input_summary = QLabel()
-        self.input_summary.setObjectName("inputValue")
-        self.input_summary.setWordWrap(True)
-        input_card.content_layout.addWidget(self.input_summary)
-        column.addWidget(input_card)
-        self.translation_selector = TranslationProviderSelector()
-        column.addWidget(self.translation_selector)
-        column.addStretch()
-        return column
+        return super()._build_settings_column()
 
     def settings(self) -> dict[str, object]:
-        settings = self.translation_selector.settings()
-        provider = str(settings.get("provider", ""))
-        if "project_url" in settings:
-            self._save_project_url(provider, str(settings["project_url"]))
-        return settings
-
-    def refresh(self) -> None:
-        super().refresh()
-        project_id = self.state.project.id if self.state.project else None
-        if project_id != self._loaded_project_id:
-            urls = self.state.project.translation_project_urls if self.state.project else {}
-            self.translation_selector.set_project_urls(urls)
-            self._loaded_project_id = project_id
-        self.translation_selector.refresh_status()
-        self._update_run_availability()
-
-    def _save_project_url(self, provider: str, url: str) -> None:
-        if not self.state.project:
-            return
-        if self.state.project.translation_project_urls.get(provider, "") == url:
-            return
-        self.state.project.translation_project_urls[provider] = url
-        self.state.save_project()
-
-    def _provider_changed(self, _provider: str) -> None:
-        self._update_run_availability()
-
-    def _update_run_availability(self) -> None:
-        status = self.state.statuses[self.spec.step]
-        ready = self.translation_selector.is_ready()
-        self.run_button.setEnabled(
-            ready
-            and self.state.can_run(self.spec.step)
-            and status != StepStatus.RUNNING
-        )
-        self.run_from_here_button.setEnabled(
-            ready
-            and self.state.can_run(self.spec.step)
-            and status != StepStatus.RUNNING
-        )
-        unavailable_reason = "" if ready else self.translation_selector.unavailable_reason()
-        self.run_button.setToolTip(unavailable_reason)
-        self.run_from_here_button.setToolTip(unavailable_reason)
+        return {}
 
     def refresh_special(self) -> None:
         if hasattr(self, "translation_combo") and not getattr(self, "_processing", False):

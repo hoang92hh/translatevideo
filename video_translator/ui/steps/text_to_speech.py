@@ -14,9 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...models import StepId, StepResult
-from ..components import Card
 from ..specs import StepSpec
-from ..tts_components import TtsComponentSelector
 from ..tts_preview_dialog import TtsPreviewDialog
 from .base import StepPage
 
@@ -34,17 +32,7 @@ class TextToSpeechStepPage(StepPage):
         super().__init__(state)
 
     def _build_settings_column(self) -> QVBoxLayout:
-        column = QVBoxLayout()
-        input_card = Card("Đầu vào", "Kết quả từ step trước được kết nối tự động.")
-        self.input_summary = QLabel()
-        self.input_summary.setObjectName("inputValue")
-        self.input_summary.setWordWrap(True)
-        input_card.content_layout.addWidget(self.input_summary)
-        column.addWidget(input_card)
-        self.tts_selector = TtsComponentSelector()
-        column.addWidget(self.tts_selector)
-        column.addStretch()
-        return column
+        return super()._build_settings_column()
 
     def _input_speakers(self) -> tuple[str, ...]:
         previous = self.state.previous_result(StepId.TTS)
@@ -65,7 +53,7 @@ class TextToSpeechStepPage(StepPage):
         return dict(profile) if isinstance(profile, dict) else {}
 
     def settings(self) -> dict[str, object]:
-        return self.tts_selector.settings()
+        return {}
 
     def build_result_extra(self) -> QWidget:
         # Danh sách segment được mở theo nhu cầu trong popup nghe thử.
@@ -115,17 +103,12 @@ class TextToSpeechStepPage(StepPage):
         self._close_preview_dialog()
 
     def refresh_special(self) -> None:
-        self.tts_selector.set_speakers(
-            self._input_speakers(),
-            self._input_dialogue_profile(),
-        )
         if hasattr(self, "tts_combo") and not getattr(self, "_processing", False):
             self._refresh_outputs()
 
     def set_busy(self, busy: bool) -> None:
         self._processing = busy
         super().set_busy(busy)
-        self.tts_selector.setEnabled(not busy)
         if not busy and hasattr(self, "tts_combo"):
             self._refresh_outputs(prefer_selected=True)
 

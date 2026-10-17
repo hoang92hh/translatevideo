@@ -60,6 +60,9 @@ def speaker_profile_assignments(
 
 
 def resolve_speaker_profile(settings: dict[str, Any], speaker_id: str) -> dict[str, Any]:
+    if bool(settings.get("single_voice", False)):
+        shared = settings.get("shared_speaker_profile", {})
+        return dict(shared) if isinstance(shared, dict) else {}
     profiles = settings.get("speaker_profiles", {})
     profiles = profiles if isinstance(profiles, dict) else {}
     assignments = settings.get("speaker_profile_assignments", {})

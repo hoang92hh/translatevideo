@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import ctypes
+from difflib import SequenceMatcher
 import json
+import math
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -11,6 +14,13 @@ from typing import Any
 
 _DLL_DIRECTORY_HANDLES: list[object] = []
 
+RECOVERY_MAX_WINDOW_SECONDS = 30.0
+RECOVERY_OVERLAP_SECONDS = 2.0
+RECOVERY_CONTEXT_SECONDS = 0.75
+RECOVERY_MIN_GAP_SECONDS = 1.0
+RECOVERY_ACTIVITY_DB = -52.0
+RECOVERY_SILENCE_DB = -65.0
+
 
 def emit(event: dict[str, Any]) -> None:
     print(json.dumps(event, ensure_ascii=False), flush=True)
@@ -18,6 +28,346 @@ def emit(event: dict[str, Any]) -> None:
 
 def progress(value: int, message: str) -> None:
     emit({"type": "progress", "value": value, "message": message})
+
+
+def _merge_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(intervals):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _subtract_intervals(
+    start: float,
+    end: float,
+    covered: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    gaps: list[tuple[float, float]] = []
+    cursor = start
+    for covered_start, covered_end in covered:
+        if covered_end <= cursor or covered_start >= end:
+            continue
+        clipped_start = max(start, covered_start)
+        clipped_end = min(end, covered_end)
+        if clipped_start > cursor:
+            gaps.append((cursor, clipped_start))
+        cursor = max(cursor, clipped_end)
+        if cursor >= end:
+            break
+    if cursor < end:
+        gaps.append((cursor, end))
+    return gaps
+
+
+def _rms_db(audio: Any, sampling_rate: int, start: float, end: float) -> float:
+    first = max(0, round(start * sampling_rate))
+    last = min(len(audio), round(end * sampling_rate))
+    if last <= first:
+        return -120.0
+    samples = audio[first:last]
+    power = float((samples * samples).mean()) if len(samples) else 0.0
+    return 10.0 * math.log10(max(power, 1e-12))
+
+
+def _has_audio_activity(audio: Any, sampling_rate: int, start: float, end: float) -> bool:
+    frame_seconds = 0.1
+    hop_seconds = 0.05
+    cursor = start
+    active_frames = 0
+    while cursor < end:
+        frame_end = min(end, cursor + frame_seconds)
+        if _rms_db(audio, sampling_rate, cursor, frame_end) >= RECOVERY_ACTIVITY_DB:
+            active_frames += 1
+            if active_frames >= 2:
+                return True
+        cursor += hop_seconds
+    return False
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"[^\w\u3400-\u9fff]+", "", value.casefold())
+
+
+def _interval_overlap(first: tuple[float, float], second: tuple[float, float]) -> float:
+    return max(0.0, min(first[1], second[1]) - max(first[0], second[0]))
+
+
+def _is_duplicate(candidate: dict[str, object], existing: list[dict[str, object]]) -> bool:
+    candidate_text = _normalize_text(str(candidate.get("text", "")))
+    candidate_range = (float(candidate["start"]), float(candidate["end"]))
+    candidate_duration = max(0.001, candidate_range[1] - candidate_range[0])
+    for item in existing:
+        item_range = (float(item["start"]), float(item["end"]))
+        item_duration = max(0.001, item_range[1] - item_range[0])
+        overlap = _interval_overlap(candidate_range, item_range)
+        if overlap / min(candidate_duration, item_duration) < 0.45:
+            continue
+        item_text = _normalize_text(str(item.get("text", "")))
+        if candidate_text and item_text:
+            similarity = SequenceMatcher(None, candidate_text, item_text).ratio()
+            if candidate_text == item_text or similarity >= 0.82:
+                return True
+    return False
+
+
+def _segment_word_coverage(segments: list[dict[str, object]]) -> list[tuple[float, float]]:
+    intervals: list[tuple[float, float]] = []
+    for segment in segments:
+        words = segment.get("words")
+        valid_words = words if isinstance(words, list) else []
+        word_intervals = [
+            (
+                max(0.0, float(word["start"]) - 0.15),
+                float(word["end"]) + 0.15,
+            )
+            for word in valid_words
+            if isinstance(word, dict)
+            and word.get("start") is not None
+            and word.get("end") is not None
+        ]
+        if word_intervals:
+            intervals.extend(word_intervals)
+        else:
+            intervals.append((float(segment["start"]), float(segment["end"])))
+    return _merge_intervals(intervals)
+
+
+def _recovery_windows(
+    candidates: list[dict[str, object]],
+    duration: float,
+) -> list[tuple[float, float]]:
+    expanded = _merge_intervals(
+        [
+            (
+                max(0.0, float(candidate["start"]) - RECOVERY_CONTEXT_SECONDS),
+                min(duration, float(candidate["end"]) + RECOVERY_CONTEXT_SECONDS),
+            )
+            for candidate in candidates
+        ]
+    )
+    windows: list[tuple[float, float]] = []
+    for start, end in expanded:
+        cursor = start
+        while cursor < end:
+            window_end = min(end, cursor + RECOVERY_MAX_WINDOW_SECONDS)
+            windows.append((cursor, window_end))
+            if window_end >= end:
+                break
+            cursor = max(cursor + 0.001, window_end - RECOVERY_OVERLAP_SECONDS)
+    return windows
+
+
+def _candidate_for_segment(
+    start: float,
+    end: float,
+    candidates: list[dict[str, object]],
+) -> dict[str, object] | None:
+    return max(
+        candidates,
+        key=lambda item: _interval_overlap(
+            (start, end),
+            (float(item["start"]), float(item["end"])),
+        ),
+        default=None,
+    )
+
+
+def _recover_missing_segments(
+    model: Any,
+    audio: Any,
+    sampling_rate: int,
+    language: str | None,
+    duration: float,
+    main_segments: list[dict[str, object]],
+    speech_chunks: list[dict[str, int]],
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    kept = [
+        (float(chunk["start"]) / sampling_rate, float(chunk["end"]) / sampling_rate)
+        for chunk in speech_chunks
+    ]
+    coverage = _segment_word_coverage(main_segments)
+    raw_candidates: list[dict[str, object]] = []
+
+    cursor = 0.0
+    for start, end in kept:
+        if start - cursor >= RECOVERY_MIN_GAP_SECONDS:
+            raw_candidates.append({"start": cursor, "end": start, "reasons": {"vad_rejected"}})
+        cursor = max(cursor, end)
+    if duration - cursor >= RECOVERY_MIN_GAP_SECONDS:
+        raw_candidates.append({"start": cursor, "end": duration, "reasons": {"vad_rejected"}})
+
+    for start, end in kept:
+        for gap_start, gap_end in _subtract_intervals(start, end, coverage):
+            if gap_end - gap_start >= RECOVERY_MIN_GAP_SECONDS:
+                raw_candidates.append(
+                    {"start": gap_start, "end": gap_end, "reasons": {"recognized_coverage_gap"}}
+                )
+
+    active_candidates: list[dict[str, object]] = []
+    rejected_silence_count = 0
+    for candidate in sorted(raw_candidates, key=lambda item: float(item["start"])):
+        start = float(candidate["start"])
+        end = float(candidate["end"])
+        if not _has_audio_activity(audio, sampling_rate, start, end):
+            rejected_silence_count += 1
+            continue
+        if active_candidates and start <= float(active_candidates[-1]["end"]):
+            active_candidates[-1]["end"] = max(float(active_candidates[-1]["end"]), end)
+            reasons = active_candidates[-1]["reasons"]
+            assert isinstance(reasons, set)
+            reasons.update(candidate["reasons"])
+        else:
+            active_candidates.append(dict(candidate))
+
+    windows = _recovery_windows(active_candidates, duration)
+    metadata: dict[str, object] = {
+        "enabled": True,
+        "max_window_seconds": RECOVERY_MAX_WINDOW_SECONDS,
+        "overlap_seconds": RECOVERY_OVERLAP_SECONDS,
+        "candidate_interval_count": len(active_candidates),
+        "vad_rejected_candidate_count": sum(
+            1 for item in active_candidates if "vad_rejected" in item["reasons"]
+        ),
+        "recognized_coverage_gap_count": sum(
+            1 for item in active_candidates if "recognized_coverage_gap" in item["reasons"]
+        ),
+        "windows_processed": len(windows),
+        "accepted_segment_count": 0,
+        "uncertain_segment_count": 0,
+        "rejected_silence_count": rejected_silence_count,
+        "rejected_duplicate_count": 0,
+        "missing_word_alignment_count": 0,
+        "recovered_duration_seconds": 0.0,
+        "accepted_segments": [],
+        "uncertain_segments": [],
+    }
+    if not windows:
+        return [], metadata
+
+    clip_timestamps = ",".join(f"{start:.3f},{end:.3f}" for start, end in windows)
+    recovered_stream, _ = model.transcribe(
+        audio,
+        language=language,
+        task="transcribe",
+        beam_size=5,
+        vad_filter=False,
+        word_timestamps=True,
+        condition_on_previous_text=False,
+        clip_timestamps=clip_timestamps,
+    )
+
+    accepted: list[dict[str, object]] = []
+    accepted_details = metadata["accepted_segments"]
+    uncertain_details = metadata["uncertain_segments"]
+    assert isinstance(accepted_details, list)
+    assert isinstance(uncertain_details, list)
+    for segment in recovered_stream:
+        text = segment.text.strip()
+        if not text:
+            continue
+        start = round(float(segment.start), 3)
+        end = round(float(segment.end), 3)
+        candidate = _candidate_for_segment(start, end, active_candidates)
+        candidate_overlap = 0.0 if candidate is None else _interval_overlap(
+            (start, end),
+            (float(candidate["start"]), float(candidate["end"])),
+        )
+        if candidate is None or candidate_overlap / max(0.001, end - start) < 0.25:
+            continue
+        words = [
+            {
+                "start": round(float(word.start), 3),
+                "end": round(float(word.end), 3),
+                "word": word.word,
+                "probability": round(float(word.probability or 0.0), 6),
+            }
+            for word in (segment.words or [])
+            if word.start is not None and word.end is not None
+        ]
+        if not words:
+            metadata["missing_word_alignment_count"] = int(
+                metadata["missing_word_alignment_count"]
+            ) + 1
+        probabilities = [float(word["probability"]) for word in words]
+        mean_word_probability = (
+            sum(probabilities) / len(probabilities) if probabilities else None
+        )
+        candidate_db = _rms_db(
+            audio,
+            sampling_rate,
+            float(candidate["start"]),
+            float(candidate["end"]),
+        )
+        detail = {
+            "start": start,
+            "end": end,
+            "text": text,
+            "avg_logprob": round(float(segment.avg_logprob), 6),
+            "no_speech_prob": round(float(segment.no_speech_prob), 6),
+            "compression_ratio": round(float(segment.compression_ratio), 6),
+            "mean_word_probability": (
+                round(mean_word_probability, 6)
+                if mean_word_probability is not None
+                else None
+            ),
+            "candidate_rms_db": round(candidate_db, 3),
+            "reasons": sorted(str(reason) for reason in candidate["reasons"]),
+        }
+        item: dict[str, object] = {
+            "start": start,
+            "end": end,
+            "text": text,
+            "words": words,
+        }
+
+        if candidate_db < RECOVERY_SILENCE_DB:
+            detail["reason"] = "silent_region"
+            metadata["rejected_silence_count"] = int(metadata["rejected_silence_count"]) + 1
+            uncertain_details.append(detail)
+            continue
+        normalized = _normalize_text(text)
+        low_evidence = (
+            len(normalized) <= 1
+            and candidate_db < -38.0
+            and (
+                float(segment.avg_logprob) < -0.75
+                or float(segment.no_speech_prob) > 0.6
+            )
+        )
+        alignment_uncertain = (
+            not words
+            and (
+                float(segment.avg_logprob) < -0.8
+                or candidate_db < -45.0
+            )
+        )
+        if low_evidence or alignment_uncertain:
+            detail["reason"] = (
+                "short_text_low_energy" if low_evidence else "missing_word_alignment"
+            )
+            uncertain_details.append(detail)
+            continue
+        if _is_duplicate(item, [*main_segments, *accepted]):
+            metadata["rejected_duplicate_count"] = int(
+                metadata["rejected_duplicate_count"]
+            ) + 1
+            continue
+
+        accepted.append(item)
+        accepted_details.append(detail)
+
+    metadata["accepted_segment_count"] = len(accepted)
+    metadata["uncertain_segment_count"] = len(uncertain_details)
+    metadata["recovered_duration_seconds"] = round(
+        sum(max(0.0, float(item["end"]) - float(item["start"])) for item in accepted),
+        3,
+    )
+    return accepted, metadata
 
 
 class CudaUnavailableError(RuntimeError):
@@ -160,6 +510,8 @@ def run(request: dict[str, Any]) -> None:
         progress(2, "Đang kiểm tra Faster Whisper và thiết bị…")
         configure_bundled_cuda()
         from faster_whisper import WhisperModel
+        from faster_whisper.audio import decode_audio
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
 
         device, actual_device, device_selection_reason = select_device(worker_request)
         attempted_device = device
@@ -187,6 +539,7 @@ def run(request: dict[str, Any]) -> None:
         )
         duration = float(info.duration) if info.duration is not None else None
         segments: list[dict[str, object]] = []
+        progress_span = 70 if bool(request.get("vad_filter", True)) else 82
         for segment in segment_stream:
             text = segment.text.strip()
             if text:
@@ -208,13 +561,35 @@ def run(request: dict[str, Any]) -> None:
                     }
                 )
             if duration and duration > 0:
-                value = 15 + round(min(float(segment.end) / duration, 1.0) * 82)
+                value = 15 + round(min(float(segment.end) / duration, 1.0) * progress_span)
                 progress(value, f"Đang nhận dạng đến {float(segment.end):.1f}s / {duration:.1f}s…")
+        recovered_segments: list[dict[str, object]] = []
+        recovery_metadata: dict[str, object] = {"enabled": False}
+        if bool(request.get("vad_filter", True)) and duration:
+            progress(90, "Đang kiểm tra các vùng có khả năng thiếu lời thoại…")
+            sampling_rate = int(model.feature_extractor.sampling_rate)
+            audio = decode_audio(str(request["input_audio"]), sampling_rate=sampling_rate)
+            speech_chunks = get_speech_timestamps(
+                audio,
+                VadOptions(),
+                sampling_rate=sampling_rate,
+            )
+            recovered_segments, recovery_metadata = _recover_missing_segments(
+                model=model,
+                audio=audio,
+                sampling_rate=sampling_rate,
+                language=request.get("language") or None,
+                duration=duration,
+                main_segments=segments,
+                speech_chunks=speech_chunks,
+            )
         progress(98, "Đang hoàn thiện transcript…")
         emit(
             {
                 "type": "result",
                 "segments": segments,
+                "recovered_segments": recovered_segments,
+                "asr_recovery": recovery_metadata,
                 "language": str(info.language or ""),
                 "language_probability": (
                     float(info.language_probability)

@@ -57,6 +57,9 @@ def execute(
         f"Đã ghép {result['segment_count']} segment voice · WAV mono 48 kHz · "
         f"{float(result['duration_seconds']):.2f}s"
     )
+    overlap_count = int(result.get("overlap_count", 0))
+    if overlap_count:
+        summary += f" · đã trộn {overlap_count} segment giao nhau"
     build_candidate = BuildAudioCandidate(
         id=candidate_id,
         label=f"Voice track · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",

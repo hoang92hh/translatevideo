@@ -74,7 +74,6 @@ class AudioTimelineService:
         )
 
         timeline: list[dict[str, Any]] = []
-        previous_end = 0.0
         for item in segments:
             source_start = float(item.get("start", 0.0))
             source_end = float(item.get("end", source_start))
@@ -96,20 +95,16 @@ class AudioTimelineService:
                     f"Segment #{int(item.get('id', 0)):04d} không có play_duration hợp lệ.",
                 )
             end = start + duration
-            if start < previous_end - 0.002:
-                raise AudioTimelineError(
-                    "Timeline bị chồng voice",
-                    f"Segment #{int(item.get('id', 0)):04d} bắt đầu tại {start:.3f}s trước khi segment trước kết thúc tại {previous_end:.3f}s.",
-                    "Chạy lại Step 5 để cân timeline.",
-                )
             timeline.append({"id": int(item.get("id", 0)), "audio": audio, "start": start, "duration": duration, "end": end})
-            previous_end = end
 
         if not timeline:
             raise AudioTimelineError(
                 "Timeline trống",
                 "Step 6 không còn segment có thời lượng lớn hơn 0 để ghép.",
             )
+
+        timeline.sort(key=lambda value: (float(value["start"]), int(value["id"])))
+        overlap_stats = self._overlap_stats(timeline)
 
         timeline_end = max(float(item["end"]) for item in timeline)
         if timeline_end > video_duration + 0.002:
@@ -208,6 +203,7 @@ class AudioTimelineService:
             "video_duration_seconds": video_duration,
             "source_video_duration_seconds": source_video_duration,
             "batch_size": self.BATCH_SIZE,
+            **overlap_stats,
         }
 
     def _base_command(self) -> list[str]:
@@ -267,9 +263,48 @@ class AudioTimelineService:
         filters.append(
             "".join(labels)
             + f"amix=inputs={len(labels)}:duration=longest:normalize=0,"
+            "alimiter=limit=0.95:level=0:latency=1,"
             f"aresample={sample_rate},apad,atrim=duration={output_duration:.6f}[out]"
         )
         return ";".join(filters)
+
+    @staticmethod
+    def _overlap_stats(timeline: list[dict[str, Any]]) -> dict[str, Any]:
+        tolerance = 0.002
+        active: list[dict[str, Any]] = []
+        overlap_intervals: list[tuple[float, float]] = []
+        overlap_segment_ids: set[int] = set()
+        overlap_count = 0
+        max_overlap_seconds = 0.0
+
+        for item in timeline:
+            start = float(item["start"])
+            end = float(item["end"])
+            active = [value for value in active if float(value["end"]) > start + tolerance]
+            if active:
+                overlap_end = min(end, max(float(value["end"]) for value in active))
+                overlap_duration = max(0.0, overlap_end - start)
+                if overlap_duration > tolerance:
+                    overlap_count += 1
+                    max_overlap_seconds = max(max_overlap_seconds, overlap_duration)
+                    overlap_intervals.append((start, overlap_end))
+                    overlap_segment_ids.add(int(item["id"]))
+                    overlap_segment_ids.update(int(value["id"]) for value in active)
+            active.append(item)
+
+        merged_intervals: list[list[float]] = []
+        for start, end in overlap_intervals:
+            if not merged_intervals or start > merged_intervals[-1][1] + tolerance:
+                merged_intervals.append([start, end])
+            else:
+                merged_intervals[-1][1] = max(merged_intervals[-1][1], end)
+
+        return {
+            "overlap_count": overlap_count,
+            "overlap_region_count": len(merged_intervals),
+            "max_overlap_seconds": round(max_overlap_seconds, 6),
+            "overlap_segment_ids": sorted(overlap_segment_ids),
+        }
 
     def _audio_command(
         self,

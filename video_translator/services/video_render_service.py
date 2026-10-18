@@ -74,17 +74,81 @@ class VideoRenderService:
                 )
 
         edits.sort(key=lambda item: (float(item["source_start"]), float(item["source_end"])))
-        previous_end = 0.0
+        return VideoRenderService._merge_overlapping_timing_edits(edits)
+
+    @staticmethod
+    def _merge_overlapping_timing_edits(
+        edits: list[dict[str, float | str]],
+    ) -> list[dict[str, float | str]]:
+        if not edits:
+            return []
+
+        tolerance = 0.002
+        merged: list[dict[str, float | str]] = []
+        group: list[dict[str, float | str]] = []
+        group_end = 0.0
+
+        def finish_group() -> None:
+            if not group:
+                return
+            if len(group) == 1:
+                merged.append(dict(group[0]))
+                return
+
+            source_start = min(float(item["source_start"]) for item in group)
+            source_end = max(float(item["source_end"]) for item in group)
+            source_duration = max(0.001, source_end - source_start)
+            freeze_duration = sum(float(item["freeze_duration"]) for item in group)
+            slow_duration = sum(
+                max(
+                    0.0,
+                    float(item["extension_duration"])
+                    - float(item["freeze_duration"]),
+                )
+                for item in group
+            )
+
+            minimum_speed = 0.25
+            maximum_slow_duration = source_duration / minimum_speed - source_duration
+            applied_slow_duration = min(slow_duration, maximum_slow_duration)
+            freeze_duration += max(0.0, slow_duration - applied_slow_duration)
+            video_speed = (
+                source_duration / (source_duration + applied_slow_duration)
+                if applied_slow_duration > tolerance
+                else 1.0
+            )
+            has_slow_motion = applied_slow_duration > tolerance
+            has_freeze_frame = freeze_duration > tolerance
+            strategy = (
+                "hybrid"
+                if has_slow_motion and has_freeze_frame
+                else "slow_motion"
+                if has_slow_motion
+                else "freeze_frame"
+            )
+            merged.append(
+                {
+                    "source_start": source_start,
+                    "source_end": source_end,
+                    "video_speed": max(minimum_speed, min(1.0, video_speed)),
+                    "freeze_duration": freeze_duration,
+                    "extension_duration": slow_duration + sum(
+                        float(item["freeze_duration"]) for item in group
+                    ),
+                    "strategy": strategy,
+                }
+            )
+
         for edit in edits:
             start = float(edit["source_start"])
-            if start < previous_end - 0.002:
-                raise VideoRenderError(
-                    "Kế hoạch kéo dài video bị chồng lấn",
-                    f"Hai vùng chỉnh hình ảnh giao nhau tại {start:.3f}s.",
-                    "Chạy lại Step 5 để tạo timeline mới.",
-                )
-            previous_end = float(edit["source_end"])
-        return edits
+            end = float(edit["source_end"])
+            if group and start >= group_end - tolerance:
+                finish_group()
+                group = []
+            group.append(edit)
+            group_end = max(group_end if len(group) > 1 else end, end)
+        finish_group()
+        return merged
 
     @staticmethod
     def _atempo_filters(speed: float) -> list[str]:

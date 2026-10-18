@@ -85,6 +85,7 @@ def execute(
             "min_words": SPEAKER_CHANGE_MIN_WORDS,
         },
         "duration_seconds": transcription.duration_seconds,
+        "asr_recovery": transcription.asr_recovery or {"enabled": False},
         "segments": [
             {
                 "id": segment.id,
@@ -120,6 +121,9 @@ def execute(
         f"{len({segment.speaker_id for segment in segments if segment.speaker_id})} speaker · "
         f"{model_name} · {transcription.actual_device}"
     )
+    recovered_count = int((transcription.asr_recovery or {}).get("accepted_segment_count", 0))
+    if recovered_count:
+        summary += f" · phục hồi {recovered_count} segment"
     metadata = {
         **settings,
         "language": transcription.language,
@@ -129,6 +133,7 @@ def execute(
         "compute_type": transcription.compute_type,
         "device_selection_reason": transcription.device_selection_reason,
         "duration_seconds": transcription.duration_seconds,
+        "asr_recovery": transcription.asr_recovery or {"enabled": False},
         "diarization": bool(settings.get("diarization", False)),
         "merge_adjacent_segments": bool(settings.get("merge_adjacent_segments", False)),
         "diarization_model": transcription.diarization_model,

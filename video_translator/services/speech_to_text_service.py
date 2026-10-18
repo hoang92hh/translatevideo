@@ -44,6 +44,7 @@ class Transcription:
     diarization_model: str = ""
     diarization_device: str = ""
     diarization_turns: tuple[dict[str, object], ...] = ()
+    asr_recovery: dict[str, object] | None = None
 
 
 class SpeechToTextService:
@@ -115,6 +116,18 @@ class SpeechToTextService:
                 }
                 for item in raw_segments
             ]
+            raw_recovered = result.get("recovered_segments", [])
+            if not isinstance(raw_recovered, list):
+                raw_recovered = []
+            normalized_recovered = [
+                {
+                    "start": float(item["start"]),
+                    "end": float(item["end"]),
+                    "text": str(item["text"]).strip(),
+                    "words": list(item.get("words", [])),
+                }
+                for item in raw_recovered
+            ]
         except (KeyError, TypeError, ValueError) as exc:
             raise SpeechToTextError(
                 "Kết quả Faster Whisper không hợp lệ",
@@ -179,6 +192,19 @@ class SpeechToTextService:
                 turns,
                 merge_adjacent_segments=self.merge_adjacent_segments,
             )
+            recovered_segments = self._segments_with_speakers(
+                normalized_recovered,
+                turns,
+                merge_adjacent_segments=self.merge_adjacent_segments,
+                source_id_offset=max(
+                    (
+                        int(part.get("source_id", 0))
+                        for segment in segments
+                        for part in segment.merge_parts
+                    ),
+                    default=0,
+                ),
+            )
             diarization_model = str(diarization_result.get("model", ""))
             diarization_device = str(diarization_result.get("actual_device", ""))
             diarization_turns = tuple(dict(turn) for turn in turns)
@@ -191,6 +217,19 @@ class SpeechToTextService:
                 )
                 for item in normalized
             ]
+            recovered_segments = [
+                TranscriptSegment(
+                    start=float(item["start"]),
+                    end=float(item["end"]),
+                    text=str(item["text"]),
+                )
+                for item in normalized_recovered
+            ]
+
+        segments = sorted(
+            [*segments, *recovered_segments],
+            key=lambda item: (item.start, item.end),
+        )
 
         probability = result.get("language_probability")
         duration = result.get("duration_seconds")
@@ -206,6 +245,11 @@ class SpeechToTextService:
             diarization_model=diarization_model,
             diarization_device=diarization_device,
             diarization_turns=diarization_turns,
+            asr_recovery=(
+                dict(result.get("asr_recovery", {}))
+                if isinstance(result.get("asr_recovery"), dict)
+                else {"enabled": False}
+            ),
         )
 
     @staticmethod
@@ -364,6 +408,7 @@ class SpeechToTextService:
         raw_segments: list[dict[str, object]],
         turns: list[dict[str, object]],
         merge_adjacent_segments: bool = False,
+        source_id_offset: int = 0,
     ) -> list[TranscriptSegment]:
         word_units: list[dict[str, object]] = []
         for raw_index, raw in enumerate(raw_segments):
@@ -433,7 +478,7 @@ class SpeechToTextService:
             atomic.append(current)
 
         merged: list[dict[str, object]] = []
-        for source_id, item in enumerate(atomic, start=1):
+        for source_id, item in enumerate(atomic, start=source_id_offset + 1):
             start = round(float(item["start"]), 3)
             end = round(float(item["end"]), 3)
             part = {

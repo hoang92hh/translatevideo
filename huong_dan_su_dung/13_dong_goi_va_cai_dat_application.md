@@ -83,4 +83,5 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_application.ps1 `
 ```
 
 Speaker diarization vẫn được giữ để Step 3 nhận biết người nói và dịch cách
-xưng hô chính xác. Step 4 chỉ sử dụng một cấu hình TTS chung cho mọi speaker.
+xưng hô chính xác. Với VieNeu và Melo/OpenVoice, Step 4 hỗ trợ bốn cấu hình
+giọng tham chiếu cho `SPEAKER_00`–`SPEAKER_03` hoặc một giọng dùng chung.

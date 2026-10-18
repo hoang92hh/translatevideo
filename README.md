@@ -9,9 +9,10 @@ Dự án có bộ build portable với `TransLanguage.exe` và
 `environment`; model, reference, extension và project nằm trong các thư mục
 độc lập. Xem [hướng dẫn đóng gói và cài đặt](huong_dan_su_dung/13_dong_goi_va_cai_dat_application.md).
 
-Speaker diarization vẫn được dùng để giữ `SPEAKER_00`, `SPEAKER_01`… cho phân
-tích ngữ cảnh và xưng hô ở Step 3. Step 4 sử dụng một cấu hình giọng đọc chung
-cho toàn bộ speaker.
+Speaker diarization được bật mặc định để giữ `SPEAKER_00`, `SPEAKER_01`… cho
+phân tích ngữ cảnh và xưng hô ở Step 3. Với VieNeu và Melo/OpenVoice, Step 4
+hỗ trợ bốn cấu hình giọng tham chiếu cho `SPEAKER_00`–`SPEAKER_03` hoặc một
+giọng dùng chung cho cả bốn.
 
 ## Chạy ứng dụng
 
@@ -139,7 +140,7 @@ hiển thị và tạo một MP4 mới trong `output/merged/` hoặc vị trí d
 - Faster Whisper hỗ trợ `small`, `medium`, `large-v3`, VAD và ba chế độ `Auto`, `CPU`, `GPU`. Model được lưu tại cache riêng của TransLanguage trong `%LOCALAPPDATA%`.
 - Profile CUDA khóa cuBLAS `12.6.4.1` và cuDNN `9.6.0.74` để tiếp tục hỗ trợ GPU Pascal như GTX 1060.
 - Lỗi provider được hiển thị theo nhóm nguyên nhân, kèm hướng xử lý và phần chi tiết kỹ thuật có thể mở rộng.
-- Step 4 tách từng TTS thành component riêng, chọn bằng các nút dạng tab con và có thể đặt một provider làm mặc định cho các lần mở ứng dụng sau. Các provider gồm VieNeu-TTS local cho tiếng Việt, Piper TTS local CPU/ONNX, MeloTTS + OpenVoice V2 local cho English/Spanish/Chinese/Japanese/Korean và Edge TTS online. `SPEAKER_00`, `SPEAKER_01`, `SPEAKER_02` có cấu hình giọng/model riêng; mọi speaker còn lại dùng chung một cấu hình. VieNeu và Melo/OpenVoice dùng audio tham chiếu; Piper dùng cặp voice model `.onnx` + `.onnx.json`, hỗ trợ `speaker_id` của model đa giọng và các tham số `SynthesisConfig` native; Edge dùng voice preset. Ánh xạ này được giữ khi Step 5 tạo lại voice. Mỗi lần chạy thành công tạo một candidate riêng trong `generated_audio/`; candidate mới nhất tự động là input Step 5, còn lỗi không thay đổi input trước đó.
+- Step 4 hỗ trợ VieNeu-TTS local cho tiếng Việt, Piper TTS local CPU/ONNX, MeloTTS + OpenVoice V2 local cho English/Spanish/Chinese/Japanese/Korean và Edge TTS online. Với VieNeu và Melo/OpenVoice, `SPEAKER_00`–`SPEAKER_03` có cấu hình giọng tham chiếu riêng; checkbox **Dùng cùng một giọng cho SPEAKER_00–03** cho phép dùng cấu hình `SPEAKER_00` cho cả bốn. `SPEAKER_04` trở lên và `SPEAKER_UNKNOWN` dùng cấu hình `SPEAKER_03` làm fallback. Piper dùng cặp voice model `.onnx` + `.onnx.json`; Edge dùng voice preset. Ánh xạ được giữ khi Step 5 tạo lại voice. Mỗi lần chạy thành công tạo một candidate riêng trong `generated_audio/`; candidate mới nhất tự động là input Step 5, còn lỗi không thay đổi input trước đó.
 - `Auto` ở provider local chọn GPU khi runtime CUDA của chính provider khả dụng, nếu không chọn CPU. `CPU` và `GPU` tuân thủ đúng lựa chọn; chế độ `GPU` báo lỗi thay vì fallback CPU.
 - XTTS-v2 chỉ nằm trong danh sách dưới dạng chưa triển khai và có ghi chú chỉ phi thương mại theo Coqui Public Model License.
 - Step 5 cắt khoảng lặng thừa, tận dụng khoảng trống trước segment kế tiếp, tăng tốc trong giới hạn người dùng chọn và chèn khoảng lặng khi audio ngắn hơn timestamp gốc. Trong **Thiết lập project → Step 05**, tùy chọn **Auto Extend Video to Match TTS** có thể lập kế hoạch kéo dài cục bộ bằng `Freeze Frame`, `Slow Motion` hoặc `Hybrid`; chỉ đoạn có voice vượt khung bị biến đổi, còn các đoạn sau chỉ được dịch timestamp. Mỗi lần chạy tạo candidate riêng trong `synchronized_audio/`.

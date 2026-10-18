@@ -7,12 +7,18 @@ MINOR_MALE_PROFILE = "__minor_male__"
 MINOR_FEMALE_PROFILE = "__minor_female__"
 MINOR_UNKNOWN_PROFILE = "__minor_unknown__"
 LEGACY_SHARED_PROFILE = "__shared__"
+REFERENCE_SPEAKERS = (
+    "SPEAKER_00",
+    "SPEAKER_01",
+    "SPEAKER_02",
+    "SPEAKER_03",
+)
 
 GROUP_LABELS = {
     MINOR_MALE_PROFILE: "Nhân vật phụ — Nam",
     MINOR_FEMALE_PROFILE: "Nhân vật phụ — Nữ",
     MINOR_UNKNOWN_PROFILE: "Nhân vật phụ — Chưa xác định",
-    LEGACY_SHARED_PROFILE: "SPEAKER_03 trở đi / khác",
+    LEGACY_SHARED_PROFILE: "SPEAKER_04 trở đi / khác",
 }
 
 
@@ -35,7 +41,7 @@ def speaker_profile_assignments(
         for speaker_id in speakers:
             assignments[speaker_id] = (
                 speaker_id
-                if speaker_id in {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"}
+                if speaker_id in REFERENCE_SPEAKERS
                 else LEGACY_SHARED_PROFILE
             )
             profiles[speaker_id] = by_id.get(speaker_id, {})
@@ -77,7 +83,11 @@ def resolve_speaker_profile(settings: dict[str, Any], speaker_id: str) -> dict[s
     )
     if not isinstance(raw_profile, dict):
         raw_profile = {}
-    if not raw_profile and speaker_id not in {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"}:
+    if not raw_profile and speaker_id not in REFERENCE_SPEAKERS:
+        fallback = profiles.get("SPEAKER_03", {})
+        if isinstance(fallback, dict):
+            raw_profile = fallback
+    if not raw_profile:
         shared = settings.get("shared_speaker_profile", {})
         if isinstance(shared, dict):
             raw_profile = shared

@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 from ..batch_project import BatchProject, BatchProjectService
 from ..config.gemini import GEMINI_PROVIDER_NAME
 from ..config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
+from ..config.speaker_profiles import REFERENCE_SPEAKERS
 from ..config.tts import (
     EDGE_TTS_PROVIDER,
     EDGE_VOICES,
@@ -80,20 +81,20 @@ def _scroll_page(title: str, description: str, content: QWidget) -> QWidget:
     return page
 
 
-class SingleVoiceTtsSettings(QWidget):
+class SpeakerVoiceTtsSettings(QWidget):
     def __init__(self) -> None:
         super().__init__()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         card = Card(
-            "Một giọng chung",
-            "Mọi speaker và mọi video trong project sử dụng cùng một cấu hình giọng đọc.",
+            "Giọng đọc theo speaker",
+            "Cấu hình giọng tham chiếu cho SPEAKER_00 đến SPEAKER_03.",
         )
         self.provider = QComboBox()
         self.provider.addItems((VIENEU_PROVIDER, PIPER_PROVIDER, MELO_OPENVOICE_PROVIDER, EDGE_TTS_PROVIDER))
         card.content_layout.addWidget(self.provider)
         self.stack = QStackedWidget()
-        self.reference_pages: dict[str, dict[str, QWidget]] = {}
+        self.reference_pages: dict[str, dict[str, Any]] = {}
         self._add_reference_page(VIENEU_PROVIDER, VIENEU_VOICES, "Giọng")
         self._add_piper_page()
         self._add_reference_page(MELO_OPENVOICE_PROVIDER, MELO_SPEAKERS, "Giọng nền")
@@ -105,26 +106,62 @@ class SingleVoiceTtsSettings(QWidget):
     def _add_reference_page(self, provider: str, voices: tuple[str, ...], label: str) -> None:
         page = QWidget()
         form = QFormLayout(page)
-        voice = QComboBox()
-        voice.addItems(voices)
         speed = speed_control()
         device = device_control()
-        reference = FilePicker()
         consent = QCheckBox("Tôi có quyền sử dụng giọng tham chiếu")
         consent.setChecked(True)
-        form.addRow(label, voice)
         form.addRow("Tốc độ", speed)
         form.addRow("Thiết bị", device)
-        form.addRow("File giọng tham chiếu", reference)
         form.addRow("Quyền sử dụng", consent)
-        self.reference_pages[provider] = {
-            "voice": voice,
+        same_reference = QCheckBox("Dùng cùng một giọng cho SPEAKER_00–03")
+        same_reference.setChecked(False)
+        form.addRow("Ánh xạ speaker", same_reference)
+        profiles: dict[str, tuple[QComboBox, FilePicker]] = {}
+        for speaker_id in REFERENCE_SPEAKERS:
+            voice = QComboBox()
+            voice.addItems(voices)
+            reference = FilePicker()
+            profiles[speaker_id] = (voice, reference)
+            form.addRow(f"{speaker_id} — {label}", voice)
+            form.addRow(f"{speaker_id} — file tham chiếu", reference)
+        controls: dict[str, Any] = {
             "speed": speed,
             "device": device,
-            "reference": reference,
             "consent": consent,
+            "same_reference": same_reference,
+            "profiles": profiles,
         }
+        self.reference_pages[provider] = controls
+        same_reference.toggled.connect(
+            lambda checked, target=controls: self._set_same_reference(target, checked)
+        )
+        source_voice, source_reference = profiles["SPEAKER_00"]
+        source_voice.currentTextChanged.connect(
+            lambda _value, target=controls: self._sync_reference_profiles(target)
+        )
+        source_reference.field.textChanged.connect(
+            lambda _value, target=controls: self._sync_reference_profiles(target)
+        )
         self.stack.addWidget(page)
+
+    @staticmethod
+    def _sync_reference_profiles(controls: dict[str, Any]) -> None:
+        if not controls["same_reference"].isChecked():
+            return
+        profiles = controls["profiles"]
+        source_voice, source_reference = profiles["SPEAKER_00"]
+        for speaker_id in REFERENCE_SPEAKERS[1:]:
+            voice, reference = profiles[speaker_id]
+            voice.setCurrentText(source_voice.currentText())
+            reference.field.setText(source_reference.value())
+
+    def _set_same_reference(self, controls: dict[str, Any], checked: bool) -> None:
+        if checked:
+            self._sync_reference_profiles(controls)
+        for speaker_id in REFERENCE_SPEAKERS[1:]:
+            voice, reference = controls["profiles"][speaker_id]
+            voice.setDisabled(checked)
+            reference.setDisabled(checked)
 
     def _add_piper_page(self) -> None:
         page = QWidget()
@@ -168,17 +205,32 @@ class SingleVoiceTtsSettings(QWidget):
         }
         if provider in self.reference_pages:
             controls = self.reference_pages[provider]
-            voice = controls["voice"].currentText()
-            reference = controls["reference"].value()
-            profile = {"voice": voice, "reference_voice": reference}
+            same_reference = controls["same_reference"].isChecked()
+            source_voice, source_reference = controls["profiles"]["SPEAKER_00"]
+            profiles: dict[str, dict[str, Any]] = {}
+            for speaker_id in REFERENCE_SPEAKERS:
+                voice_control, reference_control = controls["profiles"][speaker_id]
+                if same_reference:
+                    voice_control, reference_control = source_voice, source_reference
+                profiles[speaker_id] = {
+                    "voice": voice_control.currentText(),
+                    "reference_voice": reference_control.value(),
+                }
+            voice = profiles["SPEAKER_00"]["voice"]
+            reference = profiles["SPEAKER_00"]["reference_voice"]
             return {
                 **base,
+                "single_voice": same_reference,
                 "voice": voice,
                 "speed": controls["speed"].value(),
                 "device": controls["device"].currentText(),
                 "reference_voice": reference,
                 "voice_consent": controls["consent"].isChecked(),
-                "shared_speaker_profile": profile,
+                "speaker_profiles": profiles,
+                "speaker_profile_assignments": {
+                    speaker_id: speaker_id for speaker_id in REFERENCE_SPEAKERS
+                },
+                "shared_speaker_profile": profiles["SPEAKER_03"],
             }
         if provider == PIPER_PROVIDER:
             model = self.piper_model.value()
@@ -216,13 +268,48 @@ class SingleVoiceTtsSettings(QWidget):
         profile = profile if isinstance(profile, dict) else {}
         if provider in self.reference_pages:
             controls = self.reference_pages[provider]
-            controls["voice"].setCurrentText(str(values.get("voice", profile.get("voice", ""))))
             controls["speed"].setValue(float(values.get("speed", 1.0)))
             controls["device"].setCurrentText(str(values.get("device", "Auto")))
-            controls["reference"].field.setText(
-                str(values.get("reference_voice", profile.get("reference_voice", "")))
-            )
             controls["consent"].setChecked(bool(values.get("voice_consent", True)))
+            raw_profiles = values.get("speaker_profiles", {})
+            saved_profiles = raw_profiles if isinstance(raw_profiles, dict) else {}
+            has_saved_voice_config = any(
+                key in values
+                for key in (
+                    "single_voice",
+                    "speaker_profiles",
+                    "shared_speaker_profile",
+                    "reference_voice",
+                    "voice",
+                )
+            )
+            same_reference = (
+                bool(values.get("single_voice", True))
+                if has_saved_voice_config
+                else False
+            )
+            legacy_profile = {
+                "voice": str(values.get("voice", profile.get("voice", ""))),
+                "reference_voice": str(
+                    values.get("reference_voice", profile.get("reference_voice", ""))
+                ),
+            }
+            for speaker_id in REFERENCE_SPEAKERS:
+                saved = saved_profiles.get(speaker_id, {})
+                if not isinstance(saved, dict) or not saved:
+                    if same_reference:
+                        saved = legacy_profile
+                    elif speaker_id == "SPEAKER_03" and profile:
+                        saved = profile
+                    else:
+                        saved = {}
+                voice, reference = controls["profiles"][speaker_id]
+                saved_voice = str(saved.get("voice", ""))
+                if saved_voice:
+                    voice.setCurrentText(saved_voice)
+                reference.field.setText(str(saved.get("reference_voice", "")))
+            controls["same_reference"].setChecked(same_reference)
+            self._set_same_reference(controls, same_reference)
         elif provider == PIPER_PROVIDER:
             self.piper_model.field.setText(str(values.get("model_path", profile.get("model_path", ""))))
             self.piper_speaker.setValue(int(profile.get("piper_speaker_id", 0) or 0))
@@ -423,10 +510,14 @@ class ProjectSettingsDialog(QDialog):
         )
 
     def _build_tts_page(self) -> None:
-        self.tts = SingleVoiceTtsSettings()
+        self.tts = SpeakerVoiceTtsSettings()
         self._add_section(
             "Step 04",
-            _scroll_page("Step 04 — Text to Speech", "Một giọng duy nhất cho mọi speaker.", self.tts),
+            _scroll_page(
+                "Step 04 — Text to Speech",
+                "Bốn giọng tham chiếu cho SPEAKER_00–03 hoặc một giọng dùng chung.",
+                self.tts,
+            ),
         )
 
     def _build_render_page(self) -> None:

@@ -30,7 +30,7 @@ class SpeechToTextStepPage(StepPage):
                 FieldSpec("model", "Model", "choice", "medium", ("small", "medium", "large-v3")),
                 DEVICE_FIELD,
                 FieldSpec("vad", "Voice activity detection", "bool", True),
-                FieldSpec("diarization", "Speaker diarization", "bool", False),
+                FieldSpec("diarization", "Speaker diarization", "bool", True),
                 FieldSpec(
                     "merge_adjacent_segments",
                     "Gộp segment liền kề cùng speaker",

@@ -4,11 +4,13 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from .paths import ensure_application_directories
 from .services.web_bridge_service import web_bridge_service
 from .ui import MainWindow, apply_application_style
 
 
 def main() -> int:
+    ensure_application_directories()
     app = QApplication(sys.argv)
     app.setApplicationName("TransLanguage")
     app.setOrganizationName("TransLanguage")

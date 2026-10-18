@@ -43,6 +43,7 @@ from ..config.tts import (
     VIENEU_VOICES,
 )
 from ..models import StepId
+from ..paths import projects_root
 from .components import Card, FilePicker, ProviderPanel
 from .steps.audio_sync import AudioSyncStepPage
 from .steps.build_audio import BuildAudioStepPage
@@ -372,7 +373,7 @@ class ProjectSettingsDialog(QDialog):
         self.choose_input_button = QPushButton("Chọn thư mục")
         self.choose_input_button.clicked.connect(self._choose_input_folder)
         input_layout.addWidget(self.choose_input_button)
-        self.location = QLineEdit(str(Path.cwd() / "projects"))
+        self.location = QLineEdit(str(projects_root()))
         location_row = QWidget()
         location_layout = QHBoxLayout(location_row)
         location_layout.setContentsMargins(0, 0, 0, 0)

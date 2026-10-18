@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..batch_project import PROJECT_FILE, BatchProjectService
+from ..paths import projects_root
 from .components import Card
 from .project_settings_dialog import ProjectSettingsDialog
 
@@ -57,7 +58,7 @@ class NewProjectDialog(QDialog):
         self.input_folder.setPlaceholderText("Chọn thư mục chứa video")
         form.addRow("Thư mục input", self._path_row(self.input_folder, self._choose_input_folder, "Chọn thư mục"))
 
-        self.location = QLineEdit(str(Path.cwd() / "projects"))
+        self.location = QLineEdit(str(projects_root()))
         form.addRow("Lưu project tại", self._path_row(self.location, self._choose_location, "Chọn thư mục"))
 
         self.source_language = QComboBox()

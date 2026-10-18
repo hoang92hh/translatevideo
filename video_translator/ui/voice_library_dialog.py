@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..services.ffmpeg_service import FFmpegError, FFmpegService
+from ..paths import reference_root
 
 
 class VoiceLibraryDialog(QDialog):
@@ -158,7 +159,7 @@ class VoiceLibraryDialog(QDialog):
         actions.addWidget(close_button)
         root.addLayout(actions)
 
-        default_folder = Path(__file__).resolve().parents[2] / "reference" / "sample"
+        default_folder = reference_root() / "voice"
         saved_folder = str(self.settings.value(self.SETTINGS_FOLDER_KEY, "") or "").strip()
         self._set_folder(Path(saved_folder) if saved_folder else default_folder)
         self._refresh_microphones()

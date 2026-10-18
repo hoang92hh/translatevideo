@@ -11,6 +11,7 @@ from typing import Callable
 
 from ..config.diarization import configured_model_path, missing_model_files
 from ..errors import UserFacingError
+from ..paths import models_root
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -66,9 +67,7 @@ class SpeechToTextService:
 
     @staticmethod
     def model_cache_dir() -> Path:
-        base = os.environ.get("LOCALAPPDATA")
-        root = Path(base) if base else Path.home() / ".cache"
-        path = root / "TransLanguage" / "faster-whisper-models"
+        path = models_root() / "faster-whisper"
         path.mkdir(parents=True, exist_ok=True)
         return path
 

@@ -5,6 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
+from ..paths import models_root
+
 
 DIARIZATION_MODEL_NAME = "pyannote-speaker-diarization-community-1"
 DIARIZATION_MODEL_ENV = "TRANSLANGUAGE_DIARIZATION_MODEL"
@@ -19,7 +21,7 @@ REQUIRED_MODEL_FILES = (
 
 
 def bundled_model_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "models" / DIARIZATION_MODEL_NAME
+    return models_root() / DIARIZATION_MODEL_NAME
 
 
 def configured_model_path() -> Path:

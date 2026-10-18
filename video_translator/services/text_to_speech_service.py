@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from ..config.tts import MELO_OPENVOICE_PROVIDER, PIPER_PROVIDER
 from ..errors import UserFacingError
+from ..paths import code_root, runtime_python
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -255,7 +256,7 @@ class TextToSpeechService:
 
     @staticmethod
     def _repo_root() -> Path:
-        return Path(__file__).resolve().parents[2]
+        return code_root()
 
     def _python_executable(self) -> Path:
         if self.provider == MELO_OPENVOICE_PROVIDER:
@@ -273,6 +274,7 @@ class TextToSpeechService:
         configured = str(os.environ.get(environment_name, "")).strip()
         candidates = [
             Path(configured) if configured else Path("__missing__"),
+            runtime_python(runtime_name),
             self._repo_root() / ".runtimes" / runtime_name / "Scripts" / "python.exe",
             self._repo_root() / ".runtimes" / runtime_name / "bin" / "python",
         ]

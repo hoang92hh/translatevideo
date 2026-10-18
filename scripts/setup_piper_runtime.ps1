@@ -1,10 +1,13 @@
 param(
-    [string]$PythonVersion = "3.13"
+    [string]$PythonVersion = "3.13",
+    [string]$ApplicationRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$runtimeRoot = Join-Path $repoRoot ".runtimes\piper"
+if (-not $ApplicationRoot) { $ApplicationRoot = $repoRoot }
+$ApplicationRoot = [System.IO.Path]::GetFullPath($ApplicationRoot)
+$runtimeRoot = Join-Path $ApplicationRoot "environment\piper"
 $pythonExe = Join-Path $runtimeRoot "Scripts\python.exe"
 
 if (-not (Get-Command py -ErrorAction SilentlyContinue)) {

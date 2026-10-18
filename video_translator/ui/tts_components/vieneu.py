@@ -9,7 +9,7 @@ class VieNeuTtsComponent(ReferenceTtsComponentBase):
         super().__init__(
             VIENEU_PROVIDER,
             "VieNeu-TTS",
-            "TTS tiếng Việt local; hỗ trợ preset hoặc audio tham chiếu theo speaker.",
+            "TTS tiếng Việt local; một preset hoặc audio tham chiếu dùng chung cho toàn bộ video.",
             PROVIDER_LICENSE_NOTES[VIENEU_PROVIDER],
             VIENEU_VOICES,
             "Default",

@@ -9,7 +9,7 @@ class MeloOpenVoiceTtsComponent(ReferenceTtsComponentBase):
         super().__init__(
             MELO_OPENVOICE_PROVIDER,
             "MeloTTS + OpenVoice V2",
-            "MeloTTS tạo giọng nền, OpenVoice chuyển màu giọng từ audio tham chiếu.",
+            "MeloTTS tạo giọng nền và OpenVoice áp dụng một màu giọng chung cho toàn bộ video.",
             PROVIDER_LICENSE_NOTES[MELO_OPENVOICE_PROVIDER],
             MELO_SPEAKERS,
             "EN-Default",

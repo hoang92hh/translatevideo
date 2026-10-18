@@ -267,7 +267,12 @@ def run_melo(settings: dict[str, Any], segments: list[dict[str, Any]], output: P
         from openvoice import se_extractor
         from openvoice.api import ToneColorConverter
 
-        checkpoint_root = Path(os.environ.get("TRANSLANGUAGE_OPENVOICE_CHECKPOINTS", repo_root / ".runtimes" / "melo" / "checkpoints_v2"))
+        checkpoint_root = Path(
+            os.environ.get(
+                "TRANSLANGUAGE_OPENVOICE_CHECKPOINTS",
+                Path(os.environ.get("TRANSLANGUAGE_HOME", repo_root)) / "models" / "openvoice" / "checkpoints_v2",
+            )
+        )
         converter_dir = checkpoint_root / "converter"
         converter = ToneColorConverter(str(converter_dir / "config.json"), device=device)
         converter.load_ckpt(str(converter_dir / "checkpoint.pth"))

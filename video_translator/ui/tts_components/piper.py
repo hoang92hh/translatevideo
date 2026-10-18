@@ -78,7 +78,6 @@ class PiperTtsComponent(TtsComponentBase):
     provider_name = PIPER_PROVIDER
 
     def __init__(self) -> None:
-        self._profile_controls: dict[str, tuple[PiperModelPicker, QComboBox]] = {}
         self._native_defaults_loaded = False
         super().__init__(
             "Piper TTS",
@@ -109,37 +108,17 @@ class PiperTtsComponent(TtsComponentBase):
         device.setObjectName("inputValue")
         form.addWidget(QLabel("Thiết bị"), len(controls) + 1, 0)
         form.addWidget(device, len(controls) + 1, 1)
+        self.model = PiperModelPicker()
+        self.model_speaker = QComboBox()
+        self.model_speaker.addItem("Chọn model để tải danh sách giọng", None)
+        self.model.config_loaded.connect(
+            lambda config: self._apply_model_config(config, self.model_speaker, 0)
+        )
+        form.addWidget(QLabel("Voice model Piper (.onnx)"), len(controls) + 2, 0)
+        form.addWidget(self.model, len(controls) + 2, 1)
+        form.addWidget(QLabel("Giọng trong model"), len(controls) + 3, 0)
+        form.addWidget(self.model_speaker, len(controls) + 3, 1)
         self.settings_card.content_layout.addLayout(form)
-
-    def _build_speaker_controls(self) -> None:
-        self._profile_controls = {}
-        if self.show_no_speakers(3):
-            return
-        self.speaker_layout.addWidget(QLabel("Speaker"), 0, 0)
-        self.speaker_layout.addWidget(QLabel("Voice model Piper (.onnx)"), 0, 1)
-        self.speaker_layout.addWidget(QLabel("Giọng trong model"), 0, 2)
-        for row, (key, label_text) in enumerate(self.speaker_rows(), start=1):
-            model = PiperModelPicker()
-            model_speaker = QComboBox()
-            model_speaker.addItem("Chọn model để tải danh sách giọng", None)
-            suggested_speaker_id = {
-                "SPEAKER_00": 0,
-                "SPEAKER_01": 1,
-                "SPEAKER_02": 2,
-                "__shared__": 3,
-                "__minor_male__": 3,
-                "__minor_female__": 4,
-                "__minor_unknown__": 5,
-            }.get(key, 0)
-            model.config_loaded.connect(
-                lambda config, target=model_speaker, suggested=suggested_speaker_id: (
-                    self._apply_model_config(config, target, suggested)
-                )
-            )
-            self.speaker_layout.addWidget(QLabel(label_text), row, 0)
-            self.speaker_layout.addWidget(model, row, 1)
-            self.speaker_layout.addWidget(model_speaker, row, 2)
-            self._profile_controls[key] = (model, model_speaker)
 
     def _apply_model_config(
         self,
@@ -193,18 +172,16 @@ class PiperTtsComponent(TtsComponentBase):
                     pass
 
     def settings(self) -> dict[str, Any]:
-        profiles: dict[str, dict[str, object]] = {}
-        for key, (picker, model_speaker) in self._profile_controls.items():
-            path = picker.value()
-            profile: dict[str, object] = {
-                "voice": path,
-                "model_path": path,
-                "piper_speaker_id": model_speaker.currentData(),
-            }
-            profiles[key] = profile
+        path = self.model.value()
+        profile: dict[str, object] = {
+            "voice": path,
+            "model_path": path,
+            "piper_speaker_id": self.model_speaker.currentData(),
+        }
         return {
             "provider": self.provider_name,
-            "voice": "",
+            "voice": path,
+            "model_path": path,
             "speed": 1.0,
             "device": "CPU",
             "length_scale": self.length_scale.value(),
@@ -212,5 +189,6 @@ class PiperTtsComponent(TtsComponentBase):
             "noise_w_scale": self.noise_w_scale.value(),
             "volume": self.volume.value(),
             "normalize_audio": self.normalize_audio.isChecked(),
-            **self.profile_settings(profiles),
+            "single_voice": True,
+            **self.profile_settings({"__shared__": profile}),
         }

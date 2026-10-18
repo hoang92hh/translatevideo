@@ -2,6 +2,17 @@
 
 Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project và xử lý thật toàn bộ pipeline: chuẩn bị audio ở Step 1, nhận dạng lời nói bằng Faster Whisper ở Step 2, dịch bằng Google Gemini ở Step 3, tạo giọng nói ở Step 4, đồng bộ thời lượng bằng FFmpeg ở Step 5, ghép voice timeline ở Step 6 và render video hoàn chỉnh ở Step 7.
 
+## Bản application Windows
+
+Dự án có bộ build portable với `TransLanguage.exe` và
+`Setup-TransLanguage.exe`. Runtime CPU/CUDA được cài riêng trên từng máy vào
+`environment`; model, reference, extension và project nằm trong các thư mục
+độc lập. Xem [hướng dẫn đóng gói và cài đặt](huong_dan_su_dung/13_dong_goi_va_cai_dat_application.md).
+
+Speaker diarization vẫn được dùng để giữ `SPEAKER_00`, `SPEAKER_01`… cho phân
+tích ngữ cảnh và xưng hô ở Step 3. Step 4 sử dụng một cấu hình giọng đọc chung
+cho toàn bộ speaker.
+
 ## Chạy ứng dụng
 
 Yêu cầu Python 3.11 trở lên.

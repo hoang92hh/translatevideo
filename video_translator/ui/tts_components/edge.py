@@ -12,10 +12,9 @@ class EdgeTtsComponent(TtsComponentBase):
     provider_name = EDGE_TTS_PROVIDER
 
     def __init__(self) -> None:
-        self._profile_controls: dict[str, QComboBox] = {}
         super().__init__(
             "Edge TTS",
-            "TTS online; mỗi speaker chọn một voice preset.",
+            "TTS online; một voice preset dùng chung cho toàn bộ video.",
             PROVIDER_LICENSE_NOTES[EDGE_TTS_PROVIDER],
         )
         form = QGridLayout()
@@ -28,26 +27,12 @@ class EdgeTtsComponent(TtsComponentBase):
         form.addWidget(self.speed, 1, 1)
         self.settings_card.content_layout.addLayout(form)
 
-    def _build_speaker_controls(self) -> None:
-        self._profile_controls = {}
-        if self.show_no_speakers(2):
-            return
-        self.speaker_layout.addWidget(QLabel("Speaker"), 0, 0)
-        self.speaker_layout.addWidget(QLabel("Voice preset"), 0, 1)
-        for row, (key, label_text) in enumerate(self.speaker_rows(), start=1):
-            voice = QComboBox()
-            voice.addItems(EDGE_VOICES)
-            self.speaker_layout.addWidget(QLabel(label_text), row, 0)
-            self.speaker_layout.addWidget(voice, row, 1)
-            self._profile_controls[key] = voice
-
     def settings(self) -> dict[str, Any]:
-        profiles: dict[str, dict[str, str]] = {}
-        for key, voice in self._profile_controls.items():
-            profiles[key] = {"voice": voice.currentText()}
+        voice = self.voice.currentText()
         return {
             "provider": self.provider_name,
-            "voice": self.voice.currentText(),
+            "voice": voice,
             "speed": self.speed.value(),
-            **self.profile_settings(profiles),
+            "single_voice": True,
+            **self.profile_settings({"__shared__": {"voice": voice}}),
         }

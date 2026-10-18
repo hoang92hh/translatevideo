@@ -21,6 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+build = ["pyinstaller>=6,<7"]
 cpu = ["audio-separator[cpu]>=0.47,<1"]
 cuda = [
     "audio-separator[gpu]>=0.47,<1",

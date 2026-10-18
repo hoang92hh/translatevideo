@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from ..paths import bundled_tool
+
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -34,6 +36,9 @@ class FFmpegService:
     def _resolve_executable(configured: str, program: str) -> str:
         value = configured.strip()
         if not value or value.lower() == "auto":
+            bundled = bundled_tool(program)
+            if bundled:
+                return str(bundled)
             discovered = shutil.which(program)
             if discovered:
                 return discovered

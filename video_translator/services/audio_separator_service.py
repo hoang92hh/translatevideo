@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..errors import UserFacingError
+from ..paths import bundled_tool, models_root
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -46,9 +47,7 @@ class AudioSeparatorService:
 
     @staticmethod
     def model_cache_dir() -> Path:
-        base = os.environ.get("LOCALAPPDATA")
-        root = Path(base) if base else Path.home() / ".cache"
-        path = root / "TransLanguage" / "audio-separator-models"
+        path = models_root() / "audio-separator"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -231,7 +230,8 @@ class AudioSeparatorService:
     def _configure_media_tools(self) -> tuple[str, str]:
         configured = self.ffmpeg_path.strip()
         if not configured or configured.lower() == "auto":
-            resolved = shutil.which("ffmpeg")
+            bundled = bundled_tool("ffmpeg")
+            resolved = str(bundled) if bundled else shutil.which("ffmpeg")
             if not resolved:
                 raise AudioSeparationError(
                     "Không tìm thấy FFmpeg",

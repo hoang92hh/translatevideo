@@ -1,0 +1,17 @@
+{
+  "cpu": {
+    "label": "CPU / AMD / Intel GPU",
+    "project_extra": "cpu",
+    "torch_index": "https://download.pytorch.org/whl/cpu",
+    "torch_version": "2.11.0"
+  },
+  "cuda12": {
+    "label": "NVIDIA CUDA 12.6 (Maxwell, Pascal, Turing, Ampere, Ada)",
+    "project_extra": "cuda",
+    "torch_index": "https://download.pytorch.org/whl/cu126",
+    "torch_version": "2.11.0+cu126",
+    "onnxruntime_gpu": "1.20.2",
+    "cublas": "12.6.4.1",
+    "cudnn": "9.6.0.74"
+  }
+}

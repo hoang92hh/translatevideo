@@ -1,15 +1,26 @@
 param(
     [ValidateSet("cpu", "cuda")]
-    [string]$Device = "cuda"
+    [string]$Device = "cuda",
+    [string]$ApplicationRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$runtimeRoot = Join-Path $repoRoot ".runtimes\melo"
+if (-not $ApplicationRoot) { $ApplicationRoot = $repoRoot }
+$ApplicationRoot = [System.IO.Path]::GetFullPath($ApplicationRoot)
+$runtimeRoot = Join-Path $ApplicationRoot "environment\melo"
 $pythonExe = Join-Path $runtimeRoot "Scripts\python.exe"
 
 if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
-    throw "Python Launcher (py.exe) was not found. Install Python 3.9 x64 first."
+    throw "Python Launcher (py.exe) was not found. Run setup_application.ps1 first."
+}
+& py -3.9 --version 2>$null
+if ($LASTEXITCODE -ne 0) {
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw "OpenVoice requires Python 3.9 x64 and Winget is unavailable."
+    }
+    & winget install --exact --id Python.Python.3.9 --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) { throw "Cannot install Python 3.9 for OpenVoice." }
 }
 
 if (-not (Test-Path -LiteralPath $pythonExe)) {
@@ -39,7 +50,7 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to install MeloTTS." }
 & $pythonExe -m unidic download
 if ($LASTEXITCODE -ne 0) { throw "Failed to download UniDic." }
 
-$checkpointFolder = Join-Path $runtimeRoot "checkpoints_v2"
+$checkpointFolder = Join-Path $ApplicationRoot "models\openvoice\checkpoints_v2"
 if (-not (Test-Path -LiteralPath $checkpointFolder)) {
     & $pythonExe -c "from huggingface_hub import snapshot_download; snapshot_download('myshell-ai/OpenVoiceV2', local_dir=r'$checkpointFolder')"
     if ($LASTEXITCODE -ne 0) { throw "Failed to download OpenVoice V2 checkpoints." }

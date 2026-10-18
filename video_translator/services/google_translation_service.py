@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Callable
 
 from pydantic import BaseModel, Field
 
 from ..config.gemini import GEMINI_PROVIDER_NAME, GEMINI_RECOMMENDED_MODEL_IDS
+from ..config.prompt_templates import (
+    DEFAULT_PROMPT_TEMPLATE_ID,
+    render_prompt_template,
+    step3_batch_filenames,
+)
 from ..errors import UserFacingError
 from ..models import Segment
 from .credential_service import GOOGLE_GEMINI, CredentialService
@@ -85,10 +92,49 @@ class TranslationCorrection(BaseModel):
 
 
 class GoogleTranslationService:
-    def __init__(self, model_name: str, source_language: str, target_language: str) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        source_language: str,
+        target_language: str,
+        options: dict[str, object] | None = None,
+    ) -> None:
         self.model_name = model_name
         self.source_language = source_language
         self.target_language = target_language
+        self.prompt_template = str(
+            (options or {}).get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)
+        ).strip() or DEFAULT_PROMPT_TEMPLATE_ID
+
+    def _stage_prompt(
+        self,
+        stage: str,
+        segments: list[Segment],
+        batch_index: int = 1,
+        batch_total: int = 1,
+    ) -> tuple[str, str, str]:
+        first_id = segments[0].id
+        last_id = segments[-1].id
+        input_filename, output_filename = step3_batch_filenames(
+            stage,
+            first_id,
+            last_id,
+        )
+        prompt = render_prompt_template(
+            GEMINI_PROVIDER_NAME,
+            self.prompt_template,
+            stage,
+            source_language=self.source_language,
+            target_language=self.target_language,
+            input_filename=input_filename,
+            output_filename=output_filename,
+            segment_start=f"{first_id:04d}",
+            segment_end=f"{last_id:04d}",
+            segment_count=str(len(segments)),
+            batch_index=str(batch_index),
+            batch_total=str(batch_total),
+        )
+        return prompt, input_filename, output_filename
 
     @staticmethod
     def _client():
@@ -141,29 +187,69 @@ class GoogleTranslationService:
         system_instruction: str,
         response_schema: object,
         temperature: float,
+        input_filename: str,
+        output_filename: str,
     ) -> tuple[object, str]:
         client, credential = self._client()
+        uploaded_file = None
         try:
             from google.genai import types
 
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=json.dumps(content, ensure_ascii=False),
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                    response_schema=response_schema,
-                    temperature=temperature,
-                ),
-            )
-            if response.parsed is None:
-                raise ValueError("Gemini không trả về structured output.")
-            return response.parsed, credential.source
+            with TemporaryDirectory(prefix="translanguage-step3-") as temp_dir:
+                input_path = Path(temp_dir) / input_filename
+                output_path = Path(temp_dir) / output_filename
+                input_path.write_text(
+                    json.dumps(content, ensure_ascii=False, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                uploaded_file = client.files.upload(
+                    file=str(input_path),
+                    config=types.UploadFileConfig(
+                        display_name=input_filename,
+                        mime_type="application/json",
+                    ),
+                )
+                response = client.models.generate_content(
+                    model=self.model_name,
+                    contents=[uploaded_file],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        response_mime_type="application/json",
+                        response_schema=response_schema,
+                        temperature=temperature,
+                    ),
+                )
+                if response.parsed is None:
+                    raise ValueError("Gemini không trả về structured output.")
+                response_text = (response.text or "").strip()
+                if not response_text:
+                    serializable = response.parsed
+                    if isinstance(serializable, BaseModel):
+                        serializable = serializable.model_dump(mode="json")
+                    elif isinstance(serializable, list):
+                        serializable = [
+                            item.model_dump(mode="json")
+                            if isinstance(item, BaseModel)
+                            else item
+                            for item in serializable
+                        ]
+                    response_text = json.dumps(
+                        serializable,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                output_path.write_text(response_text, encoding="utf-8")
+                return response.parsed, credential.source
         except UserFacingError:
             raise
         except Exception as exc:
             raise self._friendly_error(exc, credential.value) from exc
         finally:
+            if uploaded_file is not None and getattr(uploaded_file, "name", None):
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception:
+                    pass
             self._close(client)
 
     @staticmethod
@@ -304,35 +390,17 @@ class GoogleTranslationService:
             "speaker_statistics": self._speaker_statistics(segments),
             "transcript": self._full_transcript(analysis_segments),
         }
+        prompt, input_filename, output_filename = self._stage_prompt(
+            "ANALYSIS",
+            analysis_segments,
+        )
         parsed, credential_source = self._generate_structured(
             content,
-            (
-                "Read transcript in chronological order. Use transcript_scope and speaker_statistics to account "
-                "for a representative sample of a longer story. Every line has [segment ID] SPEAKER_ID: source "
-                "dialogue. Return exactly one speakers entry for every SPEAKER_ID in speaker_statistics. Keep "
-                "speaker IDs separate even when one voice actor may perform multiple characters. Classify "
-                "importance as main, supporting, or minor and gender as male, female, or unknown. For main and "
-                "supporting speakers, include identity, story role, personality, speech style, provider-neutral "
-                "voice_description, and an exact default_self_reference written in target_language. For minor "
-                "speakers, keep the profile concise; importance and gender are essential. Never guess gender "
-                "when evidence is insufficient: use unknown. Describe only voice traits supported by dialogue (such as perceived "
-                "age, pitch, energy, pace, and tone); do not choose a provider-specific voice or model. Infer directed "
-                "addressing_rules only for main/supporting speaker pairs and only from story evidence. "
-                "from_speaker and to_speaker must be exact SPEAKER_ID values from speaker_statistics, never "
-                "names, titles, kinship terms, or groups. Every self_reference, direct_address, and "
-                "third_person_reference must be an exact expression in target_language, never source-language "
-                "text or an explanation in parentheses. Use from_segment/to_segment when a relationship or form "
-                "of address changes during the story; zero means the entire story. Record uncertainty instead "
-                "of inventing gender, age, status, or relationships. Build a stable terminology guide. "
-                "Build one cumulative names list for people, places, organizations, and other proper names. "
-                "For each source name, choose exactly one canonical_name by following proper_name_policy. "
-                "Chinese personal names use Sino-Vietnamese readings only when the policy requests them; use "
-                "Pinyin when requested. Restore a foreign name represented in Chinese characters only when "
-                "confident, and record uncertainty otherwise. The profile will be the binding role and pronoun "
-                "reference for all later translation batches, so make it complete and internally consistent."
-            ),
+            prompt,
             DialogueProfileOutput,
             0.1,
+            input_filename,
+            output_filename,
         )
         profile = (
             parsed.model_dump(mode="json")
@@ -350,6 +418,8 @@ class GoogleTranslationService:
         previous_translations: dict[int, str],
         proper_name_policy: dict[str, object],
         response_file: bool = False,
+        batch_index: int = 1,
+        batch_total: int = 1,
     ) -> TranslationResponse:
         content = {
             "dialogue_profile": dialogue_profile,
@@ -360,25 +430,19 @@ class GoogleTranslationService:
             "context_after": [self._segment_payload(segment) for segment in context_after],
             "previous_translations": previous_translations,
         }
+        prompt, input_filename, output_filename = self._stage_prompt(
+            "TRANSLATION",
+            segments,
+            batch_index,
+            batch_total,
+        )
         parsed, credential_source = self._generate_structured(
             content,
-            (
-                "You are a professional audiovisual subtitle translator. Translate only segments_to_translate "
-                f"from {self.source_language} to {self.target_language}. For each target ID, read its exact "
-                "speaker_profile and applicable addressing_rules in speaker_context_for_targets before writing. "
-                "Treat those roles and target-language forms of address as binding. Follow dialogue_profile "
-                "consistently for pronouns, relationships, speech style, names, and "
-                "terminology. For every proper name present in dialogue_profile.names, copy its canonical_name "
-                "exactly and never romanize, translate, or reinterpret that name again inside a batch. For an "
-                "unlisted proper name, follow proper_name_policy consistently. Use context_before, context_after, "
-                "and previous_translations only as context. "
-                "Treat duration_seconds as a soft timing target: prefer concise, natural spoken phrasing, but "
-                "never lose essential meaning, negation, intent, names, numbers, or cause-and-effect. Do not "
-                "invent a relationship when the profile marks it uncertain. Return every target ID exactly once. "
-                "Do not return context IDs and do not merge, split, omit, explain, or add IDs."
-            ),
+            prompt,
             list[TranslationItem],
             0.2,
+            input_filename,
+            output_filename,
         )
         return TranslationResponse(self._translation_map(parsed), credential_source)
 
@@ -387,6 +451,8 @@ class GoogleTranslationService:
         segments: list[Segment],
         dialogue_profile: dict[str, object],
         proper_name_policy: dict[str, object],
+        batch_index: int = 1,
+        batch_total: int = 1,
     ) -> TranslationReviewResponse:
         content = {
             "dialogue_profile": dialogue_profile,
@@ -394,22 +460,19 @@ class GoogleTranslationService:
             "speaker_context": self._speaker_context(segments, dialogue_profile),
             "full_translation": self._full_transcript(segments, include_translation=True),
         }
+        prompt, input_filename, output_filename = self._stage_prompt(
+            "REVIEW",
+            segments,
+            batch_index,
+            batch_total,
+        )
         parsed, credential_source = self._generate_structured(
             content,
-            (
-                "You are the final consistency auditor for a complete audiovisual translation. Read "
-                "full_translation from beginning to end, compare every line with dialogue_profile and its "
-                "speaker_context, and find only real errors in role, self-reference, direct address, third-person "
-                "reference, names, terminology, meaning, or batch continuity. Return corrections only for IDs "
-                "that must change; return an empty JSON list when no correction is needed. Do not rewrite correct "
-                f"lines merely for style. Every corrected_text must be natural spoken {self.target_language} and "
-                "preserve the source meaning and timing awareness. "
-                "Replace every proper-name variant with the exact canonical_name from dialogue_profile.names; "
-                "do not independently transliterate a listed name. Use proper_name_policy only for names that "
-                "are not yet listed. Never add an ID that is absent from full_translation."
-            ),
+            prompt,
             list[TranslationCorrection],
             0.1,
+            input_filename,
+            output_filename,
         )
         if not isinstance(parsed, list):
             raise ValueError("Provider không trả về danh sách correction.")
@@ -702,9 +765,10 @@ class GoogleTranslationService:
 
 register_translation_provider(
     GEMINI_PROVIDER_NAME,
-    lambda model_name, source_language, target_language, _options: GoogleTranslationService(
+    lambda model_name, source_language, target_language, options: GoogleTranslationService(
         model_name,
         source_language,
         target_language,
+        options,
     ),
 )

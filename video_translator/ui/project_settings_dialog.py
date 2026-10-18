@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..batch_project import BatchProject, BatchProjectService
+from ..config.gemini import GEMINI_PROVIDER_NAME
+from ..config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
 from ..config.tts import (
     EDGE_TTS_PROVIDER,
     EDGE_VOICES,
@@ -412,7 +414,11 @@ class ProjectSettingsDialog(QDialog):
         self.translation = TranslationProviderSelector()
         self._add_section(
             "Step 03",
-            _scroll_page("Step 03 — Translation", "Provider và model dịch dùng chung cho project.", self.translation),
+            _scroll_page(
+                "Step 03 — Translation",
+                "Chọn provider mặc định và prompt template dùng riêng cho project.",
+                self.translation,
+            ),
         )
 
     def _build_tts_page(self) -> None:
@@ -519,13 +525,8 @@ class ProjectSettingsDialog(QDialog):
         self.render.set_values(dict(settings.get(StepId.RENDER.value, {})))
 
     def _set_translation_values(self, values: dict[str, Any]) -> None:
-        provider = str(values.get("provider", ""))
-        index = next(
-            (i for i, component in enumerate(self.translation.components) if component.provider_name == provider),
-            0,
-        )
-        self.translation.select_index(index)
-        component = self.translation.components[index]
+        provider = str(values.get("provider", GEMINI_PROVIDER_NAME))
+        component = self.translation.set_default_provider(provider)
         for key in ("model", "proper_name_mode"):
             control = getattr(component, key, None)
             if isinstance(control, QComboBox):
@@ -534,13 +535,17 @@ class ProjectSettingsDialog(QDialog):
             control = getattr(component, key, None)
             if isinstance(control, QSpinBox):
                 control.setValue(int(values.get(key, control.value())))
-        for key in ("context_consistency", "all_project_segments"):
-            control = getattr(component, key, None)
-            if isinstance(control, QCheckBox):
-                control.setChecked(bool(values.get(key, control.isChecked())))
+        all_project_segments = getattr(component, "all_project_segments", None)
+        if isinstance(all_project_segments, QCheckBox):
+            all_project_segments.setChecked(
+                bool(values.get("all_project_segments", True))
+            )
         project_url = getattr(component, "project_url", None)
         if isinstance(project_url, QLineEdit):
             project_url.setText(str(values.get("project_url", "")))
+        self.translation.set_prompt_template(
+            str(values.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID))
+        )
 
     def _validate_and_accept(self) -> None:
         if not self.name.text().strip():
@@ -562,6 +567,16 @@ class ProjectSettingsDialog(QDialog):
         if self.source_language.currentText() == self.target_language.currentText():
             self.navigation.setCurrentRow(0)
             QMessageBox.warning(self, "Ngôn ngữ không hợp lệ", "Ngôn ngữ nguồn và đích cần khác nhau.")
+            return
+        translation = self._translation_values()
+        try:
+            load_prompt_template(
+                str(translation.get("provider", GEMINI_PROVIDER_NAME)),
+                str(translation.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
+            )
+        except (OSError, ValueError) as exc:
+            self.navigation.setCurrentRow(3)
+            QMessageBox.warning(self, "Prompt không hợp lệ", str(exc))
             return
         tts = self.tts.values()
         if tts.get("provider") == PIPER_PROVIDER and not tts.get("model_path"):

@@ -138,16 +138,6 @@ class TranslationWorkflow:
         dialogue_profile: dict[str, object] = {}
         credential_source = ""
 
-        if consistency_enabled:
-            if progress:
-                progress(3, "AI đang phân tích tối đa 250 segment đại diện và phân loại speaker…")
-            response = self.provider.analyze_dialogue(
-                segments,
-                resolved_name_policy,
-            )
-            dialogue_profile = self._validate_dialogue_profile(response.profile, segments)
-            credential_source = response.credential_source or credential_source
-
         translated: dict[int, str] = {}
         for index, batch in enumerate(batches, start=1):
             start = (index - 1) * self.batch_size
@@ -161,10 +151,11 @@ class TranslationWorkflow:
                 if segment_id in recent_ids
             }
             if progress:
-                base = 22 if consistency_enabled else 5
-                span = 50 if consistency_enabled else 88
-                percent = base + int((index - 1) / len(batches) * span)
-                progress(percent, f"AI đang dịch batch {index}/{len(batches)}…")
+                percent = 5 + int((index - 1) / len(batches) * 90)
+                progress(
+                    percent,
+                    f"AI đang phân tích, dịch và kiểm tra batch {index}/{len(batches)}…",
+                )
             response = self.provider.translate_batch(
                 batch,
                 dialogue_profile,
@@ -172,7 +163,9 @@ class TranslationWorkflow:
                 after,
                 recent_translations,
                 resolved_name_policy,
-                response_file=not consistency_enabled,
+                response_file=True,
+                batch_index=index,
+                batch_total=len(batches),
             )
             batch_result = self._validate_translations(response.translations, batch, "dịch")
             translated.update(batch_result)
@@ -181,47 +174,15 @@ class TranslationWorkflow:
         for segment in segments:
             segment.translated_text = translated[segment.id]
 
-        review_count = 0
-        review_issues: list[dict[str, object]] = []
-        if consistency_enabled:
-            if progress:
-                progress(76, "AI đang kiểm duyệt toàn bộ bản dịch…")
-            response = self.provider.review_translation(
-                segments,
-                dialogue_profile,
-                resolved_name_policy,
-            )
-            valid_ids = {segment.id for segment in segments}
-            extra = sorted(set(response.corrections) - valid_ids)
-            empty = sorted(
-                segment_id
-                for segment_id, text in response.corrections.items()
-                if not str(text).strip()
-            )
-            if extra or empty:
-                raise UserFacingError(
-                    "Kết quả kiểm duyệt không hợp lệ",
-                    "AI trả về correction sai ID hoặc nội dung trống.",
-                    "Chạy lại Step 3 hoặc chọn model mạnh hơn.",
-                    f"Extra IDs: {extra}; empty IDs: {empty}",
-                )
-            for segment_id, text in response.corrections.items():
-                translated[segment_id] = str(text).strip()
-            for segment in segments:
-                segment.translated_text = translated[segment.id]
-            review_issues = response.issues
-            credential_source = response.credential_source or credential_source
-            review_count = 1
-
         if progress:
-            progress(97, "Đã hoàn tất dịch và rà soát; đang tạo output…")
+            progress(97, "Đã nhận đủ kết quả dịch; đang tạo output…")
         return TranslationWorkflowResult(
             translations=translated,
             dialogue_profile=dialogue_profile,
             proper_name_policy=resolved_name_policy,
             credential_source=credential_source,
-            analysis_batch_count=1 if consistency_enabled else 0,
+            analysis_batch_count=0,
             translation_batch_count=len(batches),
-            review_batch_count=review_count,
-            review_issues=review_issues,
+            review_batch_count=0,
+            review_issues=[],
         )

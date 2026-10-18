@@ -13,7 +13,11 @@ from ..config.web_translation import (
     CLAUDE_WEB_PROVIDER_NAME,
     project_url_error,
 )
-from ..config.translation_stage_prompts import render_web_translation_prompt
+from ..config.prompt_templates import (
+    DEFAULT_PROMPT_TEMPLATE_ID,
+    render_prompt_template,
+    step3_batch_filenames,
+)
 from ..errors import UserFacingError
 from ..models import Segment
 from .google_translation_service import (
@@ -52,8 +56,41 @@ class WebTranslationService:
         self.source_language = source_language
         self.target_language = target_language
         self.project_url = str((options or {}).get("project_url", "")).strip()
+        self.prompt_template = str(
+            (options or {}).get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)
+        ).strip() or DEFAULT_PROMPT_TEMPLATE_ID
         self._conversation_started = False
         self._last_raw_response = ""
+
+    def _stage_prompt(
+        self,
+        stage: str,
+        segments: list[Segment],
+        batch_index: int = 1,
+        batch_total: int = 1,
+    ) -> tuple[str, str, str]:
+        first_id = segments[0].id
+        last_id = segments[-1].id
+        input_filename, output_filename = step3_batch_filenames(
+            stage,
+            first_id,
+            last_id,
+        )
+        prompt = render_prompt_template(
+            self.provider_name,
+            self.prompt_template,
+            stage,
+            source_language=self.source_language,
+            target_language=self.target_language,
+            input_filename=input_filename,
+            output_filename=output_filename,
+            segment_start=f"{first_id:04d}",
+            segment_end=f"{last_id:04d}",
+            segment_count=str(len(segments)),
+            batch_index=str(batch_index),
+            batch_total=str(batch_total),
+        )
+        return prompt, input_filename, output_filename
 
     @staticmethod
     def _normalize_smart_json_quotes(text: str) -> str:
@@ -137,7 +174,7 @@ class WebTranslationService:
         self,
         instruction: str,
         payload: object,
-        output_contract: str,
+        output_contract: str = "",
         *,
         require_project: bool = True,
         attachment_name: str = "",
@@ -171,14 +208,16 @@ class WebTranslationService:
             if response_attachment_name
             else "Return JSON only. Do not use Markdown fences, commentary, prefaces, or trailing notes."
         )
-        prompt = (
-            f"SYSTEM TASK\n{instruction}\n\n"
-            "OUTPUT CONTRACT\n"
-            f"{output_contract}\n"
-            f"{quote_requirement}"
-            f"{response_instruction}\n\n"
-            f"{input_section}"
-        )
+        prompt = instruction
+        if output_contract:
+            prompt = (
+                f"SYSTEM TASK\n{instruction}\n\n"
+                "OUTPUT CONTRACT\n"
+                f"{output_contract}\n"
+                f"{quote_requirement}"
+                f"{response_instruction}\n\n"
+                f"{input_section}"
+            )
         try:
             response = web_bridge_service.submit_prompt(
                 self.provider_id,
@@ -244,22 +283,15 @@ class WebTranslationService:
             "speaker_statistics": GoogleTranslationService._speaker_statistics(segments),
             "transcript": GoogleTranslationService._full_transcript(analysis_segments),
         }
+        prompt, input_filename, output_filename = self._stage_prompt(
+            "ANALYSIS",
+            analysis_segments,
+        )
         parsed = self._request_json(
-            render_web_translation_prompt(
-                "ANALYSIS",
-                source_language=self.source_language,
-                target_language=self.target_language,
-            ),
+            prompt,
             payload,
-            (
-                "One object with keys: story_summary, global_style, speakers, addressing_rules, terminology, "
-                "names, uncertainties. speakers items require speaker_id, importance (main/supporting/minor), "
-                "gender (male/female/unknown), story_role, and default_self_reference; "
-                "addressing_rules items require from_speaker, to_speaker, self_reference, direct_address, "
-                "third_person_reference; terminology items require source_term and preferred_translation; "
-                "names items require source_name, name_type, canonical_name."
-            ),
-            attachment_name="step3-analysis.json",
+            attachment_name=input_filename,
+            response_attachment_name=output_filename,
         )
         profile = DialogueProfileOutput.model_validate(parsed).model_dump(mode="json")
         return DialogueAnalysisResponse(profile, f"Chrome extension · {self.provider_name}")
@@ -273,6 +305,8 @@ class WebTranslationService:
         previous_translations: dict[int, str],
         proper_name_policy: dict[str, object],
         response_file: bool = False,
+        batch_index: int = 1,
+        batch_total: int = 1,
     ) -> TranslationResponse:
         payload = {
             "source_language": self.source_language,
@@ -282,42 +316,26 @@ class WebTranslationService:
             "speaker_context_for_targets": GoogleTranslationService._speaker_context(
                 segments, dialogue_profile
             ),
-            "context_before": (
-                []
-                if response_file
-                else [GoogleTranslationService._segment_payload(item) for item in context_before]
-            ),
+            "context_before": [
+                GoogleTranslationService._segment_payload(item) for item in context_before
+            ],
             "segments_to_translate": [GoogleTranslationService._segment_payload(item) for item in segments],
-            "context_after": (
-                []
-                if response_file
-                else [GoogleTranslationService._segment_payload(item) for item in context_after]
-            ),
-            "previous_translations": {} if response_file else previous_translations,
+            "context_after": [
+                GoogleTranslationService._segment_payload(item) for item in context_after
+            ],
+            "previous_translations": previous_translations,
         }
-        instruction = render_web_translation_prompt(
-                "TRANSLATION",
-                source_language=self.source_language,
-                target_language=self.target_language,
-            )
-        if response_file:
-            instruction += (
-                " Read every segments_to_translate item in the attached file before translating. "
-                "First infer the story situation, speaker roles, relationships, forms of address, names, "
-                "terminology, tone, and continuity across this complete batch. Then translate each segment "
-                "using that batch-wide analysis. Perform the analysis internally and return only translations."
-            )
-        input_name = f"step3-translation-{segments[0].id:04d}-{segments[-1].id:04d}.json"
-        output_name = (
-            f"step3-translation-result-{segments[0].id:04d}-{segments[-1].id:04d}.json"
-            if response_file else ""
+        instruction, input_name, output_name = self._stage_prompt(
+            "TRANSLATION",
+            segments,
+            batch_index,
+            batch_total,
         )
         parsed = self._request_json(
             instruction,
             payload,
-            'A JSON array containing only objects of the form {"id": integer, "translated_text": string}.',
             attachment_name=input_name,
-            response_attachment_name=output_name,
+            response_attachment_name=output_name if response_file else "",
         )
         return TranslationResponse(
             self._translation_map(parsed),
@@ -329,6 +347,8 @@ class WebTranslationService:
         segments: list[Segment],
         dialogue_profile: dict[str, object],
         proper_name_policy: dict[str, object],
+        batch_index: int = 1,
+        batch_total: int = 1,
     ) -> TranslationReviewResponse:
         payload = {
             "source_language": self.source_language,
@@ -340,18 +360,17 @@ class WebTranslationService:
                 segments, include_translation=True
             ),
         }
+        prompt, input_filename, output_filename = self._stage_prompt(
+            "REVIEW",
+            segments,
+            batch_index,
+            batch_total,
+        )
         parsed = self._request_json(
-            render_web_translation_prompt(
-                "REVIEW",
-                source_language=self.source_language,
-                target_language=self.target_language,
-            ),
+            prompt,
             payload,
-            (
-                "A JSON array. Each correction object has id (integer), corrected_text (string), issue_type "
-                "(string), and reason (string). Return [] when no correction is required."
-            ),
-            attachment_name="step3-review.json",
+            attachment_name=input_filename,
+            response_attachment_name=output_filename,
         )
         try:
             if isinstance(parsed, dict):

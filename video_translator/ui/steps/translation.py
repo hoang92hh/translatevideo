@@ -110,8 +110,10 @@ class TranslationStepPage(StepPage):
         status = "Sẵn sàng" if output_exists else "File không tồn tại"
         model = str(candidate.metadata.get("model", ""))
         strategy = str(candidate.metadata.get("translation_strategy", ""))
-        if strategy == "project_file_single_batch_v1":
-            quality_mode = "Toàn project: phân tích ngữ cảnh và nhận 1 file"
+        if strategy == "single_request_per_file_batch_v1":
+            quality_mode = "Mỗi batch: phân tích, dịch và tự kiểm tra trong 1 request"
+        elif strategy == "project_file_single_batch_v1":
+            quality_mode = "Toàn project: phân tích, dịch và tự kiểm tra trong 1 request"
         elif strategy == "contextual_file_batches_v1":
             quality_mode = "Theo batch: phân tích ngữ cảnh và nhận từng file"
         elif candidate.metadata.get("context_consistency", False):

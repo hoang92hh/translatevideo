@@ -32,6 +32,7 @@ from ..pipeline.worker import (
 from ..state import ProjectState
 from .batch_dialogs import BatchVideosDialog, OutputManagerDialog
 from .project_manager import ProjectManagerPage
+from .prompt_manager_dialog import PromptManagerDialog
 from .project_settings_dialog import ProjectSettingsDialog
 from .settings_dialog import ProviderSettingsDialog
 from .steps import STEP_PAGE_TYPES
@@ -105,6 +106,8 @@ class MainWindow(QMainWindow):
         settings_button.clicked.connect(self._open_provider_settings)
         voice_library_button = QPushButton("Giọng tham chiếu")
         voice_library_button.clicked.connect(self._open_voice_library)
+        prompt_manager_button = QPushButton("Quản lý Prompt")
+        prompt_manager_button.clicked.connect(self._open_prompt_manager)
         videos_button = QPushButton("Videos")
         videos_button.clicked.connect(self._show_batch_videos)
         outputs_button = QPushButton("Outputs")
@@ -146,6 +149,7 @@ class MainWindow(QMainWindow):
         bottom_layout = QHBoxLayout(bottom)
         bottom_layout.setContentsMargins(24, 10, 24, 10)
         bottom_layout.addWidget(voice_library_button)
+        bottom_layout.addWidget(prompt_manager_button)
         bottom_layout.addWidget(videos_button)
         bottom_layout.addWidget(outputs_button)
         bottom_layout.addStretch()
@@ -238,6 +242,9 @@ class MainWindow(QMainWindow):
 
     def _open_voice_library(self) -> None:
         VoiceLibraryDialog(self).exec()
+
+    def _open_prompt_manager(self) -> None:
+        PromptManagerDialog(self).exec()
 
     def _show_batch_videos(self) -> None:
         if not self.batch_project:

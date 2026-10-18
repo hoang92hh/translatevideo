@@ -45,6 +45,8 @@ class TranslationProvider(Protocol):
         previous_translations: dict[int, str],
         proper_name_policy: dict[str, object],
         response_file: bool = False,
+        batch_index: int = 1,
+        batch_total: int = 1,
     ) -> TranslationResponse: ...
 
     def review_translation(
@@ -52,6 +54,8 @@ class TranslationProvider(Protocol):
         segments: list[Segment],
         dialogue_profile: dict[str, object],
         proper_name_policy: dict[str, object],
+        batch_index: int = 1,
+        batch_total: int = 1,
     ) -> TranslationReviewResponse: ...
 
     def rewrite_for_timing(

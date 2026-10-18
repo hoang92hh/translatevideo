@@ -1,5 +1,10 @@
 # Ghi chú chỉnh prompt và dữ liệu gửi AI
 
+> Cập nhật: prompt Step 3 hiện được quản lý theo từng provider trong
+> `reference/prompt_template/`. File `web_translation_prompts.md` chỉ còn là tài liệu
+> lịch sử và không được luồng chạy hiện tại sử dụng. Hãy dùng popup **Quản lý Prompt**
+> để thêm, sửa hoặc xóa template.
+
 Tài liệu này chỉ ra đúng vị trí cần sửa khi thay đổi prompt, payload hoặc quy tắc
 dịch ở Step 03 và chức năng AI rút gọn câu tại Step 05.
 
@@ -7,17 +12,17 @@ dịch ở Step 03 và chức năng AI rút gọn câu tại Step 05.
 
 | Muốn thay đổi | File và vị trí chính |
 |---|---|
-| Ba prompt của ChatGPT Web và Claude Web | `reference/web_translation_prompts.md` → `ANALYSIS`, `TRANSLATION`, `REVIEW` |
-| Prompt phân tích speaker, quan hệ, cách xưng hô, thuật ngữ và tên riêng | `video_translator/services/google_translation_service.py` → `analyze_dialogue()` |
-| Prompt dịch từng batch | `video_translator/services/google_translation_service.py` → `translate_batch()` |
-| Prompt kiểm duyệt toàn bộ bản dịch | `video_translator/services/google_translation_service.py` → `review_translation()` |
+| Prompt riêng của Gemini, ChatGPT Web và Claude Web | `reference/prompt_template/<provider>/*.md` → `PROMPT` |
+| Đọc, ghi và kiểm tra prompt template | `video_translator/config/prompt_templates.py` |
+| Popup thêm, sửa và xóa prompt | `video_translator/ui/prompt_manager_dialog.py` |
+| Prompt được chọn cho project | `batch_settings.translate.prompt_template` trong `project.json` |
 | Prompt rút gọn câu theo thời lượng ở Step 05 | `video_translator/services/google_translation_service.py` → `rewrite_for_timing()` |
 | Trường dữ liệu của một segment gửi AI | `video_translator/services/google_translation_service.py` → `_segment_payload()` |
 | Cấu hình gọi Gemini, JSON response, schema và `temperature` | `video_translator/services/google_translation_service.py` → `_generate_structured()` và từng lời gọi hàm này |
 | Schema hồ sơ hội thoại, speaker, quan hệ, thuật ngữ và tên | Các class Pydantic ở đầu `video_translator/services/google_translation_service.py` |
 | Quy tắc Hán–Việt, Pinyin, chữ gốc và tự động theo cặp ngôn ngữ | `video_translator/config/translation.py` → `resolve_proper_name_policy()` |
 | Số segment ngữ cảnh trước/sau | `video_translator/services/translation_workflow.py` → `CONTEXT_SEGMENT_COUNT` |
-| Thứ tự ba giai đoạn, chia batch và kiểm tra hồ sơ | `video_translator/services/translation_workflow.py` → `TranslationWorkflow.run()` |
+| Chia batch, gọi provider một lần và kiểm tra kết quả | `video_translator/services/translation_workflow.py` → `TranslationWorkflow.run()` |
 | Hợp đồng cho Gemini hoặc extension ChatGPT/Claude | `video_translator/services/translation_provider.py` → `TranslationProvider` |
 | Dữ liệu Step 05 dùng để yêu cầu rút gọn | `video_translator/services/audio_sync_service.py` → `rewrite_sync_drafts()` |
 | Model Gemini mặc định và danh sách model | `video_translator/config/gemini.py` |
@@ -26,23 +31,17 @@ dịch ở Step 03 và chức năng AI rút gọn câu tại Step 05.
 
 ## 2. Luồng xử lý hiện tại
 
-`TranslationWorkflow` điều phối ba tác vụ AI theo thứ tự:
+Khi chọn **Dịch toàn bộ segment của project trong một lượt**, workflow tạo một file chứa toàn bộ
+segment. Khi bỏ chọn, transcript được chia theo đúng `Segments / batch`. Với mỗi file, workflow gọi
+`translate_batch()` đúng một lần. Prompt duy nhất yêu cầu provider tự phân tích từng segment và ngữ
+cảnh, dịch, tự kiểm tra rồi chỉ trả bản dịch cuối. Workflow xác thực đủ ID trước khi chuyển sang file
+tiếp theo và chỉ hoàn tất Step 3 sau khi ghép đủ kết quả. Không còn request `analyze_dialogue()` hoặc
+`review_translation()` trong luồng Step 3.
 
-1. `analyze_dialogue()` đọc tối đa 250 segment đại diện một lần và tạo `dialogue_profile`.
-2. `translate_batch()` dịch từng batch bằng hồ sơ chung và ngữ cảnh chồng lấn.
-3. `review_translation()` đọc toàn bộ bản dịch một lần và chỉ trả các ID cần sửa.
-
-ChatGPT Web và Claude Web luôn bỏ qua bước phân tích toàn truyện và kiểm duyệt riêng. Khi checkbox
-**Dịch toàn bộ segment của project trong một lượt** được bật, toàn bộ project được gửi bằng một file;
-khi bỏ chọn, từng file dùng giá trị `Segments / batch`. AI tự phân tích toàn bộ nội dung file trước khi
-dịch và phải trả file JSON thật có tên do ứng dụng chỉ định. Ứng dụng chỉ gửi lượt tiếp theo sau khi
-extension tải, parse và xác thực đủ ID của file hiện tại. Gemini giữ workflow chất lượng và structured
-response trực tiếp qua API.
-
-Workflow là phần dùng chung, không chứa prompt riêng của Gemini. Prompt Gemini nằm
-trong `GoogleTranslationService`. Adapter ChatGPT hoặc Claude sau này phải triển khai
-cùng các method trong `TranslationProvider`, nhưng có thể dùng cú pháp prompt và cơ
-chế structured output riêng của provider đó.
+Workflow là phần dùng chung và không chứa prompt riêng của provider. Mỗi adapter đọc
+template đã chọn từ thư mục provider tương ứng trong `reference/prompt_template/`.
+Gemini gửi file JSON cùng template qua API; ChatGPT Web và Claude Web gửi cùng nội dung qua extension.
+`OUTPUT CONTRACT` và quy tắc tên file nằm ngay trong template được chọn.
 
 ## 3. Payload của từng giai đoạn
 

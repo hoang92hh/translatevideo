@@ -7,8 +7,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
+from ...config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
 from ...config.translation import PROPER_NAME_MODE_AUTO, resolve_proper_name_policy
-from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME, CLAUDE_WEB_PROVIDER_NAME
 from ...models import StepId, StepResult, TranslationCandidate
 from ...services import TranslationWorkflow, create_translation_provider
 from ...state import ProjectState
@@ -22,13 +22,11 @@ def execute(
 ) -> StepResult:
     provider = str(settings.get("provider", GEMINI_PROVIDER_NAME))
     model_name = str(settings.get("model", GEMINI_DEFAULT_MODEL))
+    prompt_template_id = str(
+        settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)
+    ).strip() or DEFAULT_PROMPT_TEMPLATE_ID
+    prompt_template = load_prompt_template(provider, prompt_template_id)
     configured_batch_size = max(1, int(settings.get("batch_size", 30)))
-    web_file_mode = provider in {
-        CHATGPT_WEB_PROVIDER_NAME,
-        CLAUDE_WEB_PROVIDER_NAME,
-    }
-    all_project_segments = web_file_mode and bool(settings.get("all_project_segments", True))
-    consistency_enabled = False if web_file_mode else bool(settings.get("context_consistency", True))
     proper_name_mode = str(settings.get("proper_name_mode", PROPER_NAME_MODE_AUTO))
     proper_name_policy = resolve_proper_name_policy(
         state.source_language,
@@ -36,13 +34,16 @@ def execute(
         proper_name_mode,
     )
     segments = previous_segments(state, StepId.TRANSLATE)
-    batch_size = len(segments) if all_project_segments and segments else configured_batch_size
+    all_project_segments = bool(settings.get("all_project_segments", True))
+    batch_size = (
+        len(segments)
+        if all_project_segments and segments
+        else configured_batch_size
+    )
     translation_strategy = (
         "project_file_single_batch_v1"
         if all_project_segments
-        else "contextual_file_batches_v1" if web_file_mode
-        else "full_dialogue_roles_v3" if consistency_enabled
-        else "timing_aware_v1"
+        else "single_request_per_file_batch_v1"
     )
     translation_provider = create_translation_provider(
         provider,
@@ -54,7 +55,7 @@ def execute(
     workflow = TranslationWorkflow(translation_provider, batch_size)
     response = workflow.run(
         segments,
-        consistency_enabled,
+        False,
         proper_name_policy,
         progress,
     )
@@ -75,12 +76,14 @@ def execute(
         "target_language": state.target_language,
         "provider": provider,
         "model": model_name,
+        "prompt_template": prompt_template.template_id,
+        "prompt_template_name": prompt_template.name,
         "project_url": str(settings.get("project_url", "")),
         "batch_size": batch_size,
         "configured_batch_size": configured_batch_size,
         "all_project_segments": all_project_segments,
         "translation_strategy": translation_strategy,
-        "context_consistency": consistency_enabled,
+        "context_consistency": False,
         "dialogue_profile_path": str(profile_path),
         "dialogue_profile": response.dialogue_profile,
         "proper_name_policy": response.proper_name_policy,
@@ -112,8 +115,10 @@ def execute(
         "target_language": state.target_language,
         "provider": provider,
         "model": model_name,
+        "prompt_template": prompt_template.template_id,
+        "prompt_template_name": prompt_template.name,
         "project_url": str(settings.get("project_url", "")),
-        "analysis_performed": consistency_enabled,
+        "analysis_performed": False,
         "proper_name_policy": response.proper_name_policy,
         "dialogue_profile": response.dialogue_profile,
     }
@@ -145,12 +150,14 @@ def execute(
     metadata = {
         "provider": provider,
         "model": model_name,
+        "prompt_template": prompt_template.template_id,
+        "prompt_template_name": prompt_template.name,
         "project_url": str(settings.get("project_url", "")),
         "batch_size": batch_size,
         "configured_batch_size": configured_batch_size,
         "all_project_segments": all_project_segments,
         "translation_strategy": translation_strategy,
-        "context_consistency": consistency_enabled,
+        "context_consistency": False,
         "dialogue_profile": response.dialogue_profile,
         "proper_name_policy": response.proper_name_policy,
         "workflow": {

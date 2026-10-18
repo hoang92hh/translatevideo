@@ -3,9 +3,6 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QSettings
-
-
 CHATGPT_WEB_PROVIDER_NAME = "ChatGPT Web"
 CLAUDE_WEB_PROVIDER_NAME = "Claude Web"
 
@@ -14,9 +11,6 @@ CLAUDE_EXTENSION_ID = "claude"
 
 WEB_CURRENT_MODEL = "Theo model đang chọn trên web"
 WEB_MODEL_CHOICES = (WEB_CURRENT_MODEL,)
-
-DEFAULT_TRANSLATION_PROVIDER_SETTING = "translation/defaultProvider"
-
 
 def project_url_error(provider: str, value: str) -> str:
     """Return a user-facing validation error, or an empty string when valid."""
@@ -41,18 +35,3 @@ def project_url_error(provider: str, value: str) -> str:
         ):
             return "Dán URL Project Claude trên claude.ai (đường dẫn /project/... hoặc /projects/...)."
     return ""
-
-
-def default_translation_provider() -> str:
-    return str(
-        QSettings("TransLanguage", "TransLanguage").value(
-            DEFAULT_TRANSLATION_PROVIDER_SETTING,
-            "Google Gemini",
-        )
-    ).strip() or "Google Gemini"
-
-
-def set_default_translation_provider(provider: str) -> None:
-    settings = QSettings("TransLanguage", "TransLanguage")
-    settings.setValue(DEFAULT_TRANSLATION_PROVIDER_SETTING, provider)
-    settings.sync()

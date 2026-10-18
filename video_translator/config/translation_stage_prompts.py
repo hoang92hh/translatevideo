@@ -1,28 +1,28 @@
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
-
-PROMPT_FILE = Path(__file__).resolve().parents[2] / "reference" / "web_translation_prompts.md"
-REQUIRED_STAGES = ("ANALYSIS", "TRANSLATION", "REVIEW")
+from .prompt_templates import (
+    DEFAULT_PROMPT_TEMPLATE_ID,
+    load_prompt_template,
+    render_prompt_template,
+)
+from .web_translation import CHATGPT_WEB_PROVIDER_NAME
 
 
 def load_web_translation_prompts() -> dict[str, str]:
-    text = PROMPT_FILE.read_text(encoding="utf-8")
-    sections: dict[str, str] = {}
-    matches = list(re.finditer(r"^##\s+(ANALYSIS|TRANSLATION|REVIEW)\s*$", text, re.MULTILINE))
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        sections[match.group(1)] = text[match.end() : end].strip()
-    missing = [stage for stage in REQUIRED_STAGES if not sections.get(stage)]
-    if missing:
-        raise ValueError(f"Thiếu phần prompt: {', '.join(missing)} trong {PROMPT_FILE}")
-    return sections
+    """Compatibility wrapper for integrations that still import the old helper."""
+    return dict(
+        load_prompt_template(
+            CHATGPT_WEB_PROVIDER_NAME,
+            DEFAULT_PROMPT_TEMPLATE_ID,
+        ).stages
+    )
 
 
 def render_web_translation_prompt(stage: str, **values: str) -> str:
-    prompt = load_web_translation_prompts()[stage]
-    for name, value in values.items():
-        prompt = prompt.replace("{" + name + "}", value)
-    return prompt
+    """Render the standard ChatGPT Web template for legacy callers."""
+    return render_prompt_template(
+        CHATGPT_WEB_PROVIDER_NAME,
+        DEFAULT_PROMPT_TEMPLATE_ID,
+        stage,
+        **values,
+    )

@@ -29,7 +29,18 @@ class TextToSpeechStepPage(StepPage):
 
     def __init__(self, state) -> None:
         self._preview_dialog: TtsPreviewDialog | None = None
+        self._chain_running = False
         super().__init__(state)
+
+    def _build_header(self) -> QHBoxLayout:
+        header = super()._build_header()
+        self.rerun_chain_button = QPushButton("Chạy lại Step 4 → 7")
+        self.rerun_chain_button.setObjectName("primaryButton")
+        self.rerun_chain_button.clicked.connect(
+            lambda: self.run_from_here_requested.emit(self.spec.step.value)
+        )
+        header.addWidget(self.rerun_chain_button)
+        return header
 
     def _build_settings_column(self) -> QVBoxLayout:
         return super()._build_settings_column()
@@ -103,14 +114,36 @@ class TextToSpeechStepPage(StepPage):
         self._close_preview_dialog()
 
     def refresh_special(self) -> None:
+        if hasattr(self, "rerun_chain_button"):
+            self.rerun_chain_button.setEnabled(
+                self.state.can_run(self.spec.step)
+                and not self._chain_running
+            )
         if hasattr(self, "tts_combo") and not getattr(self, "_processing", False):
             self._refresh_outputs()
 
     def set_busy(self, busy: bool) -> None:
         self._processing = busy
         super().set_busy(busy)
+        if hasattr(self, "rerun_chain_button"):
+            self.rerun_chain_button.setDisabled(busy or self._chain_running)
+            self.rerun_chain_button.setText(
+                "Đang chạy Step 4 → 7…"
+                if busy or self._chain_running
+                else "Chạy lại Step 4 → 7"
+            )
         if not busy and hasattr(self, "tts_combo"):
             self._refresh_outputs(prefer_selected=True)
+
+    def set_chain_running(self, running: bool) -> None:
+        self._chain_running = running
+        if hasattr(self, "rerun_chain_button"):
+            self.rerun_chain_button.setDisabled(
+                running or not self.state.can_run(self.spec.step)
+            )
+            self.rerun_chain_button.setText(
+                "Đang chạy Step 4 → 7…" if running else "Chạy lại Step 4 → 7"
+            )
 
     def _refresh_outputs(self, prefer_selected: bool = False) -> None:
         current = self.tts_combo.currentData()

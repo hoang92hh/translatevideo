@@ -133,6 +133,10 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         for page_type in STEP_PAGE_TYPES:
             page = page_type(self.state)
+            if page.spec.step in {StepId.TRANSLATE, StepId.TTS}:
+                page.run_from_here_requested.connect(self._run_from_here_requested)
+            elif page.spec.step == StepId.RENDER:
+                page.run_requested.connect(self._run_requested)
             if hasattr(page, "ai_rewrite_requested"):
                 page.ai_rewrite_requested.connect(self._rewrite_sync_segments)
             if hasattr(page, "batch_repair_requested"):
@@ -549,6 +553,9 @@ class MainWindow(QMainWindow):
             )
             return
         self.running_all = True
+        chain_page = self.pages.get(step)
+        if hasattr(chain_page, "set_chain_running"):
+            chain_page.set_chain_running(True)
         self.continue_button.setVisible(True)
         self.continue_button.setEnabled(False)
         self.continue_button.setText(f"Đang chạy từ Step {STEP_ORDER.index(step) + 1}…")
@@ -842,6 +849,8 @@ class MainWindow(QMainWindow):
                 "Hãy hoàn tất Thiết lập project trước khi chạy pipeline.",
             )
             self._open_project_settings()
+            if continue_all:
+                self._finish_pipeline_sequence(needs_continue=True)
             return
         if not self.state.can_run(step):
             if self.batch_running:
@@ -973,6 +982,10 @@ class MainWindow(QMainWindow):
 
     def _finish_pipeline_sequence(self, needs_continue: bool = False) -> None:
         self.running_all = False
+        for chain_step in (StepId.TRANSLATE, StepId.TTS):
+            chain_page = self.pages.get(chain_step)
+            if hasattr(chain_page, "set_chain_running"):
+                chain_page.set_chain_running(False)
         if needs_continue:
             self.continue_button.setVisible(True)
             self.continue_button.setEnabled(True)

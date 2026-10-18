@@ -21,7 +21,18 @@ class TranslationStepPage(StepPage):
     )
 
     def __init__(self, state) -> None:
+        self._chain_running = False
         super().__init__(state)
+
+    def _build_header(self) -> QHBoxLayout:
+        header = super()._build_header()
+        self.rerun_chain_button = QPushButton("Chạy lại Step 3 → 7")
+        self.rerun_chain_button.setObjectName("primaryButton")
+        self.rerun_chain_button.clicked.connect(
+            lambda: self.run_from_here_requested.emit(self.spec.step.value)
+        )
+        header.addWidget(self.rerun_chain_button)
+        return header
 
     def _build_settings_column(self) -> QVBoxLayout:
         return super()._build_settings_column()
@@ -30,16 +41,38 @@ class TranslationStepPage(StepPage):
         return {}
 
     def refresh_special(self) -> None:
+        if hasattr(self, "rerun_chain_button"):
+            self.rerun_chain_button.setEnabled(
+                self.state.can_run(self.spec.step)
+                and not self._chain_running
+            )
         if hasattr(self, "translation_combo") and not getattr(self, "_processing", False):
             self._refresh_translations()
 
     def set_busy(self, busy: bool) -> None:
         self._processing = busy
         super().set_busy(busy)
+        if hasattr(self, "rerun_chain_button"):
+            self.rerun_chain_button.setDisabled(busy or self._chain_running)
+            self.rerun_chain_button.setText(
+                "Đang chạy Step 3 → 7…"
+                if busy or self._chain_running
+                else "Chạy lại Step 3 → 7"
+            )
         if hasattr(self, "editor_button"):
             self.editor_button.setDisabled(busy)
         if not busy and hasattr(self, "translation_combo"):
             self._refresh_translations(prefer_selected=True)
+
+    def set_chain_running(self, running: bool) -> None:
+        self._chain_running = running
+        if hasattr(self, "rerun_chain_button"):
+            self.rerun_chain_button.setDisabled(
+                running or not self.state.can_run(self.spec.step)
+            )
+            self.rerun_chain_button.setText(
+                "Đang chạy Step 3 → 7…" if running else "Chạy lại Step 3 → 7"
+            )
 
     def build_result_extra(self) -> QWidget:
         # Chỉ dựng danh sách segment khi người dùng mở popup xem/chỉnh sửa.

@@ -32,6 +32,16 @@ class RenderStepPage(StepPage):
         self._processing = False
         super().__init__(state)
 
+    def _build_header(self) -> QHBoxLayout:
+        header = super()._build_header()
+        self.rerun_button = QPushButton("Chạy lại Step 7")
+        self.rerun_button.setObjectName("primaryButton")
+        self.rerun_button.clicked.connect(
+            lambda: self.run_requested.emit(self.spec.step.value)
+        )
+        header.addWidget(self.rerun_button)
+        return header
+
     def build_special_card(self) -> Card:
         card = Card("Thiết lập project", "Thông số render được quản lý tập trung trong Thiết lập project.")
         self.output_path = QLabel("—")
@@ -78,12 +88,21 @@ class RenderStepPage(StepPage):
 
     def refresh_special(self) -> None:
         self.output_path.setText(self.state.output_folder)
+        if hasattr(self, "rerun_button"):
+            self.rerun_button.setEnabled(
+                self.state.can_run(self.spec.step) and not self._processing
+            )
         if hasattr(self, "render_combo") and not self._processing:
             self._refresh_outputs()
 
     def set_busy(self, busy: bool) -> None:
         self._processing = busy
         super().set_busy(busy)
+        if hasattr(self, "rerun_button"):
+            self.rerun_button.setDisabled(busy)
+            self.rerun_button.setText(
+                "Đang chạy Step 7…" if busy else "Chạy lại Step 7"
+            )
         if not busy and hasattr(self, "render_combo"):
             self._refresh_outputs(prefer_selected=True)
 

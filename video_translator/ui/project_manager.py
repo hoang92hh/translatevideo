@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from ..batch_project import PROJECT_FILE, BatchProjectService
 from .components import Card
-from .project_settings_dialog import ProjectSettingsDialog
+from ..app.project_settings import ProjectSettingsDialog
 
 
 LANGUAGES = ("Chinese", "English", "Vietnamese", "Spanish", "Japanese", "Korean")

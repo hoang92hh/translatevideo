@@ -16,8 +16,8 @@ from ...config.tts import (
 )
 from ...config.speaker_profiles import resolve_speaker_profile
 from ...errors import UserFacingError
-from ...models import StepId, StepResult, TtsCandidate
-from ...services import TextToSpeechService
+from ...common.models import StepId, StepResult, TtsCandidate
+from ...steps.step4_tts.service import TextToSpeechService
 from ...state import ProjectState
 from .common import previous_segments
 

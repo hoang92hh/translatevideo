@@ -24,8 +24,8 @@ from ..config.diarization import (
     set_configured_model_path,
 )
 from ..errors import UserFacingError
-from ..services.credential_service import GOOGLE_GEMINI, CredentialService
-from ..services.google_translation_service import GoogleTranslationService
+from ..common.services.credential_service import GOOGLE_GEMINI, CredentialService
+from ..steps.step3_translation.providers.gemini.provider import GoogleTranslationService
 from .components import Card
 
 

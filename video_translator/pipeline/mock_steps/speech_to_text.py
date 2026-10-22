@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from ...models import Segment, StepId, StepResult, TranscriptCandidate
-from ...services import SpeechToTextService
-from ...services.speech_to_text_service import (
+from ...common.models import Segment, StepId, StepResult, TranscriptCandidate
+from ...steps.step2_transcription.service import SpeechToTextService
+from ...steps.step2_transcription.service import (
     SPEAKER_CHANGE_MIN_DURATION_SECONDS,
     SPEAKER_CHANGE_MIN_WORDS,
 )

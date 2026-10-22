@@ -1,0 +1,10 @@
+from __future__ import annotations
+
+from video_translator.config.tts import PIPER_PROVIDER, PROVIDER_LICENSE_NOTES
+
+PROVIDER_ID = PIPER_PROVIDER
+LICENSE_NOTE = PROVIDER_LICENSE_NOTES[PROVIDER_ID]
+VERSION = "1"
+RUNTIME_NAME = "piper"
+RUNTIME_ENV = "TRANSLANGUAGE_PIPER_PYTHON"
+RUNTIME_SETUP_SCRIPT = "scripts/setup_piper_runtime.ps1"

@@ -8,9 +8,9 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ...errors import UserFacingError
-from ...models import StepId, StepResult, SyncCandidate
-from ...services import AudioSyncService
-from ...services.video_alignment_service import build_video_timing_plan
+from ...common.models import StepId, StepResult, SyncCandidate
+from ...steps.step5_alignment.service import AudioSyncService
+from ...steps.step5_alignment.alignment import build_video_timing_plan
 from ...state import ProjectState
 from .common import previous_segments
 

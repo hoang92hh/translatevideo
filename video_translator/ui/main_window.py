@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from ..config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ..batch_project import BatchProject, BatchProjectService
-from ..models import STEP_ORDER, StepId, StepStatus
+from ..common.models import STEP_ORDER, StepId, StepStatus
 from ..pipeline import MockPipeline
 from ..pipeline.worker import (
     AudioSyncAiRewriteWorker,
@@ -33,7 +33,7 @@ from ..state import ProjectState
 from .batch_dialogs import BatchVideosDialog, OutputManagerDialog
 from .project_manager import ProjectManagerPage
 from .prompt_manager_dialog import PromptManagerDialog
-from .project_settings_dialog import ProjectSettingsDialog
+from ..app.project_settings import ProjectSettingsDialog
 from .settings_dialog import ProviderSettingsDialog
 from .steps import STEP_PAGE_TYPES
 from .steps.base import StepPage
@@ -1043,7 +1043,7 @@ class MainWindow(QMainWindow):
             batch_name = self.batch_project.name if self.batch_project else project.name
             self.project_label.setText(
                 f"{batch_name}  ·  {Path(self.state.input_video).name}  ·  "
-                f"{self.state.source_language} → {self.state.target_language}"
+                f"{self.state.source_language} â†’ {self.state.target_language}"
             )
         else:
             self.project_label.setText("Chưa mở project")

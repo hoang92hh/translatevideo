@@ -1,0 +1,2 @@
+vieneu>=3.8,<4
+soundfile>=0.12,<1

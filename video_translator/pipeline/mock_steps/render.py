@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from ...models import RenderCandidate, StepId, StepResult
-from ...services.video_render_service import VideoRenderService
+from ...common.models import RenderCandidate, StepId, StepResult
+from ...steps.step7_export.service import VideoRenderService
 from ...state import ProjectState
 from .common import previous_segments
 

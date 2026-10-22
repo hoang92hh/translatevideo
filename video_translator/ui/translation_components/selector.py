@@ -33,8 +33,8 @@ from ...config.web_translation import (
     project_url_error,
 )
 from ...errors import UserFacingError
-from ...services.credential_service import GOOGLE_GEMINI, CredentialService
-from ...services.web_bridge_service import web_bridge_service
+from ...common.services.credential_service import GOOGLE_GEMINI, CredentialService
+from ...infrastructure.web_bridge_service import web_bridge_service
 from ..components import Card
 from ..settings_dialog import ProviderSettingsDialog
 
@@ -311,7 +311,7 @@ class TranslationProviderSelector(QWidget):
 
     def _refresh_button_labels(self) -> None:
         for provider, button in self.buttons.items():
-            button.setText(("★ " if provider == self._default_provider else "") + provider)
+            button.setText(("â˜… " if provider == self._default_provider else "") + provider)
         self.default_label.setText(f"Provider dịch mặc định: {self._default_provider}")
 
     def current_component(self) -> _ProviderComponent:

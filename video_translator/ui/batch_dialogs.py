@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..batch_project import BatchProject, BatchProjectService
-from ..models import STEP_ORDER
-from ..services.ffmpeg_service import FFmpegService
+from ..common.models import STEP_ORDER
+from ..common.services.ffmpeg_service import FFmpegService
 
 
 STATUS_LABELS = {

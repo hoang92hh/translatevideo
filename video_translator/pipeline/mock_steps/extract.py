@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from ...models import AudioCandidate, StepId, StepResult
-from ...services import AudioSeparatorService, FFmpegService
+from ...common.models import AudioCandidate, StepId, StepResult
+from ...steps.step1_separation.service import AudioSeparatorService
+from ...common.services.ffmpeg_service import FFmpegService
 from ...state import ProjectState
 
 

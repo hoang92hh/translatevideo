@@ -1,4 +1,4 @@
-from ...models import StepId
+from ...common.models import StepId
 from .audio_sync import execute as sync_audio
 from .build_audio import execute as build_audio
 from .extract import execute as extract
@@ -18,4 +18,3 @@ HANDLERS = {
 }
 
 __all__ = ["HANDLERS"]
-

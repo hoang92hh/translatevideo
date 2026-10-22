@@ -5,9 +5,9 @@ from typing import Any
 from PySide6.QtCore import QThread, Signal
 
 from ..errors import error_payload
-from ..models import StepId
+from ..common.models import StepId
 from ..state import ProjectState
-from ..services.audio_sync_service import (
+from ..steps.step5_alignment.service import (
     borrow_neighbor_time,
     repair_sync_segments,
     rewrite_sync_drafts,

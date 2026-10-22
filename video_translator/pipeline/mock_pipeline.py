@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ..models import StepId, StepResult
+from ..common.models import StepId, StepResult
 from ..state import ProjectState
 from .mock_steps import HANDLERS
 

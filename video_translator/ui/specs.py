@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..models import StepId
+from ..common.models import StepId
 
 
 @dataclass(frozen=True)
@@ -32,4 +32,3 @@ class StepSpec:
 
 
 DEVICE_FIELD = FieldSpec("device", "Thiết bị", "choice", "Auto", ("Auto", "CPU", "GPU"))
-

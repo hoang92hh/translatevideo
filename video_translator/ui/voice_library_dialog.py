@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..services.ffmpeg_service import FFmpegError, FFmpegService
+from ..common.services.ffmpeg_service import FFmpegError, FFmpegService
 
 
 class VoiceLibraryDialog(QDialog):

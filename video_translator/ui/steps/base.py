@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...models import STEP_ORDER, StepResult, StepStatus
+from ...common.models import STEP_ORDER, StepResult, StepStatus
 from ...state import ProjectState
 from ..components import Card
 from ..specs import StepSpec

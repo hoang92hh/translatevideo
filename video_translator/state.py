@@ -9,7 +9,7 @@ from typing import Any
 from PySide6.QtCore import QObject, Signal
 
 from .errors import UserFacingError
-from .models import (
+from .common.models import (
     AudioCandidate,
     BuildAudioCandidate,
     RenderCandidate,

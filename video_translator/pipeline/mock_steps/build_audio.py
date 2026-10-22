@@ -8,8 +8,8 @@ from typing import Any
 from typing import Callable
 from uuid import uuid4
 
-from ...models import BuildAudioCandidate, StepId, StepResult
-from ...services.audio_timeline_service import AudioTimelineService
+from ...common.models import BuildAudioCandidate, StepId, StepResult
+from ...steps.step6_render.service import AudioTimelineService
 from ...state import ProjectState
 from .common import previous_segments
 

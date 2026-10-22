@@ -15,19 +15,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...config.tts import (
-    EDGE_TTS_PROVIDER,
-    MELO_OPENVOICE_PROVIDER,
-    PIPER_PROVIDER,
-    VIENEU_PROVIDER,
-    XTTS_V2_PROVIDER,
-)
+from ...config.tts import XTTS_V2_PROVIDER
 from ...config.tts_preferences import default_tts_provider, set_default_tts_provider
+from ...steps.step4_tts.providers import all_manifests, load_component
 from .base import TtsComponentBase
-from .edge import EdgeTtsComponent
-from .melo_openvoice import MeloOpenVoiceTtsComponent
-from .piper import PiperTtsComponent
-from .vieneu import VieNeuTtsComponent
 
 
 class TtsComponentSelector(QWidget):
@@ -35,11 +26,9 @@ class TtsComponentSelector(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self.manifests = all_manifests()
         self.components: list[TtsComponentBase] = [
-            VieNeuTtsComponent(),
-            PiperTtsComponent(),
-            MeloOpenVoiceTtsComponent(),
-            EdgeTtsComponent(),
+            load_component(manifest)() for manifest in self.manifests
         ]
         self.buttons: dict[str, QPushButton] = {}
         root = QVBoxLayout(self)
@@ -97,15 +86,10 @@ class TtsComponentSelector(QWidget):
         self._refresh_button_labels()
 
     def _refresh_button_labels(self) -> None:
-        short_names = {
-            VIENEU_PROVIDER: "VieNeu-TTS",
-            PIPER_PROVIDER: "Piper TTS",
-            MELO_OPENVOICE_PROVIDER: "Melo + OpenVoice",
-            EDGE_TTS_PROVIDER: "Edge TTS",
-        }
+        names = {manifest.id: manifest.name for manifest in self.manifests}
         for provider, button in self.buttons.items():
-            prefix = "★ " if provider == self._default_provider else ""
-            button.setText(prefix + short_names.get(provider, provider))
+            prefix = "â˜… " if provider == self._default_provider else ""
+            button.setText(prefix + names.get(provider, provider))
         self.default_label.setText(f"TTS mặc định khi mở ứng dụng: {self._default_provider}")
 
     def current_component(self) -> TtsComponentBase:

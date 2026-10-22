@@ -9,8 +9,9 @@ from uuid import uuid4
 from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ...config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
 from ...config.translation import PROPER_NAME_MODE_AUTO, resolve_proper_name_policy
-from ...models import StepId, StepResult, TranslationCandidate
-from ...services import TranslationWorkflow, create_translation_provider
+from ...common.models import StepId, StepResult, TranslationCandidate
+from ...steps.step3_translation.service import TranslationWorkflow
+from ...steps.step3_translation.providers import create_translation_provider
 from ...state import ProjectState
 from .common import previous_segments
 

@@ -16,4 +16,5 @@ local_config.*
 environment/
 tools/
 models/
+build_application/
 

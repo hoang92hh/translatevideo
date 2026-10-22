@@ -54,6 +54,11 @@ class Segment:
     tts_reference_voice: str = ""
     tts_actual_device: str = ""
 
+    @property
+    def duration(self) -> float:
+        """Return the non-negative source duration derived from its timestamps."""
+        return max(0.0, self.end - self.start)
+
 
 @dataclass
 class AudioCandidate:

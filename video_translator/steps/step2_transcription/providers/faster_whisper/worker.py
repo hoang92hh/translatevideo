@@ -20,6 +20,7 @@ RECOVERY_CONTEXT_SECONDS = 0.75
 RECOVERY_MIN_GAP_SECONDS = 1.0
 RECOVERY_ACTIVITY_DB = -52.0
 RECOVERY_SILENCE_DB = -65.0
+RECOVERY_DUPLICATE_BOUNDARY_SECONDS = 0.15
 
 
 def emit(event: dict[str, Any]) -> None:
@@ -105,13 +106,28 @@ def _is_duplicate(candidate: dict[str, object], existing: list[dict[str, object]
         item_range = (float(item["start"]), float(item["end"]))
         item_duration = max(0.001, item_range[1] - item_range[0])
         overlap = _interval_overlap(candidate_range, item_range)
-        if overlap / min(candidate_duration, item_duration) < 0.45:
-            continue
         item_text = _normalize_text(str(item.get("text", "")))
-        if candidate_text and item_text:
-            similarity = SequenceMatcher(None, candidate_text, item_text).ratio()
-            if candidate_text == item_text or similarity >= 0.82:
-                return True
+        if not candidate_text or not item_text:
+            continue
+        similarity = SequenceMatcher(None, candidate_text, item_text).ratio()
+        same_text = candidate_text == item_text or similarity >= 0.82
+        if not same_text:
+            continue
+
+        overlap_ratio = overlap / min(candidate_duration, item_duration)
+        boundary_distance = min(
+            abs(candidate_range[0] - item_range[1]),
+            abs(item_range[0] - candidate_range[1]),
+        )
+        # Recovery windows may return a short suffix/prefix that touches the
+        # original ASR segment. Treat identical text at that boundary as the
+        # same recognition, even when the raw overlap ratio is small. A real
+        # repeated word remains valid when it has a meaningful pause between
+        # the two intervals.
+        if overlap_ratio >= 0.45 or (
+            boundary_distance <= RECOVERY_DUPLICATE_BOUNDARY_SECONDS + 0.001
+        ):
+            return True
     return False
 
 
@@ -279,6 +295,17 @@ def _recover_missing_segments(
         )
         if candidate is None or candidate_overlap / max(0.001, end - start) < 0.25:
             continue
+        # Whisper may return a segment that extends beyond the suspicious
+        # interval. Keep only the portion that recovery was asked to inspect;
+        # otherwise context audio can be reintroduced as a duplicate.
+        candidate_start = float(candidate["start"])
+        candidate_end = float(candidate["end"])
+        clipped_start = max(start, candidate_start)
+        clipped_end = min(end, candidate_end)
+        if clipped_end <= clipped_start:
+            continue
+        start = round(clipped_start, 3)
+        end = round(clipped_end, 3)
         words = [
             {
                 "start": round(float(word.start), 3),
@@ -287,7 +314,10 @@ def _recover_missing_segments(
                 "probability": round(float(word.probability or 0.0), 6),
             }
             for word in (segment.words or [])
-            if word.start is not None and word.end is not None
+            if word.start is not None
+            and word.end is not None
+            and float(word.end) > clipped_start
+            and float(word.start) < clipped_end
         ]
         if not words:
             metadata["missing_word_alignment_count"] = int(

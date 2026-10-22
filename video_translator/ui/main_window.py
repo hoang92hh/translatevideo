@@ -292,9 +292,13 @@ class MainWindow(QMainWindow):
             path for path in dialog.values()["selected_videos"]
             if str(Path(path).resolve()) not in existing_paths
         ]
+        added_videos = []
         if selected_new_paths:
             try:
-                BatchProjectService.add_videos(self.batch_project, selected_new_paths)
+                added_videos = BatchProjectService.add_videos(
+                    self.batch_project,
+                    selected_new_paths,
+                )
             except Exception as exc:
                 QMessageBox.critical(self, "Không thể thêm video", str(exc))
                 return
@@ -309,6 +313,8 @@ class MainWindow(QMainWindow):
             self.state.target_language = self.batch_project.target_language
             self.state.project_changed.emit()
             self.state.save_project()
+        if added_videos:
+            self._refresh_video_selector(added_videos[0].id)
         self._refresh_header()
 
     def _start_batch(self) -> None:

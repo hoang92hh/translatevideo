@@ -516,10 +516,13 @@ class ProjectSettingsDialog(QDialog):
         self.choose_location_button.setEnabled(False)
         self.source_language.setCurrentText(project.source_language)
         self.target_language.setCurrentText(project.target_language)
-        self._load_videos(project.input_folder, {video.source_path for video in project.videos})
+        existing_paths = {str(Path(video.source_path).resolve()) for video in project.videos}
+        self._existing_video_paths = existing_paths
+        self._load_videos(project.input_folder, existing_paths)
         for row in range(self.video_table.rowCount()):
             item = self.video_table.item(row, 0)
-            if item:
+            path = str(item.data(Qt.ItemDataRole.UserRole)) if item else ""
+            if item and str(Path(path).resolve()) in existing_paths:
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled)
         settings = project.batch_settings
         for step, panel in self.step_panels.items():

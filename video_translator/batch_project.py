@@ -261,6 +261,39 @@ class BatchProjectService:
         return project
 
     @staticmethod
+    def add_videos(batch: BatchProject, selected_paths: list[str]) -> list[ProjectVideo]:
+        """Add newly selected input videos while preserving existing workspaces."""
+        known = {str(Path(video.source_path).resolve()) for video in batch.videos}
+        available = {
+            item.path
+            for item in BatchProjectService.scan_input_folder(batch.input_folder)
+        }
+        added: list[ProjectVideo] = []
+        for value in selected_paths:
+            source = str(Path(value).expanduser().resolve())
+            if source in known:
+                continue
+            if source not in available:
+                raise ValueError("Video được chọn không thuộc trực tiếp thư mục input.")
+            path = Path(source)
+            key = folder_key(path.name)
+            if batch.path(key).exists() or batch.path("output", key).exists():
+                key = f"{key}-{uuid4().hex[:6]}"
+            record = ProjectVideo(
+                id=uuid4().hex,
+                name=path.name,
+                source_path=source,
+                workspace=key,
+            )
+            batch.videos.append(record)
+            known.add(source)
+            BatchProjectService._create_video_project(batch, record)
+            added.append(record)
+        if added:
+            batch.save()
+        return added
+
+    @staticmethod
     def open_video(batch: BatchProject, video_id: str) -> VideoProject:
         record = batch.video(video_id)
         if record is None:

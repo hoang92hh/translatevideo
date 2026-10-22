@@ -48,7 +48,7 @@ QProgressBar {
     min-height: 14px; text-align: center; color: #e8edf6;
 }
 QProgressBar::chunk { background: #0284c7; border-radius: 5px; }
-QListWidget#recentProjects::item { padding: 12px; border-bottom: 1px solid #202c41; }
+QListWidget#recentProjects::item { padding: 0; border-bottom: 1px solid #202c41; }
 QListWidget#recentProjects::item:hover { background: #162237; }
 QTableWidget {
     background: #0b1220; alternate-background-color: #101827; color: #e8edf6;

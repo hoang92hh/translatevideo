@@ -162,6 +162,30 @@ class NewProjectDialog(QDialog):
         }
 
 
+class RecentProjectRow(QWidget):
+    delete_requested = Signal()
+
+    def __init__(self, name: str, path: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 8, 8)
+        layout.setSpacing(12)
+        details = QVBoxLayout()
+        details.setSpacing(2)
+        name_label = QLabel(name)
+        name_label.setObjectName("projectName")
+        path_label = QLabel(path)
+        path_label.setObjectName("muted")
+        path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        details.addWidget(name_label)
+        details.addWidget(path_label)
+        layout.addLayout(details, 1)
+        delete_button = QPushButton("Xóa")
+        delete_button.setObjectName("dangerButton")
+        delete_button.setToolTip("Xóa khỏi danh sách gần đây; không xóa dữ liệu trên ổ đĩa")
+        delete_button.clicked.connect(self.delete_requested.emit)
+        layout.addWidget(delete_button)
+
 class ProjectManagerPage(QWidget):
     project_opened = Signal(object)
     settings_requested = Signal()
@@ -225,6 +249,17 @@ class ProjectManagerPage(QWidget):
     def _open_recent_item(self, item: QListWidgetItem) -> None:
         self._load(item.data(Qt.ItemDataRole.UserRole))
 
+    def _delete_recent_path(self, path: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Xóa khỏi danh sách gần đây",
+            "Xóa project này khỏi danh sách gần đây?\n\nDữ liệu project trên ổ đĩa sẽ được giữ nguyên.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.remove_recent(path)
+
     def _load(self, path: str) -> None:
         try:
             project = BatchProjectService.load(path)
@@ -255,9 +290,13 @@ class ProjectManagerPage(QWidget):
             manifest = Path(path)
             if not manifest.is_file():
                 continue
-            item = QListWidgetItem(f"{manifest.parent.name}\n{manifest.parent}")
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, str(manifest))
             self.recent_list.addItem(item)
+            row = RecentProjectRow(manifest.parent.name, str(manifest.parent))
+            row.delete_requested.connect(lambda path=str(manifest): self._delete_recent_path(path))
+            item.setSizeHint(row.sizeHint().expandedTo(row.minimumSizeHint()))
+            self.recent_list.setItemWidget(item, row)
         if self.recent_list.count() == 0:
             item = QListWidgetItem("Chưa có project gần đây")
             item.setFlags(Qt.ItemFlag.NoItemFlags)

@@ -255,7 +255,7 @@ class TextToSpeechService:
 
     @staticmethod
     def _repo_root() -> Path:
-        return Path(__file__).resolve().parents[2]
+        return Path(os.environ.get("TRANSLANGUAGE_DISTRIBUTION_ROOT", Path(__file__).resolve().parents[2]))
 
     def _python_executable(self) -> Path:
         manifest = get_manifest(self.provider)
@@ -301,8 +301,7 @@ class TextToSpeechService:
         environment["PYTHONPATH"] = os.pathsep.join(
             value for value in (str(self._repo_root()), environment.get("PYTHONPATH", "")) if value
         )
-        worker_path = self._repo_root() / "video_translator" / "steps" / "step4_tts" / "worker.py"
-        command = [str(self._python_executable()), str(worker_path)]
+        command = [str(self._python_executable()), "-m", "video_translator.steps.step4_tts.worker"]
         result: dict[str, object] | None = None
         worker_error: dict[str, object] | None = None
         stdin_error: OSError | None = None

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any
 
 
@@ -49,6 +48,11 @@ class Segment:
     translated_text: str = ""
     audio_file: str = ""
     synced_audio_file: str = ""
+    tts_provider: str = ""
+    tts_model: str = ""
+    tts_voice: str = ""
+    tts_reference_voice: str = ""
+    tts_actual_device: str = ""
 
 
 @dataclass

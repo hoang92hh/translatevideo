@@ -4,12 +4,13 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+import os
 
 from .gemini import GEMINI_PROVIDER_NAME
 from .web_translation import CHATGPT_WEB_PROVIDER_NAME, CLAUDE_WEB_PROVIDER_NAME
 
 
-PROMPT_TEMPLATE_ROOT = Path(__file__).resolve().parents[2] / "reference" / "prompt_template"
+PROMPT_TEMPLATE_ROOT = Path(os.environ.get("TRANSLANGUAGE_DISTRIBUTION_ROOT", Path(__file__).resolve().parents[2])) / "reference" / "prompt_template"
 DEFAULT_PROMPT_TEMPLATE_ID = "standard"
 PROMPT_SECTION = "PROMPT"
 PROMPT_TEMPLATE_VARIABLES = (

@@ -19,7 +19,7 @@ REQUIRED_MODEL_FILES = (
 
 
 def bundled_model_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "models" / DIARIZATION_MODEL_NAME
+    return Path(os.environ.get("TRANSLANGUAGE_DISTRIBUTION_ROOT", Path(__file__).resolve().parents[2])) / "models" / DIARIZATION_MODEL_NAME
 
 
 def configured_model_path() -> Path:

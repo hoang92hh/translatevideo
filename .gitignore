@@ -14,5 +14,6 @@ local_config.*
 *.pt
 *.pth
 environment/
-/tools/
+tools/
+models/
 

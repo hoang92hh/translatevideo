@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtCore import QEvent, QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -163,6 +163,7 @@ class NewProjectDialog(QDialog):
 
 
 class RecentProjectRow(QWidget):
+    open_requested = Signal()
     delete_requested = Signal()
 
     def __init__(self, name: str, path: str, parent: QWidget | None = None) -> None:
@@ -177,6 +178,8 @@ class RecentProjectRow(QWidget):
         path_label = QLabel(path)
         path_label.setObjectName("muted")
         path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        for widget in (self, name_label, path_label):
+            widget.installEventFilter(self)
         details.addWidget(name_label)
         details.addWidget(path_label)
         layout.addLayout(details, 1)
@@ -185,6 +188,12 @@ class RecentProjectRow(QWidget):
         delete_button.setToolTip("Xóa khỏi danh sách gần đây; không xóa dữ liệu trên ổ đĩa")
         delete_button.clicked.connect(self.delete_requested.emit)
         layout.addWidget(delete_button)
+
+    def eventFilter(self, watched: QWidget, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
+            self.open_requested.emit()
+            return True
+        return super().eventFilter(watched, event)
 
 class ProjectManagerPage(QWidget):
     project_opened = Signal(object)
@@ -294,6 +303,7 @@ class ProjectManagerPage(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, str(manifest))
             self.recent_list.addItem(item)
             row = RecentProjectRow(manifest.parent.name, str(manifest.parent))
+            row.open_requested.connect(lambda path=str(manifest): self._load(path))
             row.delete_requested.connect(lambda path=str(manifest): self._delete_recent_path(path))
             item.setSizeHint(row.sizeHint().expandedTo(row.minimumSizeHint()))
             self.recent_list.setItemWidget(item, row)

@@ -16,6 +16,7 @@ ProgressCallback = Callable[[int, str], None]
 
 SPEAKER_CHANGE_MIN_DURATION_SECONDS = 0.8
 SPEAKER_CHANGE_MIN_WORDS = 2
+RECOVERY_MAX_MAIN_OVERLAP_SECONDS = 0.1
 
 
 class SpeechToTextError(UserFacingError):
@@ -125,6 +126,8 @@ class SpeechToTextService:
                     "end": float(item["end"]),
                     "text": str(item["text"]).strip(),
                     "words": list(item.get("words", [])),
+                    "alignment_start": float(item.get("alignment_start", item["start"])),
+                    "alignment_end": float(item.get("alignment_end", item["end"])),
                 }
                 for item in raw_recovered
             ]
@@ -192,19 +195,6 @@ class SpeechToTextService:
                 turns,
                 merge_adjacent_segments=self.merge_adjacent_segments,
             )
-            recovered_segments = self._segments_with_speakers(
-                normalized_recovered,
-                turns,
-                merge_adjacent_segments=self.merge_adjacent_segments,
-                source_id_offset=max(
-                    (
-                        int(part.get("source_id", 0))
-                        for segment in segments
-                        for part in segment.merge_parts
-                    ),
-                    default=0,
-                ),
-            )
             diarization_model = str(diarization_result.get("model", ""))
             diarization_device = str(diarization_result.get("actual_device", ""))
             diarization_turns = tuple(dict(turn) for turn in turns)
@@ -217,17 +207,75 @@ class SpeechToTextService:
                 )
                 for item in normalized
             ]
+
+        recovery_metadata = (
+            dict(result.get("asr_recovery", {}))
+            if isinstance(result.get("asr_recovery"), dict)
+            else {"enabled": False}
+        )
+        rejected_overlaps: list[dict[str, object]] = []
+        retained_recovered: list[dict[str, object]] = []
+        for item in normalized_recovered:
+            # Diarization rebuilds segments from word times, so check the
+            # original word extent before using the clipped word timestamps.
+            start = float(item["alignment_start"] if self.diarization else item["start"])
+            end = float(item["alignment_end"] if self.diarization else item["end"])
+            overlap = self._max_overlap(start, end, segments)
+            if overlap > RECOVERY_MAX_MAIN_OVERLAP_SECONDS + 1e-9:
+                rejected_overlaps.append({
+                    "stage": "word_alignment" if self.diarization else "segment",
+                    "start": item["start"],
+                    "end": item["end"],
+                    "text": item["text"],
+                    "main_overlap_seconds": round(overlap, 3),
+                })
+            else:
+                retained_recovered.append(item)
+
+        if self.diarization:
+            recovered_segments = self._segments_with_speakers(
+                retained_recovered,
+                turns,
+                merge_adjacent_segments=self.merge_adjacent_segments,
+                source_id_offset=max(
+                    (
+                        int(part.get("source_id", 0))
+                        for segment in segments
+                        for part in segment.merge_parts
+                    ),
+                    default=0,
+                ),
+            )
+        else:
             recovered_segments = [
                 TranscriptSegment(
                     start=float(item["start"]),
                     end=float(item["end"]),
                     text=str(item["text"]),
                 )
-                for item in normalized_recovered
+                for item in retained_recovered
             ]
 
+        final_recovered: list[TranscriptSegment] = []
+        for item in recovered_segments:
+            overlap = self._max_overlap(item.start, item.end, segments)
+            if overlap > RECOVERY_MAX_MAIN_OVERLAP_SECONDS + 1e-9:
+                rejected_overlaps.append({
+                    "stage": "final_segment",
+                    "start": item.start,
+                    "end": item.end,
+                    "text": item.text,
+                    "main_overlap_seconds": round(overlap, 3),
+                })
+            else:
+                final_recovered.append(item)
+        recovery_metadata["max_main_overlap_seconds"] = RECOVERY_MAX_MAIN_OVERLAP_SECONDS
+        recovery_metadata["rejected_postprocess_overlap_count"] = len(rejected_overlaps)
+        recovery_metadata["rejected_postprocess_overlaps"] = rejected_overlaps
+        recovery_metadata["final_accepted_segment_count"] = len(final_recovered)
+
         segments = sorted(
-            [*segments, *recovered_segments],
+            [*segments, *final_recovered],
             key=lambda item: (item.start, item.end),
         )
 
@@ -245,11 +293,14 @@ class SpeechToTextService:
             diarization_model=diarization_model,
             diarization_device=diarization_device,
             diarization_turns=diarization_turns,
-            asr_recovery=(
-                dict(result.get("asr_recovery", {}))
-                if isinstance(result.get("asr_recovery"), dict)
-                else {"enabled": False}
-            ),
+            asr_recovery=recovery_metadata,
+        )
+
+    @staticmethod
+    def _max_overlap(start: float, end: float, segments: list[TranscriptSegment]) -> float:
+        return max(
+            (max(0.0, min(end, item.end) - max(start, item.start)) for item in segments),
+            default=0.0,
         )
 
     @staticmethod

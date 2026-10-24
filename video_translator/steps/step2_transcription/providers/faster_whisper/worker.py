@@ -328,18 +328,29 @@ def _recover_missing_segments(
             continue
         start = round(clipped_start, 3)
         end = round(clipped_end, 3)
-        words = [
-            {
-                "start": round(float(word.start), 3),
-                "end": round(float(word.end), 3),
-                "word": word.word,
-                "probability": round(float(word.probability or 0.0), 6),
-            }
-            for word in (segment.words or [])
+        # Keep the original word span for the final overlap check. A word can
+        # intersect the recovery window while extending into a main segment.
+        overlapping_words = [
+            word for word in (segment.words or [])
             if word.start is not None
             and word.end is not None
             and float(word.end) > clipped_start
             and float(word.start) < clipped_end
+        ]
+        alignment_start = min(
+            (float(word.start) for word in overlapping_words), default=start,
+        )
+        alignment_end = max(
+            (float(word.end) for word in overlapping_words), default=end,
+        )
+        words = [
+            {
+                "start": round(max(float(word.start), clipped_start), 3),
+                "end": round(min(float(word.end), clipped_end), 3),
+                "word": word.word,
+                "probability": round(float(word.probability or 0.0), 6),
+            }
+            for word in overlapping_words
         ]
         if not words:
             metadata["missing_word_alignment_count"] = int(
@@ -375,6 +386,8 @@ def _recover_missing_segments(
             "end": end,
             "text": text,
             "words": words,
+            "alignment_start": round(min(start, alignment_start), 3),
+            "alignment_end": round(max(end, alignment_end), 3),
         }
 
         if candidate_db < RECOVERY_SILENCE_DB:

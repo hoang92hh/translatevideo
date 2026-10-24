@@ -36,7 +36,9 @@ Ensure every target ID appears exactly once and only target IDs are returned.
 
 Return ONLY a valid JSON array of objects:
 
-{"id": integer, "translated_text": string}
+{"id": integer, "source_text": string, "translated_text": string}
+
+Copy `id` and `source_text` exactly from the same `segments_to_translate` item in the attached input. Do not renumber IDs or change the source text.
 
 The application will save it as "{output_filename}". No Markdown, explanations, analysis, or additional fields.
 

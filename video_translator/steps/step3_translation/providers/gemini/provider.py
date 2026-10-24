@@ -35,6 +35,12 @@ class TranslationItem(BaseModel):
     translated_text: str
 
 
+class SourceVerifiedTranslationItem(BaseModel):
+    id: int
+    source_text: str
+    translated_text: str
+
+
 class SpeakerGuidance(BaseModel):
     speaker_id: str
     character_name: str = ""
@@ -540,7 +546,14 @@ class GoogleTranslationService:
             batch_index,
             batch_total,
         )
+        prompt += (
+            "\n\nFor every translated item, copy id and source_text exactly from the "
+            "corresponding segments_to_translate item in the attached JSON. "
+            "Return only objects with id, source_text, and translated_text. "
+            "Never rewrite, normalize, merge, or renumber source_text or IDs."
+        )
         expected_ids = [segment.id for segment in segments]
+        expected_source_by_id = {segment.id: segment.source_text for segment in segments}
         diagnostic_dir = (
             self.diagnostics_root / f"batch-{batch_index:03d}-{segments[0].id:04d}-{segments[-1].id:04d}"
             if self.diagnostics_root is not None else None
@@ -548,7 +561,7 @@ class GoogleTranslationService:
         parsed, credential_source = self._generate_structured(
             content,
             prompt,
-            list[TranslationItem],
+            list[SourceVerifiedTranslationItem],
             0.2,
             input_filename,
             output_filename,
@@ -569,10 +582,14 @@ class GoogleTranslationService:
         result: dict[int, str] = {}
         duplicate_ids: set[int] = set()
         empty_ids: set[int] = set()
+        source_text_mismatches: list[dict[str, object]] = []
         invalid_items: list[dict[str, object]] = []
         for position, item in enumerate(parsed, start=1):
             try:
-                value = item if isinstance(item, TranslationItem) else TranslationItem.model_validate(item)
+                value = (
+                    item if isinstance(item, SourceVerifiedTranslationItem)
+                    else SourceVerifiedTranslationItem.model_validate(item)
+                )
             except (ValidationError, TypeError, ValueError) as exc:
                 invalid_items.append({"position": position, "reason": str(exc)})
                 continue
@@ -580,17 +597,26 @@ class GoogleTranslationService:
                 duplicate_ids.add(value.id)
             if not value.translated_text.strip():
                 empty_ids.add(value.id)
+            expected_source = expected_source_by_id.get(value.id)
+            if expected_source is not None and value.source_text != expected_source:
+                source_text_mismatches.append({
+                    "position": position,
+                    "id": value.id,
+                    "expected_source_text": expected_source,
+                    "received_source_text": value.source_text,
+                })
             result[value.id] = value.translated_text.strip()
         expected = set(expected_ids)
         actual = set(result)
         missing_ids = sorted(expected - actual)
         extra_ids = sorted(actual - expected)
-        if duplicate_ids or empty_ids or invalid_items or missing_ids or extra_ids:
+        if duplicate_ids or empty_ids or source_text_mismatches or invalid_items or missing_ids or extra_ids:
             issues = {
                 "duplicate_ids": sorted(duplicate_ids),
                 "empty_translation_ids": sorted(empty_ids),
                 "missing_ids": missing_ids,
                 "extra_ids": extra_ids,
+                "source_text_mismatches": source_text_mismatches,
                 "invalid_items": invalid_items,
                 "expected_count": len(expected_ids),
                 "response_count": len(parsed),
@@ -602,6 +628,7 @@ class GoogleTranslationService:
             summary = (
                 f"Batch {batch_index}/{batch_total}: ID trùng {sorted(duplicate_ids)}; "
                 f"bản dịch rỗng {sorted(empty_ids)}; thiếu {missing_ids}; thừa {extra_ids}; "
+                f"câu gốc không khớp {len(source_text_mismatches)}; "
                 f"mục sai cấu trúc {len(invalid_items)}."
             )
             raise UserFacingError(

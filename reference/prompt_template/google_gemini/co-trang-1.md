@@ -46,7 +46,9 @@ Verify every target ID appears exactly once; do not return context-only IDs.
 
 Return ONLY a valid JSON array containing objects of this exact form:
 
-{"id": integer, "translated_text": string}
+{"id": integer, "source_text": string, "translated_text": string}
+
+Copy `id` and `source_text` exactly from the same `segments_to_translate` item in the attached input. Do not renumber IDs or change the source text.
 
 The application will save the response as "{output_filename}".
 

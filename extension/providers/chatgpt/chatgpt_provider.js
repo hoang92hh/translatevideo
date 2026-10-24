@@ -14,6 +14,8 @@ const RESPONSE_SETTLE_DELAY_MS = 2000;
 const SEND_BUTTON_INITIAL_DELAY_MS = 12000;
 const SEND_BUTTON_RETRY_DELAY_MS = 3000;
 const SEND_BUTTON_MAX_ATTEMPTS = 3;
+const RESPONSE_FILE_GRACE_MS = 120000;
+const RESPONSE_FILE_POLL_MS = 250;
 
 export class ChatGPTProvider extends BaseProvider {
   constructor({ document: doc = document, timeoutMs = 180000,
@@ -289,6 +291,7 @@ export class ChatGPTProvider extends BaseProvider {
   async waitForResponse() {
     if (!this.sent) throw error("PROMPT_SEND_FAILED", "Prompt has not been sent.");
     this.log("WAITING RESPONSE");
+    if (this.responseFileName) return this.waitForResponseFile();
     let sawAssistant = false;
     let lastState = {};
     const deadline = this.startedAt + this.timeoutMs;
@@ -358,6 +361,87 @@ export class ChatGPTProvider extends BaseProvider {
     throw error(
       "RESPONSE_TIMEOUT",
       `ChatGPT response did not reach a completed state before the deadline. ${JSON.stringify(lastState)}`,
+    );
+  }
+
+  async waitForResponseFile() {
+    const deadline = this.startedAt + this.timeoutMs;
+    let sawAssistant = false;
+    let sawStop = false;
+    let fileWaitStartedAt = null;
+    let lastState = {};
+
+    while (Date.now() < deadline) {
+      if (this.cancelled) throw error("PROVIDER_ERROR", "Local response wait cancelled.");
+      const assistant = this.currentAssistant();
+      const responseTurn = assistant?.closest(S.turn) || assistant;
+      const stopVisible = Boolean(this.find(S.stop));
+      const streaming = Boolean(responseTurn && this.find(S.streaming, responseTurn));
+      const composerEditable = this.editable(this.find(S.composer));
+      const controls = assistant ? this.completionControls(assistant) : null;
+      const copyVisible = Boolean(controls && this.find(S.copyAction, controls));
+      const responseFile = Boolean(responseTurn
+        && hasResponseFile(responseTurn, this.responseFileName));
+      sawAssistant ||= Boolean(assistant);
+      sawStop ||= stopVisible;
+      lastState = {
+        assistant_found: Boolean(assistant),
+        stop_visible: stopVisible,
+        streaming,
+        composer_editable: composerEditable,
+        copy_visible: copyVisible,
+        response_file_found: responseFile,
+      };
+
+      if (assistant && responseFile && !stopVisible && !streaming && composerEditable) {
+        await new Promise(resolve => this.win.setTimeout(resolve, RESPONSE_SETTLE_DELAY_MS));
+        if (this.cancelled) throw error("PROVIDER_ERROR", "Local response wait cancelled.");
+        const current = this.currentAssistant();
+        const currentTurn = current?.closest(S.turn) || current;
+        if (currentTurn && hasResponseFile(currentTurn, this.responseFileName)
+            && !this.find(S.stop) && !this.find(S.streaming, currentTurn)
+            && this.editable(this.find(S.composer))) {
+          this.text = this.responseText(current);
+          this.log("DOWNLOADING RESPONSE FILE");
+          this.downloadedResponseFile = await readResponseFile(
+            this.win, currentTurn, this.responseFileName, error,
+          );
+          this.log("RESPONSE FILE DOWNLOADED");
+          this.finished = true;
+          this.log("RESPONSE COMPLETE");
+          return;
+        }
+      }
+
+      // The Stop button may appear again if ChatGPT resumes generating.
+      // If a very fast response hid Stop between polls, Copy confirms completion.
+      const responseFinished = assistant && !stopVisible
+        && composerEditable && (sawStop || copyVisible);
+      if (responseFinished && !responseFile) {
+        if (fileWaitStartedAt === null) {
+          fileWaitStartedAt = Date.now();
+          this.log(`WAITING FOR RESPONSE FILE ${this.responseFileName} (120s)`);
+        } else if (Date.now() - fileWaitStartedAt >= RESPONSE_FILE_GRACE_MS) {
+          throw error(
+            "RESPONSE_FILE_NOT_FOUND",
+            `ChatGPT finished responding, but ${this.responseFileName} did not appear within 120 seconds. `
+              + JSON.stringify(lastState),
+          );
+        }
+      } else if (stopVisible) {
+        fileWaitStartedAt = null;
+      }
+
+      await new Promise(resolve => this.win.setTimeout(resolve,
+        Math.min(RESPONSE_FILE_POLL_MS, Math.max(1, deadline - Date.now())),
+      ));
+    }
+    throw error(
+      sawAssistant ? "RESPONSE_TIMEOUT" : "ASSISTANT_RESPONSE_NOT_FOUND",
+      sawAssistant
+        ? `ChatGPT did not finish preparing ${this.responseFileName} before the deadline. `
+          + JSON.stringify(lastState)
+        : "No assistant message for this prompt was found before the deadline.",
     );
   }
 

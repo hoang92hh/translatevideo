@@ -121,7 +121,10 @@ def execute(
         f"{len({segment.speaker_id for segment in segments if segment.speaker_id})} speaker · "
         f"{model_name} · {transcription.actual_device}"
     )
-    recovered_count = int((transcription.asr_recovery or {}).get("accepted_segment_count", 0))
+    recovered_count = int((transcription.asr_recovery or {}).get(
+        "final_accepted_segment_count",
+        (transcription.asr_recovery or {}).get("accepted_segment_count", 0),
+    ))
     if recovered_count:
         summary += f" · phục hồi {recovered_count} segment"
     metadata = {

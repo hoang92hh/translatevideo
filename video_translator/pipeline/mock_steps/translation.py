@@ -68,6 +68,10 @@ def execute(
     )
     for segment in segments:
         segment.translated_text = response.translations[segment.id]
+        if not segment.translated_text.strip():
+            segment.start = segment.end
+
+    skipped_translation_ids = [segment.id for segment in segments if not segment.translated_text.strip()]
 
     now = datetime.now(timezone.utc)
     candidate_id = f"translate-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
@@ -90,6 +94,7 @@ def execute(
         "configured_batch_size": configured_batch_size,
         "all_project_segments": all_project_segments,
         "translation_strategy": translation_strategy,
+        "skipped_translation_ids": skipped_translation_ids,
         "context_consistency": False,
         "dialogue_profile_path": str(profile_path),
         "dialogue_profile": response.dialogue_profile,
@@ -164,6 +169,7 @@ def execute(
         "configured_batch_size": configured_batch_size,
         "all_project_segments": all_project_segments,
         "translation_strategy": translation_strategy,
+        "skipped_translation_ids": skipped_translation_ids,
         "context_consistency": False,
         "dialogue_profile": response.dialogue_profile,
         "proper_name_policy": response.proper_name_policy,

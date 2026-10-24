@@ -253,14 +253,14 @@ class WebTranslationService:
             ) from exc
 
     @staticmethod
-    def _translation_map(parsed: object) -> dict[int, str]:
+    def _translation_map(parsed: object, allow_empty: bool = False) -> dict[int, str]:
         if not isinstance(parsed, list):
             raise ValueError("Kết quả phải là một JSON array.")
         result: dict[int, str] = {}
         for item in parsed:
             value = TranslationItem.model_validate(item)
             text = value.translated_text.strip()
-            if value.id in result or not text:
+            if value.id in result or (not allow_empty and not text):
                 raise ValueError(f"ID trùng hoặc nội dung trống: {value.id}")
             result[value.id] = text
         return result
@@ -338,7 +338,7 @@ class WebTranslationService:
             response_attachment_name=output_name if response_file else "",
         )
         return TranslationResponse(
-            self._translation_map(parsed),
+            self._translation_map(parsed, allow_empty=True),
             f"Chrome extension · {self.provider_name}",
         )
 

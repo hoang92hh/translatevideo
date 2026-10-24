@@ -110,13 +110,6 @@ class TranslationWorkflow:
                 f"Missing IDs: {missing}; extra IDs: {extra}",
             )
         normalized = {segment_id: str(text).strip() for segment_id, text in result.items()}
-        empty = sorted(segment_id for segment_id, text in normalized.items() if not text)
-        if empty:
-            raise UserFacingError(
-                "AI trả về bản dịch trống",
-                f"Giai đoạn {stage} trả về nội dung trống cho ID: {empty}",
-                "Chạy lại Step 3 hoặc chọn provider/model khác.",
-            )
         return normalized
 
     def run(

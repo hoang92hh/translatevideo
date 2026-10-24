@@ -581,7 +581,6 @@ class GoogleTranslationService:
             )
         result: dict[int, str] = {}
         duplicate_ids: set[int] = set()
-        empty_ids: set[int] = set()
         source_text_mismatches: list[dict[str, object]] = []
         invalid_items: list[dict[str, object]] = []
         for position, item in enumerate(parsed, start=1):
@@ -595,8 +594,6 @@ class GoogleTranslationService:
                 continue
             if value.id in result:
                 duplicate_ids.add(value.id)
-            if not value.translated_text.strip():
-                empty_ids.add(value.id)
             expected_source = expected_source_by_id.get(value.id)
             if expected_source is not None and value.source_text != expected_source:
                 source_text_mismatches.append({
@@ -610,10 +607,9 @@ class GoogleTranslationService:
         actual = set(result)
         missing_ids = sorted(expected - actual)
         extra_ids = sorted(actual - expected)
-        if duplicate_ids or empty_ids or source_text_mismatches or invalid_items or missing_ids or extra_ids:
+        if duplicate_ids or source_text_mismatches or invalid_items or missing_ids or extra_ids:
             issues = {
                 "duplicate_ids": sorted(duplicate_ids),
-                "empty_translation_ids": sorted(empty_ids),
                 "missing_ids": missing_ids,
                 "extra_ids": extra_ids,
                 "source_text_mismatches": source_text_mismatches,
@@ -627,7 +623,7 @@ class GoogleTranslationService:
             )
             summary = (
                 f"Batch {batch_index}/{batch_total}: ID trùng {sorted(duplicate_ids)}; "
-                f"bản dịch rỗng {sorted(empty_ids)}; thiếu {missing_ids}; thừa {extra_ids}; "
+                f"thiếu {missing_ids}; thừa {extra_ids}; "
                 f"câu gốc không khớp {len(source_text_mismatches)}; "
                 f"mục sai cấu trúc {len(invalid_items)}."
             )

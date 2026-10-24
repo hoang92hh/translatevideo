@@ -22,6 +22,103 @@ RECOVERY_ACTIVITY_DB = -52.0
 RECOVERY_SILENCE_DB = -65.0
 RECOVERY_DUPLICATE_BOUNDARY_SECONDS = 0.15
 RECOVERY_SIGNIFICANT_OVERLAP_RATIO = 0.35
+MAIN_TIMING_EXCESS_SECONDS = 2.0
+
+
+def _valid_word_times(words: object) -> list[dict[str, object]]:
+    if not isinstance(words, list):
+        return []
+    valid: list[dict[str, object]] = []
+    for word in words:
+        if not isinstance(word, dict):
+            continue
+        try:
+            start = float(word["start"])
+            end = float(word["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(start) and math.isfinite(end) and end > start:
+            valid.append(word)
+    return valid
+
+
+def _inspect_main_timing(
+    segments: list[dict[str, object]],
+    speech_chunks: list[dict[str, int]],
+    sampling_rate: int,
+) -> tuple[list[dict[str, object]], set[int]]:
+    """Correct only well-supported boundaries; preserve uncertain ASR output."""
+    speech = [
+        (float(chunk["start"]) / sampling_rate, float(chunk["end"]) / sampling_rate)
+        for chunk in speech_chunks
+    ]
+    audit: list[dict[str, object]] = []
+    uncertain: set[int] = set()
+    for index, segment in enumerate(segments):
+        before_start = float(segment["start"])
+        before_end = float(segment["end"])
+        text = _normalize_text(str(segment.get("text", "")))
+        duration = before_end - before_start
+        suspicious = duration > max(4.0, len(text) * 0.8)
+        record: dict[str, object] = {
+            "source": "main", "main_index": index,
+            "before_start": before_start, "before_end": before_end,
+            "after_start": before_start, "after_end": before_end,
+            "action": "kept", "reason": "timing_not_suspicious",
+        }
+        if not suspicious:
+            audit.append(record)
+            continue
+        words = segment.get("words")
+        valid = _valid_word_times(words)
+        ordered = bool(valid) and len(valid) == len(words) and all(
+            float(valid[i]["start"]) >= float(valid[i - 1]["end"]) - 0.25
+            for i in range(1, len(valid))
+        )
+        span_start = min((float(word["start"]) for word in valid), default=before_start)
+        span_end = max((float(word["end"]) for word in valid), default=before_end)
+        word_text = _normalize_text("".join(str(word.get("word", "")) for word in valid))
+        match = SequenceMatcher(None, text, word_text).ratio() if text and word_text else 0.0
+        confidence = sum(float(word.get("probability") or 0.0) for word in valid) / len(valid) if valid else 0.0
+        valid_alignment = (
+            ordered and before_start - 0.25 <= span_start < span_end <= before_end + 0.25
+            and match >= 0.8 and confidence >= 0.4
+        )
+        record.update({"word_text_match": round(match, 3), "mean_word_probability": round(confidence, 3)})
+        if not valid_alignment:
+            uncertain.add(index)
+            record.update(action="unverified", reason="missing_or_unreliable_word_timestamps")
+            audit.append(record)
+            continue
+        touching = [interval for interval in speech if _interval_overlap(interval, (span_start, span_end)) >= 0.1]
+        if not touching:
+            uncertain.add(index)
+            record.update(action="unverified", reason="word_span_without_vad_speech")
+            audit.append(record)
+            continue
+        new_start, new_end = before_start, before_end
+        if span_start - before_start >= MAIN_TIMING_EXCESS_SECONDS and min(start for start, _ in touching) >= span_start - 0.75:
+            new_start = max(before_start, span_start - 0.15)
+        if before_end - span_end >= MAIN_TIMING_EXCESS_SECONDS and max(end for _, end in touching) <= span_end + 0.75:
+            new_end = min(before_end, span_end + 0.15)
+        unresolved_boundary = (
+            (span_start - before_start >= MAIN_TIMING_EXCESS_SECONDS and new_start == before_start)
+            or (before_end - span_end >= MAIN_TIMING_EXCESS_SECONDS and new_end == before_end)
+        )
+        if new_start < new_end and (new_start != before_start or new_end != before_end):
+            segment["start"], segment["end"] = round(new_start, 3), round(new_end, 3)
+            record.update(
+                after_start=segment["start"], after_end=segment["end"],
+                action="corrected", reason="word_timestamps_confirmed_by_vad",
+            )
+            if unresolved_boundary:
+                uncertain.add(index)
+                record.update(action="partially_corrected_unverified", reason="one_boundary_still_uncertain")
+        else:
+            uncertain.add(index)
+            record.update(action="unverified", reason="suspicious_timing_without_safe_boundary")
+        audit.append(record)
+    return audit, uncertain
 
 
 def emit(event: dict[str, Any]) -> None:
@@ -101,10 +198,10 @@ def _interval_overlap(first: tuple[float, float], second: tuple[float, float]) -
 
 def _is_duplicate(candidate: dict[str, object], existing: list[dict[str, object]]) -> bool:
     candidate_text = _normalize_text(str(candidate.get("text", "")))
-    candidate_range = (float(candidate["start"]), float(candidate["end"]))
+    candidate_range = _spoken_range(candidate)
     candidate_duration = max(0.001, candidate_range[1] - candidate_range[0])
     for item in existing:
-        item_range = (float(item["start"]), float(item["end"]))
+        item_range = _spoken_range(item)
         item_duration = max(0.001, item_range[1] - item_range[0])
         overlap = _interval_overlap(candidate_range, item_range)
         item_text = _normalize_text(str(item.get("text", "")))
@@ -130,6 +227,16 @@ def _is_duplicate(candidate: dict[str, object], existing: list[dict[str, object]
         ):
             return True
     return False
+
+
+def _spoken_range(item: dict[str, object]) -> tuple[float, float]:
+    segment_range = (float(item["start"]), float(item["end"]))
+    words = _valid_word_times(item.get("words"))
+    word_text = _normalize_text("".join(str(word.get("word", "")) for word in words))
+    segment_text = _normalize_text(str(item.get("text", "")))
+    if words and segment_text and SequenceMatcher(None, word_text, segment_text).ratio() >= 0.8:
+        return (min(float(word["start"]) for word in words), max(float(word["end"]) for word in words))
+    return segment_range
 
 
 def _has_significant_overlap(
@@ -223,12 +330,18 @@ def _recover_missing_segments(
     duration: float,
     main_segments: list[dict[str, object]],
     speech_chunks: list[dict[str, int]],
+    uncertain_main_indices: set[int] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
+    uncertain_main_indices = uncertain_main_indices or set()
     kept = [
         (float(chunk["start"]) / sampling_rate, float(chunk["end"]) / sampling_rate)
         for chunk in speech_chunks
     ]
-    coverage = _segment_word_coverage(main_segments)
+    reliable_main = [
+        item for index, item in enumerate(main_segments)
+        if index not in uncertain_main_indices
+    ]
+    coverage = _segment_word_coverage(reliable_main)
     raw_candidates: list[dict[str, object]] = []
 
     cursor = 0.0
@@ -283,6 +396,7 @@ def _recover_missing_segments(
         "recovered_duration_seconds": 0.0,
         "accepted_segments": [],
         "uncertain_segments": [],
+        "rejected_segments": [],
     }
     if not windows:
         return [], metadata
@@ -302,30 +416,65 @@ def _recover_missing_segments(
     accepted: list[dict[str, object]] = []
     accepted_details = metadata["accepted_segments"]
     uncertain_details = metadata["uncertain_segments"]
+    rejected_details = metadata["rejected_segments"]
     assert isinstance(accepted_details, list)
     assert isinstance(uncertain_details, list)
+    assert isinstance(rejected_details, list)
     for segment in recovered_stream:
         text = segment.text.strip()
         if not text:
             continue
         start = round(float(segment.start), 3)
         end = round(float(segment.end), 3)
+        original_start, original_end = start, end
         candidate = _candidate_for_segment(start, end, active_candidates)
         candidate_overlap = 0.0 if candidate is None else _interval_overlap(
             (start, end),
             (float(candidate["start"]), float(candidate["end"])),
         )
         if candidate is None or candidate_overlap / max(0.001, end - start) < 0.25:
+            rejected_details.append({
+                "source": "recovery", "action": "rejected",
+                "before_start": start, "before_end": end,
+                "after_start": start, "after_end": end,
+                "text": text, "reason": "outside_recovery_region",
+            })
             continue
-        # Whisper may return a segment that extends beyond the suspicious
-        # interval. Keep only the portion that recovery was asked to inspect;
-        # otherwise context audio can be reintroduced as a duplicate.
+        # Usually clip context to the suspected gap. Preserve an utterance
+        # crossing the boundary only when its word alignment is strong;
+        # otherwise a second speaker's first words would be lost.
         candidate_start = float(candidate["start"])
         candidate_end = float(candidate["end"])
         clipped_start = max(start, candidate_start)
         clipped_end = min(end, candidate_end)
         if clipped_end <= clipped_start:
+            rejected_details.append({
+                "source": "recovery", "action": "rejected",
+                "before_start": start, "before_end": end,
+                "after_start": clipped_start, "after_end": clipped_end,
+                "text": text, "reason": "empty_after_clipping",
+            })
             continue
+        raw_words = [
+            word for word in (segment.words or [])
+            if word.start is not None and word.end is not None
+            and float(word.end) > float(word.start)
+        ]
+        raw_word_text = _normalize_text("".join(str(word.word) for word in raw_words))
+        raw_word_confidence = (
+            sum(float(word.probability or 0.0) for word in raw_words) / len(raw_words)
+            if raw_words else 0.0
+        )
+        crosses_main = any(
+            _interval_overlap((start, end), (float(item["start"]), float(item["end"]))) > 0.1
+            for item in main_segments
+        )
+        preserve_full_utterance = (
+            crosses_main and raw_words and raw_word_confidence >= 0.6
+            and SequenceMatcher(None, _normalize_text(text), raw_word_text).ratio() >= 0.8
+        )
+        if preserve_full_utterance:
+            clipped_start, clipped_end = start, end
         start = round(clipped_start, 3)
         end = round(clipped_end, 3)
         # Keep the original word span for the final overlap check. A word can
@@ -367,6 +516,12 @@ def _recover_missing_segments(
             float(candidate["end"]),
         )
         detail = {
+            "source": "recovery",
+            "before_start": original_start,
+            "before_end": original_end,
+            "after_start": start,
+            "after_end": end,
+            "action": "kept",
             "start": start,
             "end": end,
             "text": text,
@@ -380,10 +535,13 @@ def _recover_missing_segments(
             ),
             "candidate_rms_db": round(candidate_db, 3),
             "reasons": sorted(str(reason) for reason in candidate["reasons"]),
+            "preserved_across_recovery_boundary": bool(preserve_full_utterance),
         }
         item: dict[str, object] = {
             "start": start,
             "end": end,
+            "before_start": original_start,
+            "before_end": original_end,
             "text": text,
             "words": words,
             "alignment_start": round(min(start, alignment_start), 3),
@@ -392,6 +550,7 @@ def _recover_missing_segments(
 
         if candidate_db < RECOVERY_SILENCE_DB:
             detail["reason"] = "silent_region"
+            detail["action"] = "unverified"
             metadata["rejected_silence_count"] = int(metadata["rejected_silence_count"]) + 1
             uncertain_details.append(detail)
             continue
@@ -415,17 +574,43 @@ def _recover_missing_segments(
             detail["reason"] = (
                 "short_text_low_energy" if low_evidence else "missing_word_alignment"
             )
+            detail["action"] = "unverified"
             uncertain_details.append(detail)
             continue
-        existing_segments = [*main_segments, *accepted]
-        if _has_significant_overlap(item, existing_segments) or _is_duplicate(
-            item,
-            existing_segments,
-        ):
+        reliable_segments = [*reliable_main, *accepted]
+        if _is_duplicate(item, reliable_segments):
             metadata["rejected_duplicate_count"] = int(
                 metadata["rejected_duplicate_count"]
             ) + 1
+            rejected_details.append({**detail, "action": "rejected", "reason": "same_content_and_speech_time"})
             continue
+        significant_overlap = _has_significant_overlap(item, reliable_segments)
+        if significant_overlap and (not words or mean_word_probability is None or mean_word_probability < 0.45):
+            uncertain_details.append({**detail, "action": "unverified", "reason": "overlap_without_reliable_word_evidence"})
+            continue
+        if significant_overlap:
+            detail["reason"] = "distinct_content_with_reliable_words_despite_overlap"
+        elif any(_interval_overlap(
+            (start, end),
+            (float(main_segments[index]["start"]), float(main_segments[index]["end"])),
+        ) > 0 for index in uncertain_main_indices):
+            same_content = any(
+                SequenceMatcher(
+                    None, _normalize_text(text),
+                    _normalize_text(str(main_segments[index].get("text", ""))),
+                ).ratio() >= 0.82
+                for index in uncertain_main_indices
+                if _interval_overlap(
+                    (start, end),
+                    (float(main_segments[index]["start"]), float(main_segments[index]["end"])),
+                ) > 0
+            )
+            detail["reason"] = (
+                "same_content_overlaps_unverified_main_timing"
+                if same_content else "overlap_with_unverified_main_timing"
+            )
+        else:
+            detail["reason"] = "uncovered_speech"
 
         accepted.append(item)
         accepted_details.append(detail)
@@ -633,7 +818,19 @@ def run(request: dict[str, Any]) -> None:
                 value = 15 + round(min(float(segment.end) / duration, 1.0) * progress_span)
                 progress(value, f"Đang nhận dạng đến {float(segment.end):.1f}s / {duration:.1f}s…")
         recovered_segments: list[dict[str, object]] = []
-        recovery_metadata: dict[str, object] = {"enabled": False}
+        recovery_metadata: dict[str, object] = {
+            "enabled": False,
+            "main_timing_audit": [
+                {
+                    "source": "main", "main_index": index,
+                    "before_start": item["start"], "before_end": item["end"],
+                    "after_start": item["start"], "after_end": item["end"],
+                    "action": "unverified",
+                    "reason": "vad_disabled" if not bool(request.get("vad_filter", True)) else "duration_unavailable",
+                }
+                for index, item in enumerate(segments)
+            ],
+        }
         if bool(request.get("vad_filter", True)) and duration:
             progress(90, "Đang kiểm tra các vùng có khả năng thiếu lời thoại…")
             sampling_rate = int(model.feature_extractor.sampling_rate)
@@ -643,6 +840,9 @@ def run(request: dict[str, Any]) -> None:
                 VadOptions(),
                 sampling_rate=sampling_rate,
             )
+            main_timing_audit, uncertain_main_indices = _inspect_main_timing(
+                segments, speech_chunks, sampling_rate,
+            )
             recovered_segments, recovery_metadata = _recover_missing_segments(
                 model=model,
                 audio=audio,
@@ -651,7 +851,10 @@ def run(request: dict[str, Any]) -> None:
                 duration=duration,
                 main_segments=segments,
                 speech_chunks=speech_chunks,
+                uncertain_main_indices=uncertain_main_indices,
             )
+            recovery_metadata["main_timing_audit"] = main_timing_audit
+            recovery_metadata["uncertain_main_indices"] = sorted(uncertain_main_indices)
         progress(98, "Đang hoàn thiện transcript…")
         emit(
             {

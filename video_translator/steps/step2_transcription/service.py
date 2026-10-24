@@ -128,6 +128,8 @@ class SpeechToTextService:
                     "words": list(item.get("words", [])),
                     "alignment_start": float(item.get("alignment_start", item["start"])),
                     "alignment_end": float(item.get("alignment_end", item["end"])),
+                    "before_start": float(item.get("before_start", item["start"])),
+                    "before_end": float(item.get("before_end", item["end"])),
                 }
                 for item in raw_recovered
             ]
@@ -213,7 +215,7 @@ class SpeechToTextService:
             if isinstance(result.get("asr_recovery"), dict)
             else {"enabled": False}
         )
-        rejected_overlaps: list[dict[str, object]] = []
+        overlap_warnings: list[dict[str, object]] = []
         retained_recovered: list[dict[str, object]] = []
         for item in normalized_recovered:
             # Diarization rebuilds segments from word times, so check the
@@ -222,15 +224,15 @@ class SpeechToTextService:
             end = float(item["alignment_end"] if self.diarization else item["end"])
             overlap = self._max_overlap(start, end, segments)
             if overlap > RECOVERY_MAX_MAIN_OVERLAP_SECONDS + 1e-9:
-                rejected_overlaps.append({
+                overlap_warnings.append({
                     "stage": "word_alignment" if self.diarization else "segment",
                     "start": item["start"],
                     "end": item["end"],
                     "text": item["text"],
                     "main_overlap_seconds": round(overlap, 3),
+                    "reason": "overlap_kept_for_content_and_acoustic_review",
                 })
-            else:
-                retained_recovered.append(item)
+            retained_recovered.append(item)
 
         if self.diarization:
             recovered_segments = self._segments_with_speakers(
@@ -260,24 +262,62 @@ class SpeechToTextService:
         for item in recovered_segments:
             overlap = self._max_overlap(item.start, item.end, segments)
             if overlap > RECOVERY_MAX_MAIN_OVERLAP_SECONDS + 1e-9:
-                rejected_overlaps.append({
+                overlap_warnings.append({
                     "stage": "final_segment",
                     "start": item.start,
                     "end": item.end,
                     "text": item.text,
                     "main_overlap_seconds": round(overlap, 3),
+                    "reason": "overlap_kept_after_speaker_assignment",
                 })
-            else:
-                final_recovered.append(item)
+            final_recovered.append(item)
         recovery_metadata["max_main_overlap_seconds"] = RECOVERY_MAX_MAIN_OVERLAP_SECONDS
-        recovery_metadata["rejected_postprocess_overlap_count"] = len(rejected_overlaps)
-        recovery_metadata["rejected_postprocess_overlaps"] = rejected_overlaps
+        recovery_metadata["rejected_postprocess_overlap_count"] = 0
+        recovery_metadata["rejected_postprocess_overlaps"] = []
+        recovery_metadata["postprocess_overlap_warnings"] = overlap_warnings
         recovery_metadata["final_accepted_segment_count"] = len(final_recovered)
 
-        segments = sorted(
-            [*segments, *final_recovered],
-            key=lambda item: (item.start, item.end),
+        main_audit = recovery_metadata.get("main_timing_audit", [])
+        def source_index(item: TranscriptSegment, fallback: int) -> int:
+            indices = [
+                int(part["raw_index"]) for part in item.merge_parts
+                if isinstance(part, dict) and "raw_index" in part
+            ]
+            return min(indices) if indices else fallback
+
+        source_details: dict[int, dict[str, object]] = {}
+        for index, item in enumerate(segments):
+            origin = source_index(item, index)
+            audit = main_audit[origin] if isinstance(main_audit, list) and origin < len(main_audit) else {}
+            source_details[id(item)] = {
+                "source": "main", "source_index": origin,
+                "before_start": audit.get("before_start", item.start),
+                "before_end": audit.get("before_end", item.end),
+                "reason": audit.get("reason", "main_asr"),
+                "action": audit.get("action", "kept"),
+            }
+        for index, item in enumerate(final_recovered):
+            origin = source_index(item, index)
+            raw = normalized_recovered[origin] if origin < len(normalized_recovered) else {}
+            source_details[id(item)] = {
+                "source": "recovery", "source_index": origin,
+                "before_start": raw.get("before_start", item.start),
+                "before_end": raw.get("before_end", item.end),
+                "reason": "targeted_asr_recovery",
+                "action": "kept",
+            }
+        tagged = sorted(
+            [(item, "main") for item in segments] + [(item, "recovery") for item in final_recovered],
+            key=lambda pair: (pair[0].start, pair[0].end),
         )
+        segments = [item for item, _ in tagged]
+        recovery_metadata["final_segment_sources"] = [
+            {
+                "id": index, **source_details[id(item)],
+                "after_start": item.start, "after_end": item.end,
+            }
+            for index, (item, source) in enumerate(tagged, start=1)
+        ]
 
         probability = result.get("language_probability")
         duration = result.get("duration_seconds")
@@ -534,6 +574,7 @@ class SpeechToTextService:
             end = round(float(item["end"]), 3)
             part = {
                 "source_id": source_id,
+                "raw_index": item["raw_index"],
                 "start": start,
                 "end": end,
                 "duration": round(max(0.0, end - start), 3),
@@ -542,6 +583,7 @@ class SpeechToTextService:
             if (
                 merge_adjacent_segments
                 and merged
+                and merged[-1]["raw_index"] == item["raw_index"]
                 and merged[-1]["speaker_id"] == item["speaker_id"]
                 and abs(start - float(merged[-1]["end"])) < 0.01
             ):
@@ -555,6 +597,7 @@ class SpeechToTextService:
             else:
                 merged.append(
                     {
+                        "raw_index": item["raw_index"],
                         "start": start,
                         "end": end,
                         "text": str(item["text"]).strip(),

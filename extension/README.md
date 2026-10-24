@@ -56,6 +56,11 @@ Từ phiên bản 0.16.2, nhận diện nút tải không còn so khớp các t�
 Adapter xác định đúng resource row bằng tên file, loại nút preview phủ toàn hàng và chỉ bấm khi còn
 duy nhất một action hợp lệ, nên không phụ thuộc vào bất kỳ ngôn ngữ giao diện nào.
 
+Với ChatGPT, sau khi file đính kèm đã sẵn sàng và prompt đã được điền đầy đủ, extension chờ
+12 giây rồi kiểm tra nút Send tối đa 3 lần, cách nhau 3 giây. Khi tìm thấy đúng một nút hợp lệ,
+extension chỉ bấm một lần; nếu đã thử bấm nhưng giao diện chưa xác nhận gửi, job báo lỗi và không
+tự bấm lại để tránh gửi trùng.
+
 ## Phạm vi hiện tại
 
 - ChatGPT Web: gửi prompt, chờ phản hồi, đọc nội dung; các thao tác ChatGPT Project sẵn có vẫn được giữ nguyên.

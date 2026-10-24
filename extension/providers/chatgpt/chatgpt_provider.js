@@ -11,6 +11,9 @@ const comparable = text => normalize(text)
   .replace(/[\u200b-\u200d\ufeff]/gu, "")
   .replace(/\s+/gu, " ");
 const RESPONSE_SETTLE_DELAY_MS = 2000;
+const SEND_BUTTON_INITIAL_DELAY_MS = 12000;
+const SEND_BUTTON_RETRY_DELAY_MS = 3000;
+const SEND_BUTTON_MAX_ATTEMPTS = 3;
 
 export class ChatGPTProvider extends BaseProvider {
   constructor({ document: doc = document, timeoutMs = 180000,
@@ -234,20 +237,36 @@ export class ChatGPTProvider extends BaseProvider {
   async sendPrompt() {
     if (this.sent) throw error("DUPLICATE_EXECUTION", "sendPrompt may only be attempted once.");
     if (!this.prompt) throw error("PROMPT_SEND_FAILED", "No prompt has been prepared.");
-    await this.observe(() => {
+    this.log("WAITING FOR SEND BUTTON");
+    await new Promise(resolve => this.win.setTimeout(resolve, SEND_BUTTON_INITIAL_DELAY_MS));
+    let button = null;
+    for (let attempt = 1; attempt <= SEND_BUTTON_MAX_ATTEMPTS; attempt++) {
+      if (this.cancelled) throw error("PROVIDER_ERROR", "Local send wait cancelled.");
       const current = this.find(S.composer);
-      return current && this.enabledSendButton(current) ? true : null;
-    }, 10000, () => {
-      const current = this.find(S.composer);
-      return error(
+      if (!current || comparable(this.composerText(current)) !== comparable(this.prompt)
+          || this.find(S.stop)) {
+        throw error("PROMPT_SEND_FAILED", "Composer changed or generation is already active.");
+      }
+      button = this.enabledSendButton(current);
+      if (button) {
+        this.log(`SEND BUTTON READY ${attempt}/${SEND_BUTTON_MAX_ATTEMPTS}`);
+        break;
+      }
+      this.log(`SEND BUTTON NOT READY ${attempt}/${SEND_BUTTON_MAX_ATTEMPTS}`);
+      if (attempt < SEND_BUTTON_MAX_ATTEMPTS) {
+        await new Promise(resolve => this.win.setTimeout(resolve, SEND_BUTTON_RETRY_DELAY_MS));
+      }
+    }
+    if (!button) {
+      throw error(
         "PROMPT_SEND_FAILED",
-        `No unique enabled Send button; prompt was not retried. ${this.sendState(current)}`,
+        `No unique enabled Send button after ${SEND_BUTTON_MAX_ATTEMPTS} checks. `
+          + this.sendState(this.find(S.composer)),
       );
-    });
+    }
     const composer = this.find(S.composer);
-    const button = this.enabledSendButton(composer);
     if (!composer || comparable(this.composerText(composer)) !== comparable(this.prompt)
-        || !button || this.find(S.stop)) {
+        || button !== this.enabledSendButton(composer) || this.find(S.stop)) {
       throw error("PROMPT_SEND_FAILED", "Composer changed or generation is already active.");
     }
     this.beforeAssistantKeys = new Set(this.assistantTurns().map(

@@ -583,6 +583,7 @@ class GoogleTranslationService:
         duplicate_ids: set[int] = set()
         source_text_mismatches: list[dict[str, object]] = []
         invalid_items: list[dict[str, object]] = []
+        valid_items: list[SourceVerifiedTranslationItem] = []
         for position, item in enumerate(parsed, start=1):
             try:
                 value = (
@@ -592,6 +593,7 @@ class GoogleTranslationService:
             except (ValidationError, TypeError, ValueError) as exc:
                 invalid_items.append({"position": position, "reason": str(exc)})
                 continue
+            valid_items.append(value)
             if value.id in result:
                 duplicate_ids.add(value.id)
             expected_source = expected_source_by_id.get(value.id)
@@ -607,13 +609,62 @@ class GoogleTranslationService:
         actual = set(result)
         missing_ids = sorted(expected - actual)
         extra_ids = sorted(actual - expected)
-        if duplicate_ids or source_text_mismatches or invalid_items or missing_ids or extra_ids:
+        count_difference = len(parsed) - len(segments)
+        alignment_errors: list[dict[str, object]] = []
+        skipped_id: int | None = None
+        if count_difference == -1 and not invalid_items:
+            expected_position = 0
+            response_position = 0
+            while response_position < len(valid_items):
+                value = valid_items[response_position]
+                segment = segments[expected_position]
+                if value.id == segment.id and value.source_text == segment.source_text:
+                    expected_position += 1
+                    response_position += 1
+                    continue
+                next_position = expected_position + 1
+                if (
+                    skipped_id is None
+                    and next_position < len(segments)
+                    and value.id == segments[next_position].id
+                    and value.source_text == segments[next_position].source_text
+                ):
+                    skipped_id = segment.id
+                    expected_position = next_position
+                    continue
+                alignment_errors.append({
+                    "position": response_position + 1,
+                    "expected_id": segment.id,
+                    "expected_source_text": segment.source_text,
+                    "received_id": value.id,
+                    "received_source_text": value.source_text,
+                })
+                break
+            if not alignment_errors and skipped_id is None and expected_position == len(segments) - 1:
+                skipped_id = segments[-1].id
+                expected_position += 1
+            if not alignment_errors:
+                if skipped_id is not None and expected_position == len(segments):
+                    result[skipped_id] = ""
+                else:
+                    alignment_errors.append({"reason": "Không xác định được duy nhất một segment bị thiếu."})
+        if (
+            count_difference not in (0, -1)
+            or duplicate_ids
+            or invalid_items
+            or extra_ids
+            or alignment_errors
+            or (count_difference == 0 and missing_ids)
+        ):
             issues = {
                 "duplicate_ids": sorted(duplicate_ids),
                 "missing_ids": missing_ids,
                 "extra_ids": extra_ids,
                 "source_text_mismatches": source_text_mismatches,
                 "invalid_items": invalid_items,
+                "alignment_errors": alignment_errors,
+                "count_difference": count_difference,
+                "skipped_id": skipped_id,
                 "expected_count": len(expected_ids),
                 "response_count": len(parsed),
             }
@@ -624,7 +675,8 @@ class GoogleTranslationService:
             summary = (
                 f"Batch {batch_index}/{batch_total}: ID trùng {sorted(duplicate_ids)}; "
                 f"thiếu {missing_ids}; thừa {extra_ids}; "
-                f"câu gốc không khớp {len(source_text_mismatches)}; "
+                f"chênh lệch số mục {count_difference}; "
+                f"không căn khớp được {len(alignment_errors)}; "
                 f"mục sai cấu trúc {len(invalid_items)}."
             )
             raise UserFacingError(

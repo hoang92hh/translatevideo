@@ -43,6 +43,24 @@ template đã chọn từ thư mục provider tương ứng trong `reference/pro
 Gemini gửi file JSON cùng template qua API; ChatGPT Web và Claude Web gửi cùng nội dung qua extension.
 `OUTPUT CONTRACT` và quy tắc tên file nằm ngay trong template được chọn.
 
+### Nhật ký chẩn đoán Gemini Step 3
+
+Mỗi lần chạy Step 3 bằng Gemini tạo thư mục riêng tại
+`<workspace video>/translations/diagnostics/gemini-<thời điểm>-<mã>/`.
+Mỗi batch có thư mục `batch-<số batch>-<ID đầu>-<ID cuối>` chứa:
+
+- `request.json`: đúng nội dung JSON được upload cho Gemini, lưu trước khi gọi API.
+- `prompt.txt` và `metadata.json`: prompt, model, template, batch và ID mong đợi.
+- `response.json`: nguyên văn nội dung API trả về; nếu SDK chỉ cung cấp kết quả đã parse,
+  file này chứa bản JSON dựng từ kết quả đó và `response_source.txt` ghi `sdk_parsed_fallback`.
+- `error.json` khi lỗi: giai đoạn xảy ra lỗi và, với lỗi kiểm tra bản dịch, các ID trùng,
+  thiếu, thừa, bản dịch rỗng hoặc vị trí item sai cấu trúc.
+
+Thư mục này được giữ lại cả khi Step 3 thất bại và không chứa API key. Nội dung
+`request.json` và `response.json` có thể chứa lời thoại video, nên chỉ chia sẻ khi cần
+chẩn đoán. Nhật ký này chỉ áp dụng cho đường dịch Gemini hiện tại; không áp dụng cho
+ChatGPT Web hoặc Claude Web.
+
 ## 3. Payload của từng giai đoạn
 
 ### 3.1. Phân tích tổng quan

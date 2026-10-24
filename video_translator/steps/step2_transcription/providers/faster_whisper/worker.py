@@ -21,6 +21,7 @@ RECOVERY_MIN_GAP_SECONDS = 1.0
 RECOVERY_ACTIVITY_DB = -52.0
 RECOVERY_SILENCE_DB = -65.0
 RECOVERY_DUPLICATE_BOUNDARY_SECONDS = 0.15
+RECOVERY_SIGNIFICANT_OVERLAP_RATIO = 0.35
 
 
 def emit(event: dict[str, Any]) -> None:
@@ -127,6 +128,27 @@ def _is_duplicate(candidate: dict[str, object], existing: list[dict[str, object]
         if overlap_ratio >= 0.45 or (
             boundary_distance <= RECOVERY_DUPLICATE_BOUNDARY_SECONDS + 0.001
         ):
+            return True
+    return False
+
+
+def _has_significant_overlap(
+    candidate: dict[str, object],
+    existing: list[dict[str, object]],
+) -> bool:
+    """Return whether recovery rediscovered an already recognized interval.
+
+    Recovery is only meant to fill uncovered speech gaps. A candidate that
+    overlaps a main segment substantially is therefore unsafe even when
+    Whisper paraphrases or truncates the text differently.
+    """
+    candidate_range = (float(candidate["start"]), float(candidate["end"]))
+    candidate_duration = max(0.001, candidate_range[1] - candidate_range[0])
+    for item in existing:
+        item_range = (float(item["start"]), float(item["end"]))
+        overlap = _interval_overlap(candidate_range, item_range)
+        overlap_ratio = overlap / candidate_duration
+        if overlap_ratio >= RECOVERY_SIGNIFICANT_OVERLAP_RATIO:
             return True
     return False
 
@@ -382,7 +404,11 @@ def _recover_missing_segments(
             )
             uncertain_details.append(detail)
             continue
-        if _is_duplicate(item, [*main_segments, *accepted]):
+        existing_segments = [*main_segments, *accepted]
+        if _has_significant_overlap(item, existing_segments) or _is_duplicate(
+            item,
+            existing_segments,
+        ):
             metadata["rejected_duplicate_count"] = int(
                 metadata["rejected_duplicate_count"]
             ) + 1

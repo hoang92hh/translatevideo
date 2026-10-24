@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Callable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .....config.gemini import GEMINI_PROVIDER_NAME, GEMINI_RECOMMENDED_MODEL_IDS
 from .....config.prompt_templates import (
@@ -105,6 +106,27 @@ class GoogleTranslationService:
         self.prompt_template = str(
             (options or {}).get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)
         ).strip() or DEFAULT_PROMPT_TEMPLATE_ID
+        diagnostic_root = str((options or {}).get("diagnostics_root", "")).strip()
+        self.diagnostics_root = Path(diagnostic_root) if diagnostic_root else None
+
+    @staticmethod
+    def _record_diagnostic_error(
+        directory: Path | None,
+        stage: str,
+        message: str,
+        **details: object,
+    ) -> None:
+        if directory is None:
+            return
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "error.json").write_text(
+            json.dumps(
+                {"stage": stage, "message": message, **details},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     def _stage_prompt(
         self,
@@ -189,19 +211,69 @@ class GoogleTranslationService:
         temperature: float,
         input_filename: str,
         output_filename: str,
+        diagnostic_dir: Path | None = None,
+        expected_ids: list[int] | None = None,
+        batch_index: int = 1,
+        batch_total: int = 1,
     ) -> tuple[object, str]:
-        client, credential = self._client()
+        client = None
+        credential = None
         uploaded_file = None
+        stage = "prepare_request"
         try:
             from google.genai import types
 
             with TemporaryDirectory(prefix="translanguage-step3-") as temp_dir:
-                input_path = Path(temp_dir) / input_filename
-                output_path = Path(temp_dir) / output_filename
+                if diagnostic_dir is not None:
+                    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+                input_path = (
+                    diagnostic_dir / "request.json"
+                    if diagnostic_dir else Path(temp_dir) / input_filename
+                )
+                output_path = (
+                    diagnostic_dir / "response.json"
+                    if diagnostic_dir else Path(temp_dir) / output_filename
+                )
                 input_path.write_text(
                     json.dumps(content, ensure_ascii=False, separators=(",", ":")),
                     encoding="utf-8",
                 )
+                if diagnostic_dir is not None:
+                    (diagnostic_dir / "prompt.txt").write_text(system_instruction, encoding="utf-8")
+                    (diagnostic_dir / "metadata.json").write_text(
+                        json.dumps({
+                            "provider": GEMINI_PROVIDER_NAME,
+                            "model": self.model_name,
+                            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                            "prompt_template": self.prompt_template,
+                            "input_filename": input_filename,
+                            "output_filename": output_filename,
+                            "batch_index": batch_index,
+                            "batch_total": batch_total,
+                            "expected_ids": expected_ids,
+                        }, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                if expected_ids is not None:
+                    stage = "validate_request"
+                    raw_targets = content.get("segments_to_translate") if isinstance(content, dict) else None
+                    raw_ids = [item.get("id") for item in raw_targets] if isinstance(raw_targets, list) and all(isinstance(item, dict) for item in raw_targets) else []
+                    duplicates = sorted(
+                        id_value for id_value, count in Counter(
+                            id_value for id_value in raw_ids if type(id_value) is int
+                        ).items() if count > 1
+                    )
+                    invalid_positions = [index + 1 for index, id_value in enumerate(raw_ids) if type(id_value) is not int or id_value <= 0]
+                    if raw_ids != expected_ids or duplicates or invalid_positions:
+                        raise UserFacingError(
+                            "ID đầu vào Step 3 không hợp lệ",
+                            f"Batch {batch_index}/{batch_total}: ID đầu vào sai; trùng {duplicates}, vị trí không hợp lệ {invalid_positions}.",
+                            "Kiểm tra transcript Step 2 và request.json trong thư mục chẩn đoán.",
+                            f"Expected IDs: {expected_ids}; request IDs: {raw_ids}",
+                        )
+                stage = "connect_api"
+                client, credential = self._client()
+                stage = "upload_request"
                 uploaded_file = client.files.upload(
                     file=str(input_path),
                     config=types.UploadFileConfig(
@@ -209,6 +281,7 @@ class GoogleTranslationService:
                         mime_type="application/json",
                     ),
                 )
+                stage = "generate_response"
                 response = client.models.generate_content(
                     model=self.model_name,
                     contents=[uploaded_file],
@@ -219,38 +292,69 @@ class GoogleTranslationService:
                         temperature=temperature,
                     ),
                 )
-                if response.parsed is None:
-                    raise ValueError("Gemini không trả về structured output.")
-                response_text = (response.text or "").strip()
-                if not response_text:
-                    serializable = response.parsed
+                stage = "save_response"
+                response_text = response.text or ""
+                output_path.write_text(response_text, encoding="utf-8")
+                stage = "parse_response"
+                parsed = response.parsed
+                response_source = "api_text"
+                if not response_text and parsed is not None:
+                    serializable = parsed
                     if isinstance(serializable, BaseModel):
                         serializable = serializable.model_dump(mode="json")
                     elif isinstance(serializable, list):
                         serializable = [
-                            item.model_dump(mode="json")
-                            if isinstance(item, BaseModel)
-                            else item
+                            item.model_dump(mode="json") if isinstance(item, BaseModel) else item
                             for item in serializable
                         ]
-                    response_text = json.dumps(
-                        serializable,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                output_path.write_text(response_text, encoding="utf-8")
-                return response.parsed, credential.source
-        except UserFacingError:
+                    response_text = json.dumps(serializable, ensure_ascii=False, separators=(",", ":"))
+                    response_source = "sdk_parsed_fallback"
+                if response_source == "sdk_parsed_fallback":
+                    output_path.write_text(response_text, encoding="utf-8")
+                if diagnostic_dir is not None:
+                    (diagnostic_dir / "response_source.txt").write_text(response_source, encoding="utf-8")
+                if parsed is None:
+                    raise ValueError("Gemini không trả về structured output.")
+                return parsed, credential.source
+        except UserFacingError as exc:
+            self._record_diagnostic_error(
+                diagnostic_dir, stage, exc.error_message.message,
+                title=exc.error_message.title,
+                technical_detail=exc.error_message.technical_detail,
+            )
+            if diagnostic_dir is not None:
+                message = f"{exc.error_message.message} Nhật ký: {diagnostic_dir / 'error.json'}"
+                raise UserFacingError(
+                    exc.error_message.title, message,
+                    exc.error_message.suggestion,
+                    exc.error_message.technical_detail,
+                ) from exc
             raise
         except Exception as exc:
-            raise self._friendly_error(exc, credential.value) from exc
+            api_key = credential.value if credential is not None else ""
+            friendly = self._friendly_error(exc, api_key)
+            self._record_diagnostic_error(
+                diagnostic_dir, stage, friendly.error_message.message,
+                title=friendly.error_message.title,
+                exception_type=type(exc).__name__,
+                technical_detail=friendly.error_message.technical_detail,
+            )
+            if diagnostic_dir is not None:
+                raise UserFacingError(
+                    friendly.error_message.title,
+                    f"{friendly.error_message.message} Nhật ký: {diagnostic_dir / 'error.json'}",
+                    friendly.error_message.suggestion,
+                    friendly.error_message.technical_detail,
+                ) from exc
+            raise friendly from exc
         finally:
-            if uploaded_file is not None and getattr(uploaded_file, "name", None):
+            if client is not None and uploaded_file is not None and getattr(uploaded_file, "name", None):
                 try:
                     client.files.delete(name=uploaded_file.name)
                 except Exception:
                     pass
-            self._close(client)
+            if client is not None:
+                self._close(client)
 
     @staticmethod
     def _translation_map(parsed: object) -> dict[int, str]:
@@ -436,6 +540,11 @@ class GoogleTranslationService:
             batch_index,
             batch_total,
         )
+        expected_ids = [segment.id for segment in segments]
+        diagnostic_dir = (
+            self.diagnostics_root / f"batch-{batch_index:03d}-{segments[0].id:04d}-{segments[-1].id:04d}"
+            if self.diagnostics_root is not None else None
+        )
         parsed, credential_source = self._generate_structured(
             content,
             prompt,
@@ -443,8 +552,65 @@ class GoogleTranslationService:
             0.2,
             input_filename,
             output_filename,
+            diagnostic_dir=diagnostic_dir,
+            expected_ids=expected_ids,
+            batch_index=batch_index,
+            batch_total=batch_total,
         )
-        return TranslationResponse(self._translation_map(parsed), credential_source)
+        if not isinstance(parsed, list):
+            self._record_diagnostic_error(
+                diagnostic_dir, "validate_response", "Phản hồi không phải JSON array.",
+                response_type=type(parsed).__name__,
+            )
+            raise UserFacingError(
+                "Gemini trả về sai cấu trúc",
+                f"Batch {batch_index}/{batch_total}: phản hồi không phải danh sách bản dịch. Nhật ký: {diagnostic_dir / 'error.json' if diagnostic_dir else 'không có'}",
+            )
+        result: dict[int, str] = {}
+        duplicate_ids: set[int] = set()
+        empty_ids: set[int] = set()
+        invalid_items: list[dict[str, object]] = []
+        for position, item in enumerate(parsed, start=1):
+            try:
+                value = item if isinstance(item, TranslationItem) else TranslationItem.model_validate(item)
+            except (ValidationError, TypeError, ValueError) as exc:
+                invalid_items.append({"position": position, "reason": str(exc)})
+                continue
+            if value.id in result:
+                duplicate_ids.add(value.id)
+            if not value.translated_text.strip():
+                empty_ids.add(value.id)
+            result[value.id] = value.translated_text.strip()
+        expected = set(expected_ids)
+        actual = set(result)
+        missing_ids = sorted(expected - actual)
+        extra_ids = sorted(actual - expected)
+        if duplicate_ids or empty_ids or invalid_items or missing_ids or extra_ids:
+            issues = {
+                "duplicate_ids": sorted(duplicate_ids),
+                "empty_translation_ids": sorted(empty_ids),
+                "missing_ids": missing_ids,
+                "extra_ids": extra_ids,
+                "invalid_items": invalid_items,
+                "expected_count": len(expected_ids),
+                "response_count": len(parsed),
+            }
+            self._record_diagnostic_error(
+                diagnostic_dir, "validate_response", "Danh sách bản dịch Gemini không hợp lệ.",
+                **issues,
+            )
+            summary = (
+                f"Batch {batch_index}/{batch_total}: ID trùng {sorted(duplicate_ids)}; "
+                f"bản dịch rỗng {sorted(empty_ids)}; thiếu {missing_ids}; thừa {extra_ids}; "
+                f"mục sai cấu trúc {len(invalid_items)}."
+            )
+            raise UserFacingError(
+                "Kết quả Gemini không hợp lệ",
+                f"{summary} Nhật ký: {diagnostic_dir / 'error.json' if diagnostic_dir else 'không có'}",
+                "Mở request.json, response.json và error.json để đối chiếu.",
+                json.dumps(issues, ensure_ascii=False, indent=2),
+            )
+        return TranslationResponse(result, credential_source)
 
     def review_translation(
         self,

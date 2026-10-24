@@ -46,12 +46,18 @@ def execute(
         if all_project_segments
         else "single_request_per_file_batch_v1"
     )
+    provider_options = dict(settings)
+    if provider == GEMINI_PROVIDER_NAME:
+        diagnostic_id = f"gemini-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        provider_options["diagnostics_root"] = state.workspace_path(
+            "translations", "diagnostics", diagnostic_id
+        )
     translation_provider = create_translation_provider(
         provider,
         model_name,
         state.source_language,
         state.target_language,
-        settings,
+        provider_options,
     )
     workflow = TranslationWorkflow(translation_provider, batch_size)
     response = workflow.run(

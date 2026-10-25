@@ -16,33 +16,47 @@ Use `dialogue_profile`, `speaker_context`, `context_before`, `context_after`, an
 
 ### STAGE 2 — ACCURATE CONTEXTUAL TRANSLATION
 
-This is the primary translation pass. Translate every target segment into `{target_language}`. Never copy the source sentence as the translation when the languages differ.
+This is the primary translation pass. Account for every target's meaning in `{target_language}`, either in its own translation or once at its combined utterance's first ID. Never copy the source sentence as the translation when the languages differ.
 
-**Speaker Verification**
+**Dialogue continuity, speaker correction, and complete utterances**
 
-- Return the correct `speaker_id` for every target segment using dialogue context and story references.
-- Evaluate neighboring segments as a continuous dialogue group. Keep one speaker across sentence fragments and split utterances unless clear context proves a new turn.
-- Preserve continuity for short fragments, forms of address, interjections, and sentence continuations; do not switch speaker in the middle of an utterance.
-- Correct diarization errors when the context clearly shows another speaker is speaking.
-- Use only speaker IDs already present in the attached input; never invent, rename, merge, or delete speaker IDs.
-- If uncertain, keep the original `speaker_id` from `segments_to_translate`.
-- Change speaker only with clear evidence from dialogue turns and surrounding context, never only because adjacent diarization labels differ.
-- Reconstruct each contiguous time-adjacent utterance before translating, but return every original ID as a separate response object. Do not merge, omit, or renumber objects; the application may combine adjacent same-speaker segments after validation.
+Read every target and ALL supplied story references, dialogue profiles, context_before, context_after, and previous_translations before producing translations. Analyze the topic, setting, plot, relationships, sentence grammar, neighboring turns, and each character's intent. Infer only what the supplied material supports; do not pretend to know parts of the story that were not provided.
 
-Translate each segment according to its own source meaning and the global context.
+Step 2 preserves complete Main/Recovery ASR text and a non-overlapping timeline. Its boundaries may still split a sentence; a timing boundary is not automatically a new sentence or a new speaker. Main diarization labels are provisional. SPEAKER_RECOVERY and SPEAKER_UNKNOWN, when present, are placeholders, not established character identities.
+
+- Reconstruct the meaning of a whole utterance before translating. Translate naturally according to the genre and preceding/following dialogue, rather than producing disconnected literal fragments.
+- Combine consecutive TARGET segments only when they clearly form one sentence or one continuous speaker turn. Put the complete translation ONCE at the FIRST target ID and return translated_text="" for the following absorbed IDs. All original IDs and each ID's exact source_text must still be returned.
+- Do not combine actual exchanges between speakers, independent sentences separated by a meaningful pause, intentional repetitions, or utterances that merely have similar meanings. Do not group just because timestamps touch or speaker labels match. Prefer short complete utterances suitable for TTS, not long monologues.
+- For an uncombined target, use only its own source meaning. For a combined utterance, use only the source meaning of that consecutive target sequence. Neighboring/context-only text clarifies interpretation but must never be copied into a translation outside that sequence.
+- Never combine with context-only IDs or across batch boundaries. Preserve distinct meaningful speech; suspected ASR duplication alone is not permission to erase a real utterance. Preserve genuine repetitions, including repeated questions.
+- Correct speaker_id only when grammatical continuity, dialogue turns, and the supplied context provide enough evidence. For a clearly fragmented utterance, use one supported speaker across its parts. A different diarization label, a vocative, or a placeholder alone does not prove a different character.
+- Use only speaker IDs actually present in the attached input. Do not invent identities or new IDs. If the evidence is insufficient, keep the original speaker_id, including a placeholder. Do not force a speaker change just to enable grouping.
+- Do not invent words for an unclear ASR fragment. An empty translation is also permitted when no reliable meaning can be recovered. The tool handles EVERY empty translation identically: set start=end and skip it, without asking for extra fields or explanations.
+- Keep questions, statements, negation, commands, and exclamations distinct. 死了吗 / 你死了吗 ask whether someone is dead; 死了 describing a state means "Chết rồi.", not automatically "Chết đi!". 这不可能 means "Không thể nào!"; never append neighboring dialogue unless it belongs to the same combined target sequence.
+- Before returning, check for unsupported additions, missing meaning, duplicated wording within a translation or across neighbors, incorrect pronouns/titles, excessive length, and unsupported speaker changes. For a combined utterance, check against ALL its source fragments and their full time window, not just the first fragment.
+
+Example: targets 101="你", 102="到底想干什么", 103="啊" are clearly one question by SPEAKER_01:
+[
+  {"id":101,"speaker_id":"SPEAKER_01","source_text":"你","translated_text":"Rốt cuộc ngươi muốn làm gì hả?"},
+  {"id":102,"speaker_id":"SPEAKER_01","source_text":"到底想干什么","translated_text":""},
+  {"id":103,"speaker_id":"SPEAKER_01","source_text":"啊","translated_text":""}
+]
+The tool updates speaker labels and the timeline from the response. Do not return timestamps, merge IDs, confidence scores, explanations, or any additional fields.
+
+Translate each complete utterance according to its source meaning and the global context; preserve the per-ID output rules above.
 
 Priorities: accurate meaning → contextual consistency → correct names and forms of address → natural spoken Vietnamese → concise duration.
 
 - Preserve essential meaning, negation, names, numbers, intentions, and cause-and-effect.
 - Do not invent, expand, omit, or oversimplify information.
-- Use context to interpret meaning, NEVER borrow semantic content from neighboring segments.
+- Use context to interpret meaning. Move content only within a combined consecutive utterance; never borrow from outside it.
 - Maintain consistent titles, pronouns, relationships, and character speaking styles.
 - For historical dialogue, use natural Vietnamese appropriate to each character's status and the original wording. Do not arbitrarily replace one royal title with another.
 - Translate all essential meaning completely, but use the shortest natural and concise Vietnamese wording that preserves it.
 - Remove unnecessary repetition and filler without omitting information.
 - Target approximately 0.8–1.5x the source spoken duration using `duration_seconds` when available; meaning always takes priority.
-- For incomplete fragments, translate only reliably supported meaning. Return an empty string only when no reliable meaning can be recovered.
-- Do not merge, split, or duplicate segment content.
+- For incomplete fragments, translate only reliably supported meaning. Return an empty string for absorbed fragments or when no reliable meaning can be recovered; the tool skips every empty item.
+- Combine translation content only under the utterance rules above. Do not merge response objects, split an ID, renumber IDs, or duplicate meaning.
 
 ### STAGE 3 — GLOBAL REVIEW
 
@@ -60,7 +74,7 @@ Verify every target ID appears exactly once; do not return context-only IDs.
 
 Return ONLY a valid JSON array containing objects of this exact form:
 
-{"id": integer, "speaker_id": string, "source_text": string, "translated_text": string}
+[{"id": integer, "speaker_id": string, "source_text": string, "translated_text": string}]
 
 Copy `id` and `source_text` exactly from the same `segments_to_translate` item in the attached input. Do not renumber IDs or change the source text.
 Return a valid existing `speaker_id` for every item, correcting diarization only by selecting another existing speaker ID.

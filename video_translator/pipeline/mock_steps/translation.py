@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -10,8 +11,11 @@ from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ...config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
 from ...config.translation import PROPER_NAME_MODE_AUTO, resolve_proper_name_policy
 from ...common.models import StepId, StepResult, TranslationCandidate
-from ...steps.step3_translation.service import TranslationWorkflow
-from ...steps.step3_translation.quality import assess_segments
+from ...errors import UserFacingError
+from ...steps.step3_translation.service import CONTEXT_SEGMENT_COUNT, TranslationWorkflow
+from ...steps.step3_translation.quality import (
+    assess_gemini_segments, assess_segments, gemini_translation_groups,
+)
 from ...steps.step3_translation.providers import create_translation_provider
 from ...state import ProjectState
 from .common import previous_segments
@@ -56,6 +60,118 @@ def _collapse_same_speaker_runs(segments: list[Any]) -> None:
         index = run_end + 1
 
 
+
+def _apply_gemini_empty_results(
+    segments: list[Any], originals: list[Any], batch_size: int,
+) -> None:
+    """Keep the existing empty-result rule and apply its consecutive time window."""
+    by_id = {segment.id: segment for segment in originals}
+    for segment in segments:
+        original = by_id[segment.id]
+        segment.start, segment.end = original.start, original.end
+        if not segment.translated_text.strip():
+            segment.start = segment.end
+    for group in gemini_translation_groups(segments, batch_size):
+        if len(group) < 2:
+            continue
+        first = group[0]
+        sources = [by_id[segment.id] for segment in group]
+        first.end = max(segment.end for segment in sources)
+        parts = []
+        for source in sources:
+            parts.extend(deepcopy(source.merge_parts) or [{
+                "source_id": source.id,
+                "start": source.start, "end": source.end,
+                "duration": source.duration, "text": source.source_text,
+            }])
+        total = sum(max(0.0, float(part.get("duration", 0.0))) for part in parts)
+        for part in parts:
+            part["ratio"] = (
+                max(0.0, float(part.get("duration", 0.0))) / total
+                if total else 1.0 / len(parts)
+            )
+        first.merge_parts = parts
+
+
+def _review_gemini_segments(
+    translation_provider: Any,
+    segments: list[Any],
+    originals: list[Any],
+    batch_size: int,
+    dialogue_profile: dict[str, object],
+    proper_name_policy: dict[str, object],
+    review_issues: list[dict[str, object]],
+    target_language: str,
+) -> tuple[list[dict[str, object]], int]:
+    """Repair nonempty utterances with absorbed source fragments as read-only context."""
+    groups = gemini_translation_groups(segments, batch_size)
+    group_by_id = {group[0].id: group for group in groups}
+    positions = {segment.id: index for index, segment in enumerate(originals)}
+    current_by_id = {segment.id: segment for segment in segments}
+    target_ids = {int(issue["id"]) for issue in review_issues}
+    all_issues = list(review_issues)
+    review_count = 0
+    for batch_start in range(0, len(segments), batch_size):
+        batch_ids = {segment.id for segment in segments[batch_start:batch_start + batch_size]}
+        targets = target_ids & batch_ids & set(group_by_id)
+        if not targets:
+            continue
+        context_positions: set[int] = set()
+        for target_id in targets:
+            group = group_by_id[target_id]
+            first = positions[group[0].id]
+            last = positions[group[-1].id]
+            context_positions.update(range(
+                max(0, first - CONTEXT_SEGMENT_COUNT),
+                min(len(originals), last + CONTEXT_SEGMENT_COUNT + 1),
+            ))
+        context = []
+        for position in sorted(context_positions):
+            source = deepcopy(originals[position])
+            current = current_by_id[source.id]
+            source.translated_text = current.translated_text
+            source.speaker_id = current.speaker_id
+            if source.id in targets:
+                source.end = max(
+                    originals[positions[member.id]].end
+                    for member in group_by_id[source.id]
+                )
+            context.append(source)
+        requested = [segment for segment in context if segment.id in targets]
+        issues = [issue for issue in review_issues if int(issue["id"]) in targets]
+        feedback = ""
+        for attempt in range(2):
+            try:
+                reviewed = translation_provider.review_translation(
+                    requested, dialogue_profile, proper_name_policy,
+                    batch_index=batch_start // batch_size + 1,
+                    batch_total=max(1, (len(segments) + batch_size - 1) // batch_size),
+                    context_segments=context,
+                    quality_issues=issues,
+                    validation_feedback=feedback,
+                )
+                TranslationWorkflow._validate_target_language(
+                    reviewed.corrections, requested, target_language,
+                )
+                break
+            except UserFacingError as exc:
+                if attempt == 1:
+                    raise
+                feedback = exc.error_message.message + "\n" + exc.error_message.technical_detail
+        for segment in requested:
+            current = current_by_id[segment.id]
+            current.translated_text = reviewed.corrections[segment.id]
+            if segment.id in reviewed.corrected_speakers:
+                current.speaker_id = reviewed.corrected_speakers[segment.id]
+            if not current.translated_text.strip():
+                current.start = current.end
+        all_issues.extend(reviewed.issues)
+        review_count += 1
+    if review_count:
+        all_issues.extend(assess_gemini_segments(segments, originals, batch_size))
+    return all_issues, review_count
+
+
 def execute(
     state: ProjectState,
     settings: dict[str, Any],
@@ -75,6 +191,8 @@ def execute(
         proper_name_mode,
     )
     segments = previous_segments(state, StepId.TRANSLATE)
+    is_gemini = provider == GEMINI_PROVIDER_NAME
+    original_segments = deepcopy(segments) if is_gemini else []
     all_project_segments = bool(settings.get("all_project_segments", True))
     batch_size = (
         len(segments)
@@ -112,10 +230,19 @@ def execute(
         if not segment.translated_text.strip():
             segment.start = segment.end
 
-    review_issues = assess_segments(segments)
+    review_issues = (
+        response.review_issues + assess_gemini_segments(segments, original_segments, batch_size)
+        if is_gemini else assess_segments(segments)
+    )
     review_ids = {int(item["id"]) for item in review_issues}
     review_batch_count = 0
-    if review_ids:
+    if is_gemini:
+        review_issues, review_batch_count = _review_gemini_segments(
+            translation_provider, segments, original_segments, batch_size,
+            response.dialogue_profile, response.proper_name_policy,
+            review_issues, state.target_language,
+        )
+    elif review_ids:
         review_segments = [segment for segment in segments if segment.id in review_ids]
         review_response = translation_provider.review_translation(
             review_segments,
@@ -129,7 +256,14 @@ def execute(
                 segment.speaker_id = review_response.corrected_speakers[segment.id]
         review_issues.extend(review_response.issues)
         review_batch_count = 1
-    _collapse_same_speaker_runs(segments)
+    if is_gemini:
+        TranslationWorkflow._validate_target_language(
+            {segment.id: segment.translated_text for segment in segments},
+            original_segments, state.target_language,
+        )
+        _apply_gemini_empty_results(segments, original_segments, batch_size)
+    else:
+        _collapse_same_speaker_runs(segments)
     skipped_translation_ids = [
         segment.id
         for segment in segments
@@ -166,7 +300,7 @@ def execute(
             "analysis_batches": response.analysis_batch_count,
             "translation_batches": response.translation_batch_count,
             "review_batches": response.review_batch_count + review_batch_count,
-            "review_issues": response.review_issues + review_issues,
+            "review_issues": review_issues if is_gemini else response.review_issues + review_issues,
         },
         "segments": [
             {
@@ -240,7 +374,7 @@ def execute(
             "analysis_batches": response.analysis_batch_count,
             "translation_batches": response.translation_batch_count,
             "review_batches": response.review_batch_count + review_batch_count,
-            "review_issues": response.review_issues + review_issues,
+            "review_issues": review_issues if is_gemini else response.review_issues + review_issues,
         },
         "dialogue_profile_path": str(profile_path),
         "source_transcript_candidate_id": state.selected_transcript_candidate_id,

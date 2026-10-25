@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 from ...common.models import Segment
 
@@ -48,4 +49,57 @@ def assess_segments(segments: list[Segment]) -> list[dict[str, object]]:
             segment_issues.append("duplicate_with_next")
         if segment_issues:
             issues.append({"id": segment.id, "issues": segment_issues})
+    return issues
+
+
+def gemini_translation_groups(
+    segments: list[Segment], batch_size: int,
+) -> list[list[Segment]]:
+    """Read consecutive empty results without inventing a new API contract."""
+    groups: list[list[Segment]] = []
+    size = max(1, batch_size)
+    for start in range(0, len(segments), size):
+        current: list[Segment] | None = None
+        for segment in segments[start:start + size]:
+            if segment.translated_text.strip():
+                current = [segment]
+                groups.append(current)
+            elif current is not None:
+                current.append(segment)
+    return groups
+
+
+def assess_gemini_segments(
+    segments: list[Segment], originals: list[Segment], batch_size: int,
+) -> list[dict[str, object]]:
+    """Assess complete utterances on copies; never mutate source/timeline."""
+    by_id = {segment.id: segment for segment in originals}
+    representatives: list[Segment] = []
+    for group in gemini_translation_groups(segments, batch_size):
+        first = group[0]
+        sources = [by_id[segment.id] for segment in group]
+        representatives.append(replace(
+            first,
+            start=sources[0].start,
+            end=max(segment.end for segment in sources),
+            source_text=" ".join(segment.source_text for segment in sources),
+        ))
+    issues = assess_segments(representatives)
+    for segment in representatives:
+        sentences = [
+            sentence.strip().casefold()
+            for sentence in re.split(r"(?<=[.!?…])\s+", segment.translated_text)
+            if sentence.strip()
+        ]
+        if len(sentences) != len(set(sentences)):
+            issues.append({"id": segment.id, "issues": ["repeated_sentence_inside_translation"]})
+        source = re.sub(r"\s|[.!?。！？]", "", segment.source_text)
+        if source == "死了" and re.search(r"\bchết\s+đi\b", segment.translated_text, re.IGNORECASE):
+            issues.append({"id": segment.id, "issues": ["unsupported_imperative"]})
+    for previous, following in zip(representatives, representatives[1:]):
+        left = re.findall(r"\w+", previous.translated_text.casefold())
+        right = re.findall(r"\w+", following.translated_text.casefold())
+        if any(left[-size:] == right[:size] for size in range(4, min(len(left), len(right)) + 1)):
+            for segment in (previous, following):
+                issues.append({"id": segment.id, "issues": ["overlapping_translation_with_neighbor"]})
     return issues

@@ -42,6 +42,36 @@ class SpeechToTextStepPage(StepPage):
         ),
     )
 
+    def __init__(self, state) -> None:
+        self._chain_running = False
+        self._processing = False
+        super().__init__(state)
+
+    def _build_header(self) -> QHBoxLayout:
+        header = super()._build_header()
+        self.rerun_chain_button = QPushButton("Chạy lại Step 2 → 7")
+        self.rerun_chain_button.setObjectName("primaryButton")
+        self.rerun_chain_button.clicked.connect(
+            lambda: self.run_from_here_requested.emit(self.spec.step.value)
+        )
+        header.addWidget(self.rerun_chain_button)
+        return header
+
+    def _refresh_rerun_button(self) -> None:
+        if not hasattr(self, "rerun_chain_button"):
+            return
+        busy = self._processing or self._chain_running
+        self.rerun_chain_button.setEnabled(
+            not busy and self.state.can_run(self.spec.step)
+        )
+        self.rerun_chain_button.setText(
+            "Đang chạy Step 2 → 7…" if busy else "Chạy lại Step 2 → 7"
+        )
+
+    def set_chain_running(self, running: bool) -> None:
+        self._chain_running = running
+        self._refresh_rerun_button()
+
     def build_special_card(self) -> Card:
         card = Card("Audio input", "Chọn candidate Voice hoặc Original Mix được tạo ở Step 1.")
         self.audio_input = QComboBox()
@@ -73,10 +103,12 @@ class SpeechToTextStepPage(StepPage):
         self.audio_input.blockSignals(False)
         if hasattr(self, "transcript_combo") and not getattr(self, "_processing", False):
             self._refresh_transcripts()
+        self._refresh_rerun_button()
 
     def set_busy(self, busy: bool) -> None:
         self._processing = busy
         super().set_busy(busy)
+        self._refresh_rerun_button()
         if not busy and hasattr(self, "transcript_combo"):
             self._refresh_transcripts(prefer_selected=True)
 

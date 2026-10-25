@@ -100,7 +100,13 @@ class TranslationCorrection(BaseModel):
     reason: str = ""
 
 
+class GeminiReviewCorrection(TranslationCorrection):
+    source_text: str
+
+
 class GoogleTranslationService:
+    provider_name = GEMINI_PROVIDER_NAME
+
     def __init__(
         self,
         model_name: str,
@@ -150,7 +156,7 @@ class GoogleTranslationService:
             first_id,
             last_id,
         )
-        template_id = "review" if stage == "REVIEW" and (self.diagnostics_root is not None) else self.prompt_template
+        template_id = "review" if stage == "REVIEW" else self.prompt_template
         prompt = render_prompt_template(
             GEMINI_PROVIDER_NAME,
             template_id,
@@ -533,6 +539,7 @@ class GoogleTranslationService:
         response_file: bool = False,
         batch_index: int = 1,
         batch_total: int = 1,
+        validation_feedback: str = "",
     ) -> TranslationResponse:
         content = {
             "dialogue_profile": dialogue_profile,
@@ -556,8 +563,18 @@ class GoogleTranslationService:
             "Keep id and source_text exactly unchanged. For speaker_id, choose the correct "
             "speaker from the speaker IDs present in the request, correcting diarization errors "
             "when the dialogue context clearly shows that another speaker is speaking. Never invent "
-            "a new speaker ID, merge segments, or renumber IDs."
+            "a new speaker ID or renumber IDs. You may combine consecutive fragments into one "
+            "complete translated utterance at the first ID, with empty translated_text at the "
+            "absorbed IDs. Never merge response objects or source_text fields. Every empty "
+            "translation is skipped by the tool; do not return extra fields."
+
         )
+        if validation_feedback:
+            prompt += (
+                "\n\nRETRY FEEDBACK: The previous response failed validation:\n"
+                + validation_feedback
+                + "\nCorrect the reported problem using the attached input. Keep the same JSON contract."
+            )
         expected_ids = [segment.id for segment in segments]
         expected_source_by_id = {segment.id: segment.source_text for segment in segments}
         diagnostic_dir = (
@@ -702,44 +719,96 @@ class GoogleTranslationService:
         proper_name_policy: dict[str, object],
         batch_index: int = 1,
         batch_total: int = 1,
+        *,
+        context_segments: list[Segment] | None = None,
+        quality_issues: list[dict[str, object]] | None = None,
+        validation_feedback: str = "",
     ) -> TranslationReviewResponse:
+        context = context_segments if context_segments is not None else segments
         content = {
             "dialogue_profile": dialogue_profile,
             "proper_name_policy": proper_name_policy,
-            "speaker_context": self._speaker_context(segments, dialogue_profile),
-            "full_translation": self._full_transcript(segments, include_translation=True),
+            "speaker_context": self._speaker_context(context, dialogue_profile),
+            "full_translation": "\n".join(
+                f"[{segment.id:04d}] {segment.speaker_id.strip() or 'SPEAKER_UNKNOWN'} "
+                f"({segment.start:.3f}–{segment.end:.3f}s): {segment.source_text}\n"
+                f"         TRANSLATION: {segment.translated_text}"
+                for segment in context
+            ),
         }
         prompt, input_filename, output_filename = self._stage_prompt(
-            "REVIEW",
-            segments,
-            batch_index,
-            batch_total,
+            "REVIEW", segments, batch_index, batch_total,
+        )
+        expected = {segment.id: segment for segment in segments}
+        allowed_speakers = {
+            segment.speaker_id.strip() or "SPEAKER_UNKNOWN" for segment in context
+        }
+        prompt += (
+            "\n\nRequested correction IDs: " + json.dumps(list(expected))
+            + ". Return only those IDs, including unchanged requested translations. "
+            "All other IDs in full_translation are read-only context. Empty context "
+            "translations are skipped items; use their source only to understand the "
+            "preceding complete utterance, never restore them as extra corrections. "
+            "The first item of a combined utterance has the full time window shown.\n"
+            "Quality checks to address (judge them against the source and context):\n"
+            + json.dumps(quality_issues or [], ensure_ascii=False)
+        )
+        if validation_feedback:
+            prompt += "\nPrevious review validation error to correct:\n" + validation_feedback
+        diagnostic_dir = (
+            self.diagnostics_root / f"review-{batch_index:03d}-{segments[0].id:04d}-{segments[-1].id:04d}"
+            if self.diagnostics_root is not None else None
         )
         parsed, credential_source = self._generate_structured(
-            content,
-            prompt,
-            list[TranslationCorrection],
-            0.1,
-            input_filename,
-            output_filename,
+            content, prompt, list[GeminiReviewCorrection], 0.1,
+            input_filename, output_filename, diagnostic_dir=diagnostic_dir,
         )
-        if not isinstance(parsed, list):
-            raise ValueError("Provider không trả về danh sách correction.")
-        corrections: dict[int, str] = {}
-        corrected_speakers: dict[int, str] = {}
-        issues: list[dict[str, object]] = []
-        for item in parsed:
-            value = (
-                item
-                if isinstance(item, TranslationCorrection)
-                else TranslationCorrection.model_validate(item)
+        try:
+            if not isinstance(parsed, list):
+                raise ValueError("Provider không trả về danh sách correction.")
+            corrections: dict[int, str] = {}
+            corrected_speakers: dict[int, str] = {}
+            issues: list[dict[str, object]] = []
+            for item in parsed:
+                value = (
+                    item if isinstance(item, GeminiReviewCorrection)
+                    else GeminiReviewCorrection.model_validate(item)
+                )
+                if value.id not in expected or value.id in corrections:
+                    raise ValueError(f"Correction có ID trùng hoặc không được yêu cầu: {value.id}")
+                # Match corrections by ID; keep the source text already stored.
+                speaker = value.speaker_id.strip() or (
+                    expected[value.id].speaker_id.strip() or "SPEAKER_UNKNOWN"
+                )
+                if speaker not in allowed_speakers:
+                    raise ValueError(f"Correction dùng speaker không có trong input: {speaker}")
+                # Empty corrections are valid: the caller always sets start=end.
+                corrections[value.id] = value.corrected_text.strip()
+                corrected_speakers[value.id] = speaker
+                issues.append(value.model_dump(mode="json"))
+            missing = set(expected) - set(corrections)
+            if len(parsed) == len(segments) - 1 and len(missing) == 1:
+                skipped_id = next(iter(missing))
+                corrections[skipped_id] = ""
+                corrected_speakers[skipped_id] = expected[skipped_id].speaker_id
+                self._record_diagnostic_error(
+                    diagnostic_dir, "review_count_difference",
+                    "Thiếu một correction; giữ quy tắc bù bằng chuỗi rỗng.",
+                    missing_ids=[skipped_id],
+                )
+            elif len(parsed) != len(segments) or missing:
+                raise ValueError(
+                    f"Review sai số lượng: expected={len(segments)}, received={len(parsed)}, "
+                    f"missing={sorted(missing)}"
+                )
+        except (ValidationError, ValueError, TypeError) as exc:
+            self._record_diagnostic_error(
+                diagnostic_dir, "validate_review", str(exc),
             )
-            if value.id in corrections or not value.corrected_text.strip():
-                raise ValueError(f"Correction trùng hoặc trống: {value.id}")
-            corrections[value.id] = value.corrected_text.strip()
-            if value.speaker_id.strip():
-                corrected_speakers[value.id] = value.speaker_id.strip()
-            issues.append(value.model_dump(mode="json"))
+            raise UserFacingError(
+                "Phản hồi review Gemini không hợp lệ", str(exc),
+                "Kiểm tra request/response/error trong thư mục diagnostics.",
+            ) from exc
         return TranslationReviewResponse(corrections, issues, credential_source, corrected_speakers)
 
     def translate(

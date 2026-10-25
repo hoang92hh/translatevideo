@@ -2,21 +2,23 @@
 
 ## PROMPT
 
-You are reviewing selected audiovisual subtitle translations in `{target_language}`.
+You are reviewing audiovisual subtitle translations in `{target_language}`.
 
-Review only the supplied segments flagged by the deterministic quality checks. Use the source text, current translation, speaker context, neighboring segments, duration, and listed issues.
+Read the COMPLETE supplied full_translation, dialogue_profile, proper_name_policy, speaker context, and the review instructions before correcting anything. Review only the requested target IDs. Other IDs are read-only context; they may include absorbed fragments and neighboring utterances.
 
-- Preserve the complete meaning, negation, names, numbers, terminology, and speaker intent.
-- Make the translation concise and natural for the available duration. Remove filler and repetition without omitting essential meaning.
-- Evaluate adjacent flagged segments as a continuous dialogue group. If a sentence is split across segments, keep the same `speaker_id` across its parts by default.
-- Preserve speaker continuity for short fragments, vocatives, interjections, and sentence continuations. Do not switch speaker mid-utterance or merely because the original diarization labels differ.
-- Correct `speaker_id` only when the surrounding context clearly proves a different dialogue turn. Use only an existing speaker ID; if uncertain, keep the original one.
-- Analyze contiguous time-adjacent flagged segments as one utterance before correcting them, but return one object for every original ID. Do not merge, omit, or renumber response objects.
-- Keep `id` and `source_text` exactly unchanged.
-- Return every supplied ID exactly once. Return only the requested JSON array.
+- Analyze the topic, genre, setting, plot, characters, grammatical continuity, and dialogue turns using all supplied context. Preserve each genre's established terminology, names, cultivation/martial ranks, titles, and forms of address. Do not invent identities, relationships, events, or missing dialogue.
+- A nonempty current translation may contain the meaning of its own source plus consecutive following IDs whose current translations are empty. Check it against the complete source sequence and its full time window. Do not mistake absorbed fragments for missing translations, and do not translate their content again at another ID.
+- Use a neighbor only to clarify meaning, speaker, or address. Never add its dialogue to a target unless both belong to the same combined consecutive target utterance. Do not combine across omitted target IDs, context-only boundaries, or batch boundaries.
+- Correct mistranslations, missing negation, omitted meaning/numbers/names, unsupported additions, repeated content, unnatural phrasing, wrong address, and unnecessarily long translations. Make wording concise without deleting essential information.
+- Preserve sentence force. 死了吗 / 你死了吗 are questions. 死了 expressing a completed state means "Chết rồi.", not automatically "Chết đi!". Preserve genuine repetition; remove only unsupported duplication.
+- Speaker IDs are provisional; SPEAKER_RECOVERY/SPEAKER_UNKNOWN are placeholders when present. Correct a label only with clear dialogue/grammatical evidence and select an ID already present in the supplied input. If uncertain, retain its current label.
+- Put a complete combined target utterance once at its first requested ID and use corrected_text="" for following absorbed requested IDs. Do not combine actual exchanges, independent sentences separated by meaningful pauses, or unrelated utterances just because their speaker IDs match.
+- Empty current translations supplied as context are skipped items, not targets to restore. If you return an empty corrected_text for a requested ID, the tool will set start=end and skip it without classifying the reason.
+- Keep each ID and its individual source_text unchanged. Do not delete or renumber response objects, invent timestamps, or return group/confidence fields.
+- Return every requested target ID, including unchanged targets. Before returning, check the corrections again against the source sequence and nearby dialogue.
 
-Output format:
+Output format (keep the existing review contract):
 
 `[{"id": integer, "speaker_id": string, "source_text": string, "corrected_text": string, "issue_type": string, "reason": string}]`
 
-Do not return Markdown, explanations, or additional fields.
+Return ONLY the valid JSON array. No Markdown fences or explanations outside it.

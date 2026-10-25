@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -112,7 +113,7 @@ class SpeechToTextService:
                 {
                     "start": float(item["start"]),
                     "end": float(item["end"]),
-                    "text": str(item["text"]).strip(),
+                    "text": str(item["text"]),
                     "words": list(item.get("words", [])),
                 }
                 for item in raw_segments
@@ -120,19 +121,45 @@ class SpeechToTextService:
             raw_recovered = result.get("recovered_segments", [])
             if not isinstance(raw_recovered, list):
                 raw_recovered = []
-            normalized_recovered = [
-                {
-                    "start": float(item["start"]),
-                    "end": float(item["end"]),
-                    "text": str(item["text"]).strip(),
+            normalized_recovered = []
+            recovery_info = result.get("asr_recovery", {})
+            timing_audit = recovery_info.get("main_timing_audit", []) if isinstance(recovery_info, dict) else []
+            for item in raw_recovered:
+                start = float(item["start"])
+                end_value = item.get("end")
+                end = float(end_value) if end_value is not None else None
+                if end is None or not math.isfinite(end) or end <= start:
+                    # Only a missing/invalid Recovery end needs a substitute.
+                    # Prefer the original enclosing Main interval when available.
+                    parents = [
+                        (float(record["before_start"]), float(record["before_end"]))
+                        for record in timing_audit
+                        if isinstance(record, dict)
+                        and record.get("before_start") is not None
+                        and record.get("before_end") is not None
+                        and float(record["before_start"]) <= start < float(record["before_end"])
+                    ]
+                    if not parents:
+                        parents = [
+                            (float(main["start"]), float(main["end"]))
+                            for main in normalized
+                            if float(main["start"]) <= start < float(main["end"])
+                        ]
+                    if not parents:
+                        raise ValueError(
+                            f"Recovery tại {start}s thiếu end và không có Main bao phủ để lấy mốc dự phòng."
+                        )
+                    end = max(parents, key=lambda interval: interval[0])[1]
+                normalized_recovered.append({
+                    "start": start,
+                    "end": end,
+                    "text": str(item["text"]),
                     "words": list(item.get("words", [])),
-                    "alignment_start": float(item.get("alignment_start", item["start"])),
-                    "alignment_end": float(item.get("alignment_end", item["end"])),
-                    "before_start": float(item.get("before_start", item["start"])),
-                    "before_end": float(item.get("before_end", item["end"])),
-                }
-                for item in raw_recovered
-            ]
+                    "alignment_start": float(item["alignment_start"] if item.get("alignment_start") is not None else start),
+                    "alignment_end": float(item["alignment_end"] if item.get("alignment_end") is not None else end),
+                    "before_start": float(item["before_start"] if item.get("before_start") is not None else start),
+                    "before_end": float(item["before_end"] if item.get("before_end") is not None else end),
+                })
         except (KeyError, TypeError, ValueError) as exc:
             raise SpeechToTextError(
                 "Kết quả Faster Whisper không hợp lệ",
@@ -218,8 +245,8 @@ class SpeechToTextService:
         overlap_warnings: list[dict[str, object]] = []
         retained_recovered: list[dict[str, object]] = []
         for item in normalized_recovered:
-            # Diarization rebuilds segments from word times, so check the
-            # original word extent before using the clipped word timestamps.
+            # Keep overlaps for review using the full ASR word extent;
+            # never cut or rebuild the utterance to make it fit.
             start = float(item["alignment_start"] if self.diarization else item["start"])
             end = float(item["alignment_end"] if self.diarization else item["end"])
             overlap = self._max_overlap(start, end, segments)
@@ -257,6 +284,14 @@ class SpeechToTextService:
                 )
                 for item in retained_recovered
             ]
+
+        # Preserve an acoustic speaker if one exists. Only unknown Recovery
+        # speakers get a symbolic label; Main labels are never rewritten here.
+        recovered_segments = [
+            replace(item, speaker_id="SPEAKER_RECOVERY")
+            if item.speaker_id in {"", "SPEAKER_UNKNOWN"} else item
+            for item in recovered_segments
+        ]
 
         final_recovered: list[TranscriptSegment] = []
         for item in recovered_segments:
@@ -310,7 +345,33 @@ class SpeechToTextService:
             [(item, "main") for item in segments] + [(item, "recovery") for item in final_recovered],
             key=lambda pair: (pair[0].start, pair[0].end),
         )
-        segments = [item for item, _ in tagged]
+        ordered = [item for item, _ in tagged]
+        resolved = self._non_overlapping_timeline(ordered)
+        timeline_warnings: list[dict[str, object]] = []
+        for index, (original, adjusted) in enumerate(zip(ordered, resolved, strict=True)):
+            detail = dict(source_details[id(original)])
+            if adjusted.end != original.end:
+                detail["action"] = "trimmed"
+                detail["reason"] = "end_trimmed_to_next_segment_start"
+                following = ordered[index + 1]
+                timeline_warnings.append({
+                    "stage": "final_segment",
+                    "start": original.start,
+                    "end": original.end,
+                    "text": original.text,
+                    "main_overlap_seconds": round(
+                        min(original.end, following.end) - following.start, 3,
+                    ),
+                    "reason": "overlap_resolved_at_next_segment_start",
+                })
+            source_details[id(adjusted)] = detail
+        tagged = [
+            (adjusted, origin)
+            for adjusted, (_, origin) in zip(resolved, tagged, strict=True)
+        ]
+        segments = resolved
+        recovery_metadata["postprocess_overlap_warnings"] = timeline_warnings
+        recovery_metadata["max_main_overlap_seconds"] = 0.0
         recovery_metadata["final_segment_sources"] = [
             {
                 "id": index, **source_details[id(item)],
@@ -335,6 +396,50 @@ class SpeechToTextService:
             diarization_turns=diarization_turns,
             asr_recovery=recovery_metadata,
         )
+
+    @staticmethod
+    def _non_overlapping_timeline(
+        segments: list[TranscriptSegment],
+    ) -> list[TranscriptSegment]:
+        """Use known boundaries first; trim only overlaps left after alignment."""
+        for index, item in enumerate(segments):
+            if (
+                not math.isfinite(item.start) or not math.isfinite(item.end)
+                or item.start < 0 or item.end <= item.start
+            ):
+                raise SpeechToTextError(
+                    "Timestamp nguồn không hợp lệ",
+                    f"Segment {index + 1} có khoảng {item.start}–{item.end}.",
+                    "Kiểm tra mốc thời gian nguồn; không tự bỏ lời thoại hoặc tạo thời gian giả.",
+                    item.text,
+                )
+            if index and item.start <= segments[index - 1].start:
+                raise SpeechToTextError(
+                    "Không thể tách hai segment trùng start",
+                    f"Hai segment cùng bắt đầu tại {item.start}s.",
+                    "Cần xác định thứ tự/mốc bắt đầu; không tạo đoạn 0 giây làm mất lời thoại.",
+                    json.dumps([
+                        {"start": previous.start, "end": previous.end, "text": previous.text}
+                        for previous in segments[index - 1:index + 1]
+                    ], ensure_ascii=False),
+                )
+        result: list[TranscriptSegment] = []
+        for index, item in enumerate(segments):
+            end = item.end
+            if index + 1 < len(segments):
+                end = min(end, segments[index + 1].start)
+            if end == item.end:
+                result.append(item)
+                continue
+            # This is a timing fallback, never a rewrite/split of ASR text.
+            parts = tuple({
+                **part,
+                "start": item.start,
+                "end": end,
+                "duration": round(end - item.start, 3),
+            } for part in item.merge_parts)
+            result.append(replace(item, end=end, merge_parts=parts))
+        return result
 
     @staticmethod
     def _max_overlap(start: float, end: float, segments: list[TranscriptSegment]) -> float:
@@ -501,132 +606,31 @@ class SpeechToTextService:
         merge_adjacent_segments: bool = False,
         source_id_offset: int = 0,
     ) -> list[TranscriptSegment]:
-        word_units: list[dict[str, object]] = []
-        for raw_index, raw in enumerate(raw_segments):
-            words = raw.get("words")
-            if not isinstance(words, list) or not words:
-                word_units.append(
-                    {
-                        "raw_index": raw_index,
-                        "start": float(raw["start"]),
-                        "end": float(raw["end"]),
-                        "text": str(raw["text"]),
-                        "speaker_id": cls._speaker_for_interval(
-                            float(raw["start"]), float(raw["end"]), turns
-                        ),
-                    }
-                )
-                continue
+        """Keep each ASR utterance intact and assign an acoustic speaker only.
 
-            valid_word_found = False
-            for word in words:
-                if not isinstance(word, dict):
-                    continue
-                valid_word_found = True
-                start = float(word.get("start", raw["start"]))
-                end = float(word.get("end", start))
-                text = str(word.get("word", ""))
-                speaker_id = cls._speaker_for_interval(start, end, turns)
-                word_units.append(
-                    {
-                        "raw_index": raw_index,
-                        "start": start,
-                        "end": end,
-                        "text": text.strip(),
-                        "speaker_id": speaker_id,
-                    }
-                )
-            if not valid_word_found:
-                word_units.append(
-                    {
-                        "raw_index": raw_index,
-                        "start": float(raw["start"]),
-                        "end": float(raw["end"]),
-                        "text": str(raw["text"]),
-                        "speaker_id": cls._speaker_for_interval(
-                            float(raw["start"]), float(raw["end"]), turns
-                        ),
-                    }
-                )
-
-        cls._smooth_word_speakers(word_units)
-
-        atomic: list[dict[str, object]] = []
-        current: dict[str, object] | None = None
-        for unit in word_units:
-            if (
-                current is None
-                or current["raw_index"] != unit["raw_index"]
-                or current["speaker_id"] != unit["speaker_id"]
-            ):
-                if current is not None:
-                    atomic.append(current)
-                current = dict(unit)
-            else:
-                current["end"] = unit["end"]
-                current["text"] = cls._join_text(str(current["text"]), str(unit["text"]))
-        if current is not None:
-            atomic.append(current)
-
-        merged: list[dict[str, object]] = []
-        for source_id, item in enumerate(atomic, start=source_id_offset + 1):
-            start = round(float(item["start"]), 3)
-            end = round(float(item["end"]), 3)
-            part = {
-                "source_id": source_id,
-                "raw_index": item["raw_index"],
-                "start": start,
-                "end": end,
-                "duration": round(max(0.0, end - start), 3),
-                "text": str(item["text"]).strip(),
-            }
-            if (
-                merge_adjacent_segments
-                and merged
-                and merged[-1]["raw_index"] == item["raw_index"]
-                and merged[-1]["speaker_id"] == item["speaker_id"]
-                and abs(start - float(merged[-1]["end"])) < 0.01
-            ):
-                merged[-1]["end"] = end
-                merged[-1]["text"] = cls._join_text(
-                    str(merged[-1]["text"]), str(item["text"])
-                )
-                parts = merged[-1]["merge_parts"]
-                assert isinstance(parts, list)
-                parts.append(part)
-            else:
-                merged.append(
-                    {
-                        "raw_index": item["raw_index"],
-                        "start": start,
-                        "end": end,
-                        "text": str(item["text"]).strip(),
-                        "speaker_id": str(item["speaker_id"]),
-                        "merge_parts": [part],
-                    }
-                )
-
+        Word alignment must not replace, split, or duplicate the original text.
+        The legacy merge option is accepted without merging ASR utterances.
+        """
         result: list[TranscriptSegment] = []
-        for item in merged:
-            parts = item["merge_parts"]
-            assert isinstance(parts, list)
-            total = sum(float(part["duration"]) for part in parts)
-            ratios: list[float]
-            if total > 0:
-                ratios = [float(part["duration"]) / total for part in parts]
-            else:
-                ratios = [1.0 / len(parts)] * len(parts)
-            rounded = [round(value, 8) for value in ratios]
-            rounded[-1] = round(1.0 - sum(rounded[:-1]), 8)
-            for part, ratio in zip(parts, rounded, strict=True):
-                part["ratio"] = ratio
+        for raw_index, raw in enumerate(raw_segments):
+            start = float(raw["start"])
+            end = float(raw["end"])
+            text = str(raw["text"])
             result.append(
                 TranscriptSegment(
-                    start=float(item["start"]),
-                    end=float(item["end"]),
-                    text=str(item["text"]),
-                    speaker_id=str(item["speaker_id"]),
-                    merge_parts=tuple(parts),
+                    start=start,
+                    end=end,
+                    text=text,
+                    speaker_id=cls._speaker_for_interval(start, end, turns),
+                    merge_parts=({
+                        "source_id": source_id_offset + raw_index + 1,
+                        "raw_index": raw_index,
+                        "start": start,
+                        "end": end,
+                        "duration": round(max(0.0, end - start), 3),
+                        "text": text,
+                        "ratio": 1.0,
+                    },),
                 )
             )
         return result

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import Callable
 
+from ...config.gemini import GEMINI_PROVIDER_NAME
 from ...errors import UserFacingError
 from ...common.models import Segment
 from .providers import TranslationProvider
@@ -114,6 +115,26 @@ class TranslationWorkflow:
         return normalized
 
     @staticmethod
+    def _target_language_issues(
+        result: dict[int, str],
+        expected_segments: list[Segment],
+        target_language: str,
+    ) -> list[dict[str, object]]:
+        source_by_id = {segment.id: segment.source_text.strip() for segment in expected_segments}
+        issues: list[dict[str, object]] = []
+        for segment_id, text in result.items():
+            if not text.strip():
+                continue
+            reasons: list[str] = []
+            if source_by_id.get(segment_id) and text.strip() == source_by_id[segment_id]:
+                reasons.append("translation_unchanged_from_source")
+            if target_language == "Vietnamese" and re.search(r"[\u3400-\u9fff]", text):
+                reasons.append("source_language_leftovers")
+            if reasons:
+                issues.append({"id": segment_id, "issues": reasons})
+        return issues
+
+    @staticmethod
     def _validate_target_language(
         result: dict[int, str],
         expected_segments: list[Segment],
@@ -136,12 +157,15 @@ class TranslationWorkflow:
     def _validate_speakers(
         result: dict[int, str],
         expected_segments: list[Segment],
+        allowed_speakers: set[str] | None = None,
     ) -> dict[int, str]:
         expected_ids = {segment.id for segment in expected_segments}
         known_speakers = {
             segment.speaker_id.strip() or "SPEAKER_UNKNOWN"
             for segment in expected_segments
         }
+        if allowed_speakers is not None:
+            known_speakers = allowed_speakers
         if not result:
             return {}
         if set(result) != expected_ids:
@@ -181,6 +205,8 @@ class TranslationWorkflow:
         credential_source = ""
 
         translated: dict[int, str] = {}
+        review_issues: list[dict[str, object]] = []
+        is_gemini = getattr(self.provider, "provider_name", "") == GEMINI_PROVIDER_NAME
         for index, batch in enumerate(batches, start=1):
             start = (index - 1) * self.batch_size
             end = start + len(batch)
@@ -201,6 +227,12 @@ class TranslationWorkflow:
             last_error: UserFacingError | None = None
             for attempt in range(2):
                 try:
+                    retry_options = {}
+                    if is_gemini and last_error is not None:
+                        retry_options["validation_feedback"] = (
+                            last_error.error_message.message + "\n"
+                            + last_error.error_message.technical_detail
+                        )
                     response = self.provider.translate_batch(
                         batch,
                         dialogue_profile,
@@ -211,11 +243,28 @@ class TranslationWorkflow:
                         response_file=True,
                         batch_index=index,
                         batch_total=len(batches),
+                        **retry_options,
                     )
                     batch_result = self._validate_translations(response.translations, batch, "dịch")
-                    # The first-pass translation must already be usable. Do not defer
-                    # source-language leakage to the optional review pass.
-                    self._validate_target_language(batch_result, batch, target_language)
+                    # Gemini content errors belong to segment review. Structural
+                    # errors still use the existing batch validation/retry path.
+                    if not is_gemini:
+                        self._validate_target_language(batch_result, batch, target_language)
+                    if is_gemini:
+                        # The provider's existing count-minus-one branch can
+                        # fill a missing translation with "". Keep its original
+                        # speaker rather than rejecting the accepted count case.
+                        speaker_result = dict(response.corrected_speakers)
+                        for segment in batch:
+                            if segment.id not in speaker_result and not batch_result[segment.id]:
+                                speaker_result[segment.id] = segment.speaker_id.strip() or "SPEAKER_UNKNOWN"
+                        corrected_speakers = self._validate_speakers(
+                            speaker_result, batch,
+                            {
+                                segment.speaker_id.strip() or "SPEAKER_UNKNOWN"
+                                for segment in [*before, *batch, *after]
+                            },
+                        )
                     break
                 except UserFacingError as exc:
                     last_error = exc
@@ -225,7 +274,12 @@ class TranslationWorkflow:
                 assert last_error is not None
                 raise last_error
             translated.update(batch_result)
-            corrected_speakers = self._validate_speakers(response.corrected_speakers, batch)
+            if is_gemini:
+                review_issues.extend(self._target_language_issues(
+                    batch_result, batch, target_language,
+                ))
+            if not is_gemini:
+                corrected_speakers = self._validate_speakers(response.corrected_speakers, batch)
             for segment in batch:
                 if segment.id in corrected_speakers:
                     segment.speaker_id = corrected_speakers[segment.id]
@@ -244,7 +298,7 @@ class TranslationWorkflow:
             analysis_batch_count=0,
             translation_batch_count=len(batches),
             review_batch_count=0,
-            review_issues=[],
+            review_issues=review_issues,
         )
 
 

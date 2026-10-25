@@ -239,7 +239,13 @@ class ProjectState(QObject):
             step=step,
             summary=data.get("summary", ""),
             artifacts=data.get("artifacts", {}),
-            segments=[Segment(**item) for item in data.get("segments", [])],
+            segments=[
+                Segment(**{
+                    key: value for key, value in item.items()
+                    if key not in {"asr_metadata", "translation_metadata"}
+                })
+                for item in data.get("segments", [])
+            ],
             metadata=data.get("metadata", {}),
             audio_candidates=[AudioCandidate(**item) for item in data.get("audio_candidates", [])],
             transcript_candidates=[

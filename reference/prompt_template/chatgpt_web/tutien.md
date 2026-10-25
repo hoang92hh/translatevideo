@@ -10,11 +10,30 @@ Read the COMPLETE attached input and all provided story context before answering
 
 Analyze the storyline, characters, speakers, relationships, sect hierarchy, cultivation realms, forms of address, proper names, terminology, tone, and dialogue continuity.
 
-Use dialogue_profile, speaker_context, context_before, context_after, previous_translations, and any provided story scripts or character profiles. Follow proper_name_policy. Do not invent uncertain identities, relationships, ranks, or story details.
+Use dialogue_profile, speaker_context_for_targets, context_before, context_after, previous_translations, and any provided story scripts or character profiles. Follow proper_name_policy. Do not invent uncertain identities, relationships, ranks, or story details.
 
 **STAGE 2 — XIANXIA TRANSLATION**
 
 Translate only segments_to_translate from {source_language} to {target_language}. Preserve the original meaning while using natural Vietnamese dialogue appropriate for cultivation dramas.
+
+**Dialogue continuity and complete utterances:**
+
+- Mandatory timing condition for combining: for EVERY adjacent pair, the original end_seconds of the preceding segment must EXACTLY equal the start_seconds of the next segment. Any gap or overlap forbids combining. Use the original input timestamps, not times inferred from empty translations. Semantic continuity is also required; touching times alone do not justify combining.
+- Read all supplied source dialogue before translating. Understand the complete meaning first, translate all supported information, make the Vietnamese natural, and only then shorten wording without losing information. Speaking duration is the last priority.
+- Step 2 preserves Main/Recovery ASR text and provisional speaker labels. SPEAKER_RECOVERY is a placeholder, not evidence that speech is redundant or meaningless. A timing boundary alone does not prove a new sentence or speaker.
+- You may combine the TRANSLATION CONTENT of consecutive target segments only when grammar, meaning, timing, and dialogue support one continuous utterance by the same actual speaker. Check the supplied start/end times. Adjacent IDs or matching speaker labels alone are insufficient. Do not combine independent utterances, substantial pauses, actual exchanges, or intentional repetitions. If uncertain, translate separately.
+- Put the COMPLETE combined translation exactly once at the FIRST target ID and return translated_text="" for following absorbed IDs. Return every ID as a separate object. Do not combine context-only IDs, cross batch boundaries, or create long monologues.
+- For an uncombined segment, translate its own meaning only. For a combined utterance, use the full source meaning of that consecutive target sequence only. Context helps interpret it; never borrow another sentence or name from outside the sequence.
+- ASR errors can make a phrase awkward or incomplete. Infer a correction only with sufficient supplied evidence. Preserve all reliably understood parts, including quantities, even if another part remains uncertain. Never discard a whole phrase because one word is wrong, replace it with a neighboring name, or invent a missing unit.
+- Preserve genuine repeated speech. Similar wording or a recovery speaker label alone is not permission to erase an utterance.
+
+Example, only when these are one continuous question:
+101="你", 102="到底想干什么", 103="啊"
+Result: [{"id":101,"speaker_id":"SPEAKER_01","source_text":"你","translated_text":"Rốt cuộc ngươi muốn làm gì hả?"},{"id":102,"speaker_id":"SPEAKER_01","source_text":"到底想干什么","translated_text":""},{"id":103,"speaker_id":"SPEAKER_01","source_text":"啊","translated_text":""}]
+
+Correct speaker_id only when grammar, dialogue continuity, and supplied context provide enough evidence, including fragments with incorrect provisional labels. Select only speaker IDs already present in the attached input. Never invent character identities or new IDs. If uncertain, retain the original label, including SPEAKER_RECOVERY; do not force speaker changes merely to enable grouping.
+
+The tool maps the response by ID, applies validated speaker corrections, sets start=end for empty translations, and extends the representative's end across following empty targets in the same batch. Keep source_text unchanged for every ID, including absorbed fragments.
 
 **Forms of address (Chinese → Vietnamese):**
 
@@ -54,27 +73,31 @@ These examples are terminology references, not a fixed cultivation system. Prese
 **Translation requirements:**
 
 - Prioritize accurate meaning, contextual consistency, correct terminology, forms of address, natural Vietnamese, and concise speaking duration.
-- Preserve essential information, negation, intentions, names, numbers, ranks, and causal relationships.
+- Preserve all supported information, negation, intentions, names, numbers, units, ranks, conditions, and causal relationships. Keep questions, statements, commands, and exclamations distinct. 死了 describing a state means "Chết rồi.", not automatically "Chết đi!".
 - Never invent, expand, omit, or oversimplify meaning.
-- Use context to understand each segment, NEVER to borrow content from neighboring segments.
-- Keep translations concise and suitable for TTS duration without sacrificing accuracy.
+- Use context to understand each utterance; transfer meaning between IDs only within a valid combined consecutive utterance as defined above.
+- Keep translations concise by choosing economical wording with the SAME information. Never summarize away quantities, actions, or other facts to fit TTS duration; preserve meaning even when the result remains long.
 - Avoid overly modern expressions or unnatural archaic language.
-- For incomplete fragments, translate only reliably supported meaning; use an empty string only when no reliable translation is possible.
-- Never merge, split, relocate, or duplicate segment content.
+- For incomplete fragments, preserve every reliably supported part. An empty string is permitted only for an absorbed fragment whose full meaning is translated at its representative ID, or when no reliable meaning at all can be recovered. Uncertainty about one word is not a reason to erase the whole phrase.
+- Combining translation content is permitted only under the utterance rules above. Never merge response objects, split or renumber an ID, relocate speech outside its utterance, or duplicate translated content.
 
 **STAGE 3 — GLOBAL REVIEW**
 
-Review every translation against its original segment and overall story context. Correct mistranslations, missing or invented information, inconsistent pronouns, names, cultivation realms, titles, terminology, unnatural wording, and excessive length.
+Within this same response, check every translation against its original segment or ALL source fragments of its combined utterance and the supplied story context. Verify that each supported quantity, unit, name, action, negation, condition, and causal relationship is represented. A translation containing only a neighboring name is not sufficient if the source also contains a quantity or another statement. Correct omissions before returning the file. Preserve meaning before shortening.
 
-Check adjacent segments for identical or overlapping translations. Remove accidental duplication unless the original source genuinely repeats the meaning.
+Check adjacent segments for identical or overlapping translations. Remove only duplication accidentally introduced by your translation; preserve intentional source repetitions. Do not erase source speech merely because its ASR wording looks similar to a neighbor.
 
 Ensure every target ID appears exactly once. Do not merge, split, omit, or add IDs.
+
+Check that absorbed fragments are empty only AFTER their complete supported meaning is present at the representative ID. Check that speaker changes are supported and use existing IDs. Do not request another review round. Return no timestamps, merge_ids, confidence scores, explanations, or fields outside the output contract.
 
 Return only the final reviewed translations. Do not expose analysis or drafts.
 
 ### OUTPUT CONTRACT
 
-A JSON array containing only objects of the form {"id": integer, "translated_text": string}.
+A JSON array containing only objects of the form {"id": integer, "speaker_id": string, "source_text": string, "translated_text": string}.
+
+Copy id and source_text exactly from the same segments_to_translate item. Never rewrite the source, including ASR errors. Return every target ID exactly once, including IDs with empty translated_text. Select speaker_id only from speaker IDs present in the attached input; retain the original when correction is uncertain.
 
 Create a downloadable JSON file named exactly "{output_filename}". Put only the JSON required by the output contract in that file.
 
@@ -82,4 +105,4 @@ Do not print, preview, or wrap the JSON in the chat response; return the file it
 
 ### ATTACHED INPUT
 
-This is translation batch
+This is translation batch {batch_index}/{batch_total}, containing {segment_count} target segments from {segment_start} through {segment_end}. Read the complete input JSON from the attached file "{input_filename}". Do not answer before reading the file.

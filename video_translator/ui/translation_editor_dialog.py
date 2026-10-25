@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -24,6 +26,8 @@ from PySide6.QtWidgets import (
     QTableView,
     QVBoxLayout,
 )
+from ..common.models import Segment
+from ..steps.step3_translation.quality import assess_manual_segments, MANUAL_ISSUE_LABELS
 
 
 class TranslationTableModel(QAbstractTableModel):
@@ -34,11 +38,15 @@ class TranslationTableModel(QAbstractTableModel):
         segments: list[dict[str, object]],
         editable: bool,
         parent=None,
+        manual_check: bool = False,
     ) -> None:
         super().__init__(parent)
         self.segments = segments
         self.editable = editable
         self.dirty = False
+        self.manual_check = manual_check
+        if manual_check:
+            self.HEADERS = (*self.HEADERS, "Cần kiểm tra")
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self.segments)
@@ -58,6 +66,7 @@ class TranslationTableModel(QAbstractTableModel):
                 f"{float(segment['end']):.2f}",
                 str(segment["source_text"]),
                 str(segment["translated_text"]),
+                str(segment.get("issue_label", "")),
             )
             return values[index.column()]
         if role == Qt.ItemDataRole.TextAlignmentRole and index.column() < 4:
@@ -74,12 +83,25 @@ class TranslationTableModel(QAbstractTableModel):
             role != Qt.ItemDataRole.EditRole
             or not self.editable
             or not index.isValid()
-            or index.column() not in (4, 5)
+            or index.column() not in ((1, 2, 3, 5) if self.manual_check else (4, 5))
         ):
             return False
-        key = "source_text" if index.column() == 4 else "translated_text"
+        key = {1: "speaker_id", 2: "start", 3: "end", 4: "source_text", 5: "translated_text"}[index.column()]
         text = str(value)
         segment = self.segments[index.row()]
+        if index.column() in (2, 3):
+            try:
+                number = float(text)
+            except ValueError:
+                return False
+            if not math.isfinite(number) or number < 0:
+                return False
+            if segment[key] == number:
+                return False
+            segment[key] = number
+            self.dirty = True
+            self.dataChanged.emit(index, index, [role, Qt.ItemDataRole.DisplayRole])
+            return True
         if str(segment[key]) == text:
             return False
         segment[key] = text
@@ -89,7 +111,8 @@ class TranslationTableModel(QAbstractTableModel):
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         flags = super().flags(index)
-        if self.editable and index.isValid() and index.column() in (4, 5):
+        columns = (1, 2, 3, 5) if self.manual_check else (4, 5)
+        if self.editable and index.isValid() and index.column() in columns:
             flags |= Qt.ItemFlag.ItemIsEditable
         return flags
 
@@ -107,11 +130,14 @@ class TranslationTableModel(QAbstractTableModel):
             return self.HEADERS[section]
         return super().headerData(section, orientation, role)
 
-    def updates(self) -> dict[int, dict[str, str]]:
+    def updates(self) -> dict[int, dict[str, object]]:
         return {
             int(segment["id"]): {
                 "source_text": str(segment["source_text"]),
                 "translated_text": str(segment["translated_text"]),
+                **({"speaker_id": str(segment["speaker_id"]),
+                    "start": segment["start"], "end": segment["end"]}
+                   if self.manual_check else {}),
             }
             for segment in self.segments
         }
@@ -120,15 +146,30 @@ class TranslationTableModel(QAbstractTableModel):
         self.dirty = False
 
 
+class TranslationIssueFilter(QSortFilterProxyModel):
+    allowed_ids: set[int] | None = None
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        model = self.sourceModel()
+        if self.allowed_ids is not None and model.segments[source_row]["id"] not in self.allowed_ids:
+            return False
+        return super().filterAcceptsRow(source_row, source_parent)
+
+
 class TranslationEditorDialog(QDialog):
     save_requested = Signal(str, object)
 
-    def __init__(self, candidate, editable: bool, parent=None) -> None:
+    def __init__(self, candidate, editable: bool, parent=None, *, manual_check=False,
+                 target_language="Vietnamese") -> None:
         super().__init__(parent)
         self.candidate_id = candidate.id
         segments, load_error = self._read_segments(candidate.path)
+        self.manual_check = manual_check
+        self.target_language = target_language
 
         self.setWindowTitle(f"Xem/chỉnh sửa bản dịch · {candidate.label}")
+        if manual_check:
+            self.setWindowTitle(f"Kiểm tra / sửa bản dịch · {candidate.label}")
         self.resize(1360, 840)
 
         root = QVBoxLayout(self)
@@ -154,8 +195,9 @@ class TranslationEditorDialog(QDialog):
         self.status_label.setVisible(bool(message))
         root.addWidget(self.status_label)
 
-        self.model = TranslationTableModel(segments, editable and not load_error, self)
-        self.proxy_model = QSortFilterProxyModel(self)
+        self.model = TranslationTableModel(segments, editable and not load_error, self,
+                                           manual_check=manual_check)
+        self.proxy_model = TranslationIssueFilter(self)
         self.proxy_model.setSourceModel(self.model)
         self.proxy_model.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.proxy_model.setFilterKeyColumn(-1)
@@ -173,6 +215,16 @@ class TranslationEditorDialog(QDialog):
         search_row.addWidget(self.search_input, 1)
         search_row.addWidget(self.match_info)
         root.addLayout(search_row)
+        if manual_check:
+            options = QHBoxLayout()
+            self.show_all = QCheckBox("Hiển thị toàn bộ segment")
+            self.show_all.toggled.connect(self._refresh_manual_issues)
+            refresh_button = QPushButton("Đánh giá lại")
+            refresh_button.clicked.connect(self._refresh_manual_issues)
+            options.addWidget(self.show_all)
+            options.addWidget(refresh_button)
+            options.addStretch()
+            root.addLayout(options)
 
         self.table = QTableView()
         self.table.setModel(self.proxy_model)
@@ -191,9 +243,13 @@ class TranslationEditorDialog(QDialog):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        if manual_check:
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         root.addWidget(self.table, 1)
         self.search_input.textChanged.connect(self._filter_changed)
         self._update_match_info()
+        if manual_check:
+            self._refresh_manual_issues()
 
         actions = QHBoxLayout()
         actions.addStretch()
@@ -253,8 +309,46 @@ class TranslationEditorDialog(QDialog):
 
     def save_succeeded(self) -> None:
         self.model.mark_saved()
+        if self.manual_check:
+            self._refresh_manual_issues()
         self.status_label.setText("Đã lưu thay đổi.")
         self.status_label.setVisible(True)
+
+    def _refresh_manual_issues(self, *_args) -> None:
+        segments = self.model.segments
+        assessed = assess_manual_segments([
+            Segment(**{key: value for key, value in item.items() if key != "issue_label"})
+            for item in segments
+        ], self.target_language)
+        reasons = {int(item["id"]): item["issues"] for item in assessed}
+        visible = set(reasons)
+        context_ids = {
+            segment_id for segment_id, flags in reasons.items()
+            if "recovery_speaker" in flags or "duplicate_translation" in flags
+        }
+        # Only recovery and duplicate flags need neighboring nonempty dialogue.
+        previous = None
+        for item in segments:
+            if item["id"] in context_ids and previous is not None:
+                visible.add(previous)
+            if str(item["translated_text"]).strip():
+                previous = item["id"]
+        following = None
+        for item in reversed(segments):
+            if item["id"] in context_ids and following is not None:
+                visible.add(following)
+            if str(item["translated_text"]).strip():
+                following = item["id"]
+        for item in segments:
+            item["issue_label"] = "; ".join(
+                MANUAL_ISSUE_LABELS[reason] for reason in reasons.get(item["id"], [])
+            ) or ("Câu lân cận" if item["id"] in visible else "")
+        if segments:
+            self.model.dataChanged.emit(self.model.index(0, 6), self.model.index(len(segments) - 1, 6))
+        self.proxy_model.allowed_ids = None if self.show_all.isChecked() else visible
+        self.proxy_model.invalidateFilter()
+        self._update_match_info()
+        self.match_info.setText(f"{len(reasons)} segment cần kiểm tra · " + self.match_info.text())
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.model.dirty:

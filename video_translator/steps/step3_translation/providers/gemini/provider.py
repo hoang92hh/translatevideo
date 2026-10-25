@@ -563,7 +563,9 @@ class GoogleTranslationService:
             "Keep id and source_text exactly unchanged. For speaker_id, choose the correct "
             "speaker from the speaker IDs present in the request, correcting diarization errors "
             "when the dialogue context clearly shows that another speaker is speaking. Never invent "
-            "a new speaker ID or renumber IDs. You may combine consecutive fragments into one "
+            "a new speaker ID or renumber IDs. Combine consecutive fragments only if each preceding "
+            "original end_seconds EXACTLY equals the next start_seconds; any gap or overlap forbids "
+            "combining. Semantic continuity is also required. Put one "
             "complete translated utterance at the first ID, with empty translated_text at the "
             "absorbed IDs. Never merge response objects or source_text fields. Every empty "
             "translation is skipped by the tool; do not return extra fields."
@@ -722,6 +724,7 @@ class GoogleTranslationService:
         *,
         context_segments: list[Segment] | None = None,
         quality_issues: list[dict[str, object]] | None = None,
+        sentence_sources: dict[int, str] | None = None,
         validation_feedback: str = "",
     ) -> TranslationReviewResponse:
         context = context_segments if context_segments is not None else segments
@@ -740,17 +743,22 @@ class GoogleTranslationService:
             "REVIEW", segments, batch_index, batch_total,
         )
         expected = {segment.id: segment for segment in segments}
-        allowed_speakers = {
-            segment.speaker_id.strip() or "SPEAKER_UNKNOWN" for segment in context
-        }
         prompt += (
             "\n\nRequested correction IDs: " + json.dumps(list(expected))
-            + ". Return only those IDs, including unchanged requested translations. "
-            "All other IDs in full_translation are read-only context. Empty context "
-            "translations are skipped items; use their source only to understand the "
-            "preceding complete utterance, never restore them as extra corrections. "
-            "The first item of a combined utterance has the full time window shown.\n"
-            "Quality checks to address (judge them against the source and context):\n"
+            + ". Edit each requested CURRENT translation independently. "
+            "Only corrected_text may change. Keep the speaker, source, and sentence boundaries. "
+            "All other IDs in full_translation are read-only context; never take their "
+            "dialogue into a requested sentence, even when they share a speaker. "
+            "Preserve the current names, titles, address, named objects, and sentence force. "
+            "Fix real text errors first. Length is advisory; keep complete meaning rather "
+            "than forcing a shorter or empty sentence.\n"
+            "Fixed source scope for each requested sentence (not permission to regroup):\n"
+            + "\n".join(
+                f"[{segment.id:04d}] "
+                + (sentence_sources or {}).get(segment.id, segment.source_text)
+                for segment in segments
+            )
+            + "\nQuality checks for those same IDs:\n"
             + json.dumps(quality_issues or [], ensure_ascii=False)
         )
         if validation_feedback:
@@ -776,24 +784,24 @@ class GoogleTranslationService:
                 )
                 if value.id not in expected or value.id in corrections:
                     raise ValueError(f"Correction có ID trùng hoặc không được yêu cầu: {value.id}")
-                # Match corrections by ID; keep the source text already stored.
-                speaker = value.speaker_id.strip() or (
-                    expected[value.id].speaker_id.strip() or "SPEAKER_UNKNOWN"
-                )
-                if speaker not in allowed_speakers:
-                    raise ValueError(f"Correction dùng speaker không có trong input: {speaker}")
-                # Empty corrections are valid: the caller always sets start=end.
-                corrections[value.id] = value.corrected_text.strip()
-                corrected_speakers[value.id] = speaker
-                issues.append(value.model_dump(mode="json"))
+                # ID is the only mapping key. Review may edit text only;
+                # echoed source/speaker and an empty correction cannot alter state.
+                text = value.corrected_text.strip() or expected[value.id].translated_text
+                corrections[value.id] = text
+                corrected_speakers[value.id] = expected[value.id].speaker_id
+                record = value.model_dump(mode="json")
+                record["corrected_text"] = text
+                record["speaker_id"] = expected[value.id].speaker_id
+                record["source_text"] = expected[value.id].source_text
+                issues.append(record)
             missing = set(expected) - set(corrections)
             if len(parsed) == len(segments) - 1 and len(missing) == 1:
                 skipped_id = next(iter(missing))
-                corrections[skipped_id] = ""
+                corrections[skipped_id] = expected[skipped_id].translated_text
                 corrected_speakers[skipped_id] = expected[skipped_id].speaker_id
                 self._record_diagnostic_error(
                     diagnostic_dir, "review_count_difference",
-                    "Thiếu một correction; giữ quy tắc bù bằng chuỗi rỗng.",
+                    "Thiếu một correction; giữ nguyên bản dịch hiện tại, speaker và timeline.",
                     missing_ids=[skipped_id],
                 )
             elif len(parsed) != len(segments) or missing:

@@ -7,6 +7,52 @@ from ...common.models import Segment
 
 _NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)?")
 
+MANUAL_ISSUE_LABELS = {
+    "source_language_leftovers": "Còn chữ Trung Quốc",
+    "missing_number": "Nghi thiếu số",
+    "translation_too_short": "Câu quá ngắn",
+    "duplicate_translation": "Trùng câu dịch liền trước/sau",
+    "recovery_speaker": "Speaker Recovery",
+}
+
+
+def assess_manual_segments(
+    segments: list[Segment], target_language: str = "Vietnamese",
+) -> list[dict[str, object]]:
+    """Produce advisory flags only; never change text, speakers, or timing."""
+    issues: dict[int, list[str]] = {}
+    spoken = [segment for segment in segments if segment.translated_text.strip()]
+    for segment in segments:
+        reasons = []
+        text = segment.translated_text.strip()
+        source = segment.source_text.strip()
+        if segment.speaker_id == "SPEAKER_RECOVERY":
+            reasons.append("recovery_speaker")
+        if text:
+            if target_language == "Vietnamese" and re.search(r"[\u3400-\u9fff]", text):
+                reasons.append("source_language_leftovers")
+            if _NUMBER_PATTERN.search(source) and not _NUMBER_PATTERN.search(text):
+                reasons.append("missing_number")
+            if len(text) < 2 and len(source) >= 4:
+                reasons.append("translation_too_short")
+        if reasons:
+            issues[segment.id] = reasons
+    for previous, following in zip(spoken, spoken[1:]):
+        if " ".join(previous.translated_text.casefold().split()) == " ".join(
+            following.translated_text.casefold().split()
+        ):
+            for segment in (previous, following):
+                issues.setdefault(segment.id, []).append("duplicate_translation")
+    return [{"id": segment.id, "issues": list(dict.fromkeys(issues[segment.id]))}
+            for segment in segments if segment.id in issues]
+
+# Review is text-only. Length can suggest an edit, never force loss of meaning.
+GEMINI_REVIEW_ADVISORY_ISSUES = {"translation_too_long"}
+GEMINI_REVIEW_CONTEXTUAL_ISSUES = {
+    "missing_number", "duplicate_with_previous", "duplicate_with_next",
+    "repeated_sentence_inside_translation", "overlapping_translation_with_neighbor",
+}
+
 
 def assess_segments(segments: list[Segment]) -> list[dict[str, object]]:
     """Run deterministic post-translation checks before any AI review."""
@@ -53,9 +99,10 @@ def assess_segments(segments: list[Segment]) -> list[dict[str, object]]:
 
 
 def gemini_translation_groups(
-    segments: list[Segment], batch_size: int,
+    segments: list[Segment], batch_size: int, originals: list[Segment],
 ) -> list[list[Segment]]:
-    """Read consecutive empty results without inventing a new API contract."""
+    """Group empty results only across exactly touching original timestamps."""
+    by_id = {segment.id: segment for segment in originals}
     groups: list[list[Segment]] = []
     size = max(1, batch_size)
     for start in range(0, len(segments), size):
@@ -65,7 +112,10 @@ def gemini_translation_groups(
                 current = [segment]
                 groups.append(current)
             elif current is not None:
-                current.append(segment)
+                if by_id[current[-1].id].end == by_id[segment.id].start:
+                    current.append(segment)
+                else:
+                    current = None
     return groups
 
 
@@ -75,7 +125,7 @@ def assess_gemini_segments(
     """Assess complete utterances on copies; never mutate source/timeline."""
     by_id = {segment.id: segment for segment in originals}
     representatives: list[Segment] = []
-    for group in gemini_translation_groups(segments, batch_size):
+    for group in gemini_translation_groups(segments, batch_size, originals):
         first = group[0]
         sources = [by_id[segment.id] for segment in group]
         representatives.append(replace(
@@ -84,7 +134,14 @@ def assess_gemini_segments(
             end=max(segment.end for segment in sources),
             source_text=" ".join(segment.source_text for segment in sources),
         ))
-    issues = assess_segments(representatives)
+    issues: list[dict[str, object]] = []
+    for issue in assess_segments(representatives):
+        reasons = [
+            reason for reason in issue["issues"]
+            if reason not in {"reading_speed_too_high", "zero_duration_with_translation"}
+        ]
+        if reasons:
+            issues.append({"id": issue["id"], "issues": reasons})
     for segment in representatives:
         sentences = [
             sentence.strip().casefold()

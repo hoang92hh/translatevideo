@@ -6,7 +6,10 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from video_translator.errors import UserFacingError
-from video_translator.common.models import StepId, StepResult
+from video_translator.common.models import StepId, StepResult, Segment
+from video_translator.config.gemini import GEMINI_PROVIDER_NAME
+from video_translator.config.web_translation import CHATGPT_WEB_PROVIDER_NAME
+from video_translator.steps.step3_translation.quality import assess_manual_segments
 from video_translator.ui.specs import StepSpec
 from video_translator.ui.translation_editor_dialog import TranslationEditorDialog
 from video_translator.ui.steps.base import StepPage
@@ -61,6 +64,8 @@ class TranslationStepPage(StepPage):
             )
         if hasattr(self, "editor_button"):
             self.editor_button.setDisabled(busy)
+        if hasattr(self, "manual_check_button"):
+            self.manual_check_button.setDisabled(busy)
         if not busy and hasattr(self, "translation_combo"):
             self._refresh_translations(prefer_selected=True)
 
@@ -96,6 +101,8 @@ class TranslationStepPage(StepPage):
         actions = QHBoxLayout()
         self.editor_button = QPushButton("Xem/chỉnh sửa bản dịch")
         self.editor_button.clicked.connect(self._open_translation_editor)
+        self.manual_check_button = QPushButton("Kiểm tra / sửa bản dịch")
+        self.manual_check_button.clicked.connect(lambda: self._open_translation_editor(manual_check=True))
         use_button = QPushButton("Dùng làm input Step 4")
         use_button.clicked.connect(self._select_for_step_four)
         open_file = QPushButton("Mở file")
@@ -105,6 +112,7 @@ class TranslationStepPage(StepPage):
         delete_button = QPushButton("Xóa bản dịch")
         delete_button.clicked.connect(self._delete_translation)
         actions.addWidget(self.editor_button)
+        actions.addWidget(self.manual_check_button)
         actions.addWidget(use_button)
         actions.addWidget(open_file)
         actions.addWidget(open_folder)
@@ -138,6 +146,7 @@ class TranslationStepPage(StepPage):
         if not candidate:
             self.translation_info.setText("Chưa có bản dịch")
             self.editor_button.setEnabled(False)
+            self.manual_check_button.setEnabled(False)
             return
         output_exists = Path(candidate.path).is_file()
         status = "Sẵn sàng" if output_exists else "File không tồn tại"
@@ -162,6 +171,18 @@ class TranslationStepPage(StepPage):
         self.editor_button.setEnabled(
             output_exists and not getattr(self, "_processing", False)
         )
+        supported = candidate.metadata.get("provider") in {GEMINI_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME}
+        self.manual_check_button.setVisible(supported)
+        self.manual_check_button.setEnabled(
+            supported and output_exists and not getattr(self, "_processing", False)
+        )
+        count = 0
+        if supported and output_exists:
+            rows, _ = TranslationEditorDialog._read_segments(candidate.path)
+            count = len(assess_manual_segments(
+                [Segment(**row) for row in rows], self.state.target_language,
+            ))
+        self.manual_check_button.setText(f"Kiểm tra / sửa bản dịch ({count})")
 
     def _current_translation(self):
         return self.state.translation_candidate(str(self.translation_combo.currentData() or ""))
@@ -183,7 +204,7 @@ class TranslationStepPage(StepPage):
         if candidate:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(candidate.path).parent)))
 
-    def _open_translation_editor(self) -> None:
+    def _open_translation_editor(self, _checked=False, *, manual_check=False) -> None:
         candidate = self._current_translation()
         if not candidate or not Path(candidate.path).is_file():
             QMessageBox.information(
@@ -193,7 +214,9 @@ class TranslationStepPage(StepPage):
             )
             return
         editable = candidate.id == self.state.selected_translation_candidate_id
-        dialog = TranslationEditorDialog(candidate, editable, self)
+        dialog = TranslationEditorDialog(candidate, editable, self,
+                                         manual_check=manual_check,
+                                         target_language=self.state.target_language)
         dialog.save_requested.connect(
             lambda candidate_id, updates, target=dialog: self._save_translation_changes(
                 candidate_id,
@@ -206,7 +229,7 @@ class TranslationStepPage(StepPage):
     def _save_translation_changes(
         self,
         candidate_id: str,
-        updates: dict[int, dict[str, str]],
+        updates: dict[int, dict[str, object]],
         dialog: TranslationEditorDialog,
     ) -> None:
         try:

@@ -10,11 +10,13 @@ from uuid import uuid4
 from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ...config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
 from ...config.translation import PROPER_NAME_MODE_AUTO, resolve_proper_name_policy
+from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from ...common.models import StepId, StepResult, TranslationCandidate
 from ...errors import UserFacingError
 from ...steps.step3_translation.service import CONTEXT_SEGMENT_COUNT, TranslationWorkflow
 from ...steps.step3_translation.quality import (
-    assess_gemini_segments, assess_segments, gemini_translation_groups,
+    GEMINI_REVIEW_ADVISORY_ISSUES, GEMINI_REVIEW_CONTEXTUAL_ISSUES,
+    assess_gemini_segments, assess_segments, assess_manual_segments, gemini_translation_groups,
 )
 from ...steps.step3_translation.providers import create_translation_provider
 from ...state import ProjectState
@@ -71,7 +73,7 @@ def _apply_gemini_empty_results(
         segment.start, segment.end = original.start, original.end
         if not segment.translated_text.strip():
             segment.start = segment.end
-    for group in gemini_translation_groups(segments, batch_size):
+    for group in gemini_translation_groups(segments, batch_size, originals):
         if len(group) < 2:
             continue
         first = group[0]
@@ -103,8 +105,8 @@ def _review_gemini_segments(
     review_issues: list[dict[str, object]],
     target_language: str,
 ) -> tuple[list[dict[str, object]], int]:
-    """Repair nonempty utterances with absorbed source fragments as read-only context."""
-    groups = gemini_translation_groups(segments, batch_size)
+    """Edit selected sentences only; preserve speakers, source, and timing."""
+    groups = gemini_translation_groups(segments, batch_size, originals)
     group_by_id = {group[0].id: group for group in groups}
     positions = {segment.id: index for index, segment in enumerate(originals)}
     current_by_id = {segment.id: segment for segment in segments}
@@ -125,19 +127,18 @@ def _review_gemini_segments(
                 max(0, first - CONTEXT_SEGMENT_COUNT),
                 min(len(originals), last + CONTEXT_SEGMENT_COUNT + 1),
             ))
-        context = []
-        for position in sorted(context_positions):
-            source = deepcopy(originals[position])
-            current = current_by_id[source.id]
-            source.translated_text = current.translated_text
-            source.speaker_id = current.speaker_id
-            if source.id in targets:
-                source.end = max(
-                    originals[positions[member.id]].end
-                    for member in group_by_id[source.id]
-                )
-            context.append(source)
+        context = [
+            deepcopy(current_by_id[originals[position].id])
+            for position in sorted(context_positions)
+        ]
         requested = [segment for segment in context if segment.id in targets]
+        sentence_sources = {
+            target_id: " ".join(
+                originals[positions[member.id]].source_text
+                for member in group_by_id[target_id]
+            )
+            for target_id in targets
+        }
         issues = [issue for issue in review_issues if int(issue["id"]) in targets]
         feedback = ""
         for attempt in range(2):
@@ -148,11 +149,48 @@ def _review_gemini_segments(
                     batch_total=max(1, (len(segments) + batch_size - 1) // batch_size),
                     context_segments=context,
                     quality_issues=issues,
+                    sentence_sources=sentence_sources,
                     validation_feedback=feedback,
                 )
                 TranslationWorkflow._validate_target_language(
                     reviewed.corrections, requested, target_language,
                 )
+                candidate = deepcopy(segments)
+                for sentence in candidate:
+                    if sentence.id in targets:
+                        sentence.translated_text = (
+                            reviewed.corrections.get(sentence.id, "").strip()
+                            or current_by_id[sentence.id].translated_text
+                        )
+                verdicts = {int(item["id"]): item for item in reviewed.issues}
+                remaining = []
+                for issue in assess_gemini_segments(candidate, originals, batch_size):
+                    segment_id = int(issue["id"])
+                    if segment_id not in targets:
+                        continue
+                    text_errors = set(issue["issues"]) - GEMINI_REVIEW_ADVISORY_ISSUES
+                    if not text_errors:
+                        continue
+                    verdict = verdicts.get(segment_id, {})
+                    # A source-backed repetition or a number written as words
+                    # may be a false positive, but untranslated text is not.
+                    explained_false_positive = (
+                        text_errors <= GEMINI_REVIEW_CONTEXTUAL_ISSUES
+                        and verdict.get("issue_type") == "not_an_error"
+                        and str(verdict.get("reason", "")).strip()
+                    )
+                    if not explained_false_positive:
+                        remaining.append({"id": segment_id, "issues": sorted(text_errors)})
+                if remaining:
+                    raise UserFacingError(
+                        "Review chưa sửa hết lỗi text",
+                        "Một số câu vẫn còn lỗi nội dung sau review.",
+                        "Giữ đúng nghĩa câu gốc và sửa các lỗi được chỉ rõ.",
+                        json.dumps({
+                            "remaining_issues": remaining,
+                            "rejected_corrections": reviewed.corrections,
+                        }, ensure_ascii=False),
+                    )
                 break
             except UserFacingError as exc:
                 if attempt == 1:
@@ -160,11 +198,9 @@ def _review_gemini_segments(
                 feedback = exc.error_message.message + "\n" + exc.error_message.technical_detail
         for segment in requested:
             current = current_by_id[segment.id]
-            current.translated_text = reviewed.corrections[segment.id]
-            if segment.id in reviewed.corrected_speakers:
-                current.speaker_id = reviewed.corrected_speakers[segment.id]
-            if not current.translated_text.strip():
-                current.start = current.end
+            correction = reviewed.corrections.get(segment.id, "").strip()
+            if correction:
+                current.translated_text = correction
         all_issues.extend(reviewed.issues)
         review_count += 1
     if review_count:
@@ -192,7 +228,8 @@ def execute(
     )
     segments = previous_segments(state, StepId.TRANSLATE)
     is_gemini = provider == GEMINI_PROVIDER_NAME
-    original_segments = deepcopy(segments) if is_gemini else []
+    uses_empty_groups = provider in {GEMINI_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME}
+    original_segments = deepcopy(segments) if uses_empty_groups else []
     all_project_segments = bool(settings.get("all_project_segments", True))
     batch_size = (
         len(segments)
@@ -230,19 +267,24 @@ def execute(
         if not segment.translated_text.strip():
             segment.start = segment.end
 
-    review_issues = (
-        response.review_issues + assess_gemini_segments(segments, original_segments, batch_size)
-        if is_gemini else assess_segments(segments)
-    )
+    if uses_empty_groups:
+        _apply_gemini_empty_results(segments, original_segments, batch_size)
+
+    # Temporarily disable automatic assessment/review for Gemini and ChatGPT Web.
+    # Translation corrections are handled manually in Step 5.
+    automatic_review_enabled = provider not in {
+        GEMINI_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME,
+    }
+    review_issues = assess_segments(segments) if automatic_review_enabled else []
     review_ids = {int(item["id"]) for item in review_issues}
     review_batch_count = 0
-    if is_gemini:
-        review_issues, review_batch_count = _review_gemini_segments(
-            translation_provider, segments, original_segments, batch_size,
-            response.dialogue_profile, response.proper_name_policy,
-            review_issues, state.target_language,
-        )
-    elif review_ids:
+    # Gemini automatic review is temporarily disabled:
+    # review_issues, review_batch_count = _review_gemini_segments(
+    #     translation_provider, segments, original_segments, batch_size,
+    #     response.dialogue_profile, response.proper_name_policy,
+    #     review_issues, state.target_language,
+    # )
+    if automatic_review_enabled and review_ids:
         review_segments = [segment for segment in segments if segment.id in review_ids]
         review_response = translation_provider.review_translation(
             review_segments,
@@ -256,14 +298,10 @@ def execute(
                 segment.speaker_id = review_response.corrected_speakers[segment.id]
         review_issues.extend(review_response.issues)
         review_batch_count = 1
-    if is_gemini:
-        TranslationWorkflow._validate_target_language(
-            {segment.id: segment.translated_text for segment in segments},
-            original_segments, state.target_language,
-        )
-        _apply_gemini_empty_results(segments, original_segments, batch_size)
-    else:
+    if not uses_empty_groups:
         _collapse_same_speaker_runs(segments)
+    if not automatic_review_enabled:
+        review_issues = assess_manual_segments(segments, state.target_language)
     skipped_translation_ids = [
         segment.id
         for segment in segments

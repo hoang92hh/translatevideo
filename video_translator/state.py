@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+import math
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -529,7 +530,7 @@ class ProjectState(QObject):
     def save_translation_candidate_edits(
         self,
         candidate_id: str,
-        updates: dict[int, dict[str, str]],
+        updates: dict[int, dict[str, object]],
     ) -> None:
         candidate = self.translation_candidate(candidate_id)
         if not candidate or candidate_id != self.selected_translation_candidate_id:
@@ -554,11 +555,50 @@ class ProjectState(QObject):
                 "Bảng chỉnh sửa không còn khớp với candidate hiện tại.",
                 "Tải lại Step 3 rồi thực hiện chỉnh sửa lại.",
             )
+        manual_check = any("start" in update for update in updates.values())
+        edited_segments = []
+        allowed_speakers = {segment.speaker_id for segment in result.segments}
+        for segment in result.segments:
+            update = updates[segment.id]
+            edited = replace(
+                segment,
+                source_text=segment.source_text if manual_check else str(update.get("source_text", "")),
+                translated_text=str(update.get("translated_text", "")).strip(),
+            )
+            if manual_check:
+                try:
+                    edited.start = float(update["start"])
+                    edited.end = float(update["end"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise UserFacingError("Timeline không hợp lệ", f"Kiểm tra Start/End của ID {segment.id}.",
+                                          "Nhập thời gian bằng giây.") from exc
+                edited.speaker_id = str(update.get("speaker_id", segment.speaker_id)).strip()
+                if (not math.isfinite(edited.start) or not math.isfinite(edited.end)
+                        or edited.start < 0 or edited.end < edited.start):
+                    raise UserFacingError("Timeline không hợp lệ", f"ID {segment.id}: cần 0 ≤ Start ≤ End.",
+                                          "Kiểm tra lại thời gian.")
+                if edited.speaker_id not in allowed_speakers:
+                    raise UserFacingError("Speaker không hợp lệ", f"ID {segment.id}: {edited.speaker_id}",
+                                          "Chọn speaker ID có trong bản dịch.")
+                if not edited.translated_text:
+                    edited.start = edited.end
+                elif edited.end <= edited.start:
+                    raise UserFacingError("Câu dịch chưa có thời lượng", f"ID {segment.id} có chữ nhưng Start = End.",
+                                          "Đặt Start/End để khôi phục câu này.")
+            edited_segments.append(edited)
+        if manual_check:
+            active = sorted((item for item in edited_segments if item.translated_text),
+                            key=lambda item: (item.start, item.end))
+            for previous, following in zip(active, active[1:]):
+                if previous.end > following.start + 0.000001:
+                    raise UserFacingError("Timeline chồng nhau",
+                                          f"ID {previous.id} và {following.id} đang chồng thời gian.",
+                                          "Điều chỉnh Start/End; dùng Hiển thị toàn bộ segment nếu cần.")
         empty_ids = sorted(
             segment.id
-            for segment in result.segments
+            for segment in edited_segments
             if segment.duration > 0
-            and not str(updates[segment.id].get("translated_text", "")).strip()
+            and not segment.translated_text
         )
         if empty_ids:
             raise UserFacingError(
@@ -593,14 +633,23 @@ class ProjectState(QObject):
                 "Chọn lại candidate hoặc chạy lại Step 3.",
             )
 
-        for segment in result.segments:
-            update = updates[segment.id]
-            source_text = str(update.get("source_text", ""))
-            translated_text = str(update.get("translated_text", "")).strip()
-            segment.source_text = source_text
-            segment.translated_text = translated_text
-            manifest_segments[segment.id]["source_text"] = source_text
-            manifest_segments[segment.id]["translated_text"] = translated_text
+        for segment in edited_segments:
+            manifest_segments[segment.id]["source_text"] = segment.source_text
+            manifest_segments[segment.id]["translated_text"] = segment.translated_text
+            if manual_check:
+                manifest_segments[segment.id].update(
+                    speaker_id=segment.speaker_id, start=segment.start, end=segment.end,
+                )
+        from .config.gemini import GEMINI_PROVIDER_NAME
+        from .config.web_translation import CHATGPT_WEB_PROVIDER_NAME
+        if candidate.metadata.get("provider") in {GEMINI_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME}:
+            from .steps.step3_translation.quality import assess_manual_segments
+            payload.setdefault("workflow", {})["review_issues"] = assess_manual_segments(
+                edited_segments, self.target_language,
+            )
+            payload["skipped_translation_ids"] = [
+                item.id for item in edited_segments if not item.translated_text
+            ]
 
         edited_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
@@ -620,6 +669,11 @@ class ProjectState(QObject):
         finally:
             temporary_path.unlink(missing_ok=True)
 
+        result.segments = edited_segments
+        for key in ("workflow", "skipped_translation_ids"):
+            if key in payload:
+                candidate.metadata[key] = payload[key]
+                result.metadata[key] = payload[key]
         candidate.metadata["manually_edited_at"] = edited_at
         candidate.metadata["manual_edit_count"] = edit_count
         result.metadata["manually_edited_at"] = edited_at

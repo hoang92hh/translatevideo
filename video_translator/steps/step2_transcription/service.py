@@ -18,6 +18,7 @@ ProgressCallback = Callable[[int, str], None]
 SPEAKER_CHANGE_MIN_DURATION_SECONDS = 0.8
 SPEAKER_CHANGE_MIN_WORDS = 2
 RECOVERY_MAX_MAIN_OVERLAP_SECONDS = 0.1
+RECOVERY_FALLBACK_GAP_SECONDS = 0.5
 
 
 class SpeechToTextError(UserFacingError):
@@ -122,6 +123,7 @@ class SpeechToTextService:
             if not isinstance(raw_recovered, list):
                 raw_recovered = []
             normalized_recovered = []
+            recovery_fallback_indices: set[int] = set()
             recovery_info = result.get("asr_recovery", {})
             timing_audit = recovery_info.get("main_timing_audit", []) if isinstance(recovery_info, dict) else []
             for item in raw_recovered:
@@ -129,6 +131,7 @@ class SpeechToTextService:
                 end_value = item.get("end")
                 end = float(end_value) if end_value is not None else None
                 if end is None or not math.isfinite(end) or end <= start:
+                    recovery_fallback_indices.add(len(normalized_recovered))
                     # Only a missing/invalid Recovery end needs a substitute.
                     # Prefer the original enclosing Main interval when available.
                     parents = [
@@ -321,8 +324,12 @@ class SpeechToTextService:
             return min(indices) if indices else fallback
 
         source_details: dict[int, dict[str, object]] = {}
+        protected_word_ends: dict[int, float] = {}
         for index, item in enumerate(segments):
             origin = source_index(item, index)
+            raw = normalized[origin] if origin < len(normalized) else {}
+            if self._has_reliable_word_timing(raw):
+                protected_word_ends[id(item)] = max(float(word["end"]) for word in raw["words"])
             audit = main_audit[origin] if isinstance(main_audit, list) and origin < len(main_audit) else {}
             source_details[id(item)] = {
                 "source": "main", "source_index": origin,
@@ -331,9 +338,19 @@ class SpeechToTextService:
                 "reason": audit.get("reason", "main_asr"),
                 "action": audit.get("action", "kept"),
             }
+        fallback_recovery_ids: set[int] = set()
         for index, item in enumerate(final_recovered):
             origin = source_index(item, index)
             raw = normalized_recovered[origin] if origin < len(normalized_recovered) else {}
+            reliable_timing = self._has_reliable_word_timing(raw)
+            if reliable_timing:
+                protected_word_ends[id(item)] = max(float(word["end"]) for word in raw["words"])
+            if (
+                origin in recovery_fallback_indices
+                or not reliable_timing
+                or self._max_overlap(item.start, item.end, segments) > 0
+            ):
+                fallback_recovery_ids.add(id(item))
             source_details[id(item)] = {
                 "source": "recovery", "source_index": origin,
                 "before_start": raw.get("before_start", item.start),
@@ -346,24 +363,39 @@ class SpeechToTextService:
             key=lambda pair: (pair[0].start, pair[0].end),
         )
         ordered = [item for item, _ in tagged]
-        resolved = self._non_overlapping_timeline(ordered)
+        resolved = self._non_overlapping_timeline(ordered, fallback_recovery_ids, protected_word_ends)
         timeline_warnings: list[dict[str, object]] = []
         for index, (original, adjusted) in enumerate(zip(ordered, resolved, strict=True)):
             detail = dict(source_details[id(original)])
             if adjusted.end != original.end:
                 detail["action"] = "trimmed"
-                detail["reason"] = "end_trimmed_to_next_segment_start"
                 following = ordered[index + 1]
+                fallback_boundary = id(original) in fallback_recovery_ids or id(following) in fallback_recovery_ids
+                detail["reason"] = (
+                    "recovery_fallback_gap_0.5s" if fallback_boundary
+                    else "end_trimmed_to_next_segment_start"
+                )
                 timeline_warnings.append({
                     "stage": "final_segment",
                     "start": original.start,
                     "end": original.end,
                     "text": original.text,
                     "main_overlap_seconds": round(
-                        min(original.end, following.end) - following.start, 3,
+                        max(0.0, min(original.end, following.end) - following.start), 3,
                     ),
-                    "reason": "overlap_resolved_at_next_segment_start",
+                    "reason": detail["reason"],
                 })
+            if index + 1 < len(ordered):
+                following = ordered[index + 1]
+                if (
+                    (id(original) in fallback_recovery_ids or id(following) in fallback_recovery_ids)
+                    and following.start - adjusted.end < RECOVERY_FALLBACK_GAP_SECONDS - 1e-9
+                ):
+                    timeline_warnings.append({
+                        "stage": "final_segment", "start": adjusted.start, "end": adjusted.end,
+                        "text": adjusted.text,
+                        "reason": "insufficient_duration_for_recovery_fallback_gap",
+                    })
             source_details[id(adjusted)] = detail
         tagged = [
             (adjusted, origin)
@@ -398,8 +430,34 @@ class SpeechToTextService:
         )
 
     @staticmethod
+    def _has_reliable_word_timing(item: dict[str, object]) -> bool:
+        """Use complete, ordered, confident ASR word timing as evidence."""
+        words = item.get("words")
+        if not isinstance(words, list) or not words:
+            return False
+        try:
+            times = [(float(word["start"]), float(word["end"])) for word in words]
+            confidence = [float(word.get("probability") or 0.0) for word in words]
+            normalize = lambda value: "".join(character for character in str(value).casefold() if character.isalnum())
+            return (
+                all(math.isfinite(start) and math.isfinite(end) and start >= 0 and end > start
+                    for start, end in times)
+                and all(times[index][0] >= times[index - 1][1] - 0.25 for index in range(1, len(times)))
+                and float(item["start"]) - 0.25 <= min(start for start, _ in times)
+                and max(end for _, end in times) <= float(item["end"]) + 0.25
+                and normalize(item.get("text", "")) != ""
+                and normalize(item.get("text", "")) == normalize("".join(str(word.get("word", "")) for word in words))
+                and all(math.isfinite(value) for value in confidence)
+                and sum(confidence) / len(confidence) >= 0.4
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+
+    @staticmethod
     def _non_overlapping_timeline(
         segments: list[TranscriptSegment],
+        fallback_recovery_ids: set[int] | None = None,
+        protected_word_ends: dict[int, float] | None = None,
     ) -> list[TranscriptSegment]:
         """Use known boundaries first; trim only overlaps left after alignment."""
         for index, item in enumerate(segments):
@@ -423,11 +481,23 @@ class SpeechToTextService:
                         for previous in segments[index - 1:index + 1]
                     ], ensure_ascii=False),
                 )
+        fallback_recovery_ids = fallback_recovery_ids or set()
+        protected_word_ends = protected_word_ends or {}
         result: list[TranscriptSegment] = []
         for index, item in enumerate(segments):
             end = item.end
             if index + 1 < len(segments):
-                end = min(end, segments[index + 1].start)
+                following = segments[index + 1]
+                end = min(end, following.start)
+                if id(item) in fallback_recovery_ids or id(following) in fallback_recovery_ids:
+                    separated_end = min(end, following.start - RECOVERY_FALLBACK_GAP_SECONDS)
+                    # Preserve the complete text and a positive interval if the
+                    # requested gap cannot fit; the caller records a warning.
+                    if (
+                        separated_end > item.start
+                        and separated_end >= protected_word_ends.get(id(item), item.start)
+                    ):
+                        end = separated_end
             if end == item.end:
                 result.append(item)
                 continue

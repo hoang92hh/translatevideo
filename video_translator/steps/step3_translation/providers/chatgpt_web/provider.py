@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Callable
 
@@ -25,6 +26,7 @@ from ..gemini.provider import (
     GoogleTranslationService,
     TranslationCorrection,
     TranslationItem,
+    SourceVerifiedTranslationItem,
 )
 from .. import (
     DialogueAnalysisResponse,
@@ -337,8 +339,56 @@ class WebTranslationService:
             attachment_name=input_name,
             response_attachment_name=output_name if response_file else "",
         )
+        if self.provider_name == CHATGPT_WEB_PROVIDER_NAME:
+            try:
+                if not isinstance(parsed, list):
+                    raise ValueError("Phản hồi phải là JSON array.")
+                values = [SourceVerifiedTranslationItem.model_validate(item) for item in parsed]
+                translations = {}
+                speakers = {}
+                sources = {segment.id: segment.source_text for segment in segments}
+                for value in values:
+                    if value.id in translations:
+                        raise ValueError(f"ID trùng: {value.id}")
+                    translations[value.id] = value.translated_text.strip()
+                    speakers[value.id] = value.speaker_id.strip()
+                    if value.id in sources and value.source_text != sources[value.id]:
+                        logging.getLogger(__name__).warning(
+                            "ChatGPT Web echoed different source_text for ID %s; retaining original source.",
+                            value.id,
+                        )
+                expected = set(sources)
+                missing = expected - set(translations)
+                extra = set(translations) - expected
+                difference = len(values) - len(segments)
+                if difference == -1 and len(missing) == 1 and not extra:
+                    # As with Gemini, use source text only to align the N-1 case.
+                    remaining = [segment for segment in segments if segment.id not in missing]
+                    if [(value.id, value.source_text) for value in values] != [
+                        (segment.id, segment.source_text) for segment in remaining
+                    ]:
+                        raise ValueError("Không căn khớp được ID/source_text khi thiếu một segment.")
+                    missing_id = next(iter(missing))
+                    translations[missing_id] = ""
+                    logging.getLogger(__name__).warning(
+                        "ChatGPT Web returned one fewer segment; keeping ID %s with an empty translation.",
+                        missing_id,
+                    )
+                elif difference != 0 or missing or extra:
+                    raise ValueError(f"Sai danh sách ID: thiếu {sorted(missing)}, thừa {sorted(extra)}.")
+            except (ValueError, TypeError, ValidationError) as exc:
+                raise UserFacingError(
+                    "Kết quả ChatGPT Web không hợp lệ",
+                    "Không thể mapping các segment trong file JSON trả về.",
+                    "Kiểm tra ID và các trường id, speaker_id, source_text, translated_text.",
+                    str(exc),
+                ) from exc
+            return TranslationResponse(
+                translations, f"Chrome extension · {self.provider_name}", speakers,
+            )
+        translations = self._translation_map(parsed, allow_empty=True)
         return TranslationResponse(
-            self._translation_map(parsed, allow_empty=True),
+            translations,
             f"Chrome extension · {self.provider_name}",
         )
 

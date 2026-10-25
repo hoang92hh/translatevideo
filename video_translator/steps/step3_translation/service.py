@@ -5,6 +5,7 @@ import re
 from typing import Callable
 
 from ...config.gemini import GEMINI_PROVIDER_NAME
+from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from ...errors import UserFacingError
 from ...common.models import Segment
 from .providers import TranslationProvider
@@ -207,6 +208,9 @@ class TranslationWorkflow:
         translated: dict[int, str] = {}
         review_issues: list[dict[str, object]] = []
         is_gemini = getattr(self.provider, "provider_name", "") == GEMINI_PROVIDER_NAME
+        supports_speaker_corrections = getattr(self.provider, "provider_name", "") in {
+            GEMINI_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME,
+        }
         for index, batch in enumerate(batches, start=1):
             start = (index - 1) * self.batch_size
             end = start + len(batch)
@@ -248,9 +252,11 @@ class TranslationWorkflow:
                     batch_result = self._validate_translations(response.translations, batch, "dịch")
                     # Gemini content errors belong to segment review. Structural
                     # errors still use the existing batch validation/retry path.
-                    if not is_gemini:
+                    if getattr(self.provider, "provider_name", "") not in {
+                        GEMINI_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME,
+                    }:
                         self._validate_target_language(batch_result, batch, target_language)
-                    if is_gemini:
+                    if supports_speaker_corrections:
                         # The provider's existing count-minus-one branch can
                         # fill a missing translation with "". Keep its original
                         # speaker rather than rejecting the accepted count case.
@@ -274,11 +280,12 @@ class TranslationWorkflow:
                 assert last_error is not None
                 raise last_error
             translated.update(batch_result)
-            if is_gemini:
-                review_issues.extend(self._target_language_issues(
-                    batch_result, batch, target_language,
-                ))
-            if not is_gemini:
+            # Gemini automatic assessment/review is temporarily disabled.
+            # if is_gemini:
+            #     review_issues.extend(self._target_language_issues(
+            #         batch_result, batch, target_language,
+            #     ))
+            if not supports_speaker_corrections:
                 corrected_speakers = self._validate_speakers(response.corrected_speakers, batch)
             for segment in batch:
                 if segment.id in corrected_speakers:

@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
 )
 
 from video_translator.common.models import StepId
+from video_translator.errors import UserFacingError
+from video_translator.ui.transcript_timeline_dialog import TranscriptTimelineDialog
 from video_translator.ui.components import Card
 from video_translator.ui.specs import DEVICE_FIELD, FieldSpec, ProviderSpec, StepSpec
 from video_translator.ui.steps.base import StepPage
@@ -109,6 +111,8 @@ class SpeechToTextStepPage(StepPage):
         self._processing = busy
         super().set_busy(busy)
         self._refresh_rerun_button()
+        if hasattr(self, "timeline_button"):
+            self.timeline_button.setDisabled(busy)
         if not busy and hasattr(self, "transcript_combo"):
             self._refresh_transcripts(prefer_selected=True)
 
@@ -131,6 +135,8 @@ class SpeechToTextStepPage(StepPage):
         layout.addWidget(self.transcript_info)
 
         actions = QHBoxLayout()
+        self.timeline_button = QPushButton("Kiểm tra / sửa timeline")
+        self.timeline_button.clicked.connect(self._open_timeline_editor)
         use_button = QPushButton("Dùng làm input Step 3")
         use_button.clicked.connect(self._select_for_step_three)
         open_file = QPushButton("Mở file")
@@ -139,6 +145,7 @@ class SpeechToTextStepPage(StepPage):
         open_folder.clicked.connect(self._open_transcript_folder)
         delete_button = QPushButton("Xóa transcript")
         delete_button.clicked.connect(self._delete_transcript)
+        actions.addWidget(self.timeline_button)
         actions.addWidget(use_button)
         actions.addWidget(open_file)
         actions.addWidget(open_folder)
@@ -168,6 +175,7 @@ class SpeechToTextStepPage(StepPage):
         candidate = self._current_transcript()
         if not candidate:
             self.transcript_info.setText("Chưa có transcript")
+            self.timeline_button.setEnabled(False)
             self.show_candidate_result(None)
             return
         status = "Sẵn sàng" if Path(candidate.path).is_file() else "File không tồn tại"
@@ -179,9 +187,39 @@ class SpeechToTextStepPage(StepPage):
             if value
         )
         self.transcript_info.setText(f"{details}\n{candidate.path}")
-        self.show_candidate_result(
-            self.state.candidate_result(StepId.STT, candidate.id)
+        result = self.state.candidate_result(StepId.STT, candidate.id)
+        count = int(result.metadata.get("timeline_error_count", 0)) if result else 0
+        self.timeline_button.setText(f"Kiểm tra / sửa timeline ({count})")
+        self.timeline_button.setEnabled(result is not None and not self._processing)
+        self.show_candidate_result(result)
+
+    def _open_timeline_editor(self) -> None:
+        candidate = self._current_transcript()
+        result = self.state.candidate_result(StepId.STT, candidate.id) if candidate else None
+        if result is None:
+            QMessageBox.information(self, "Không thể mở", "Không đọc được output transcript.")
+            return
+        dialog = TranscriptTimelineDialog(
+            candidate, result.segments,
+            candidate.id == self.state.selected_transcript_candidate_id, self,
         )
+        dialog.save_requested.connect(
+            lambda candidate_id, updates: self._save_timeline(candidate_id, updates, dialog)
+        )
+        dialog.exec()
+
+    def _save_timeline(self, candidate_id, updates, dialog) -> None:
+        try:
+            self.state.save_transcript_candidate_edits(candidate_id, updates)
+        except UserFacingError as exc:
+            message = exc.error_message
+            QMessageBox.warning(self, message.title, message.message + "\n" + message.suggestion)
+            return
+        except OSError as exc:
+            QMessageBox.warning(self, "Không thể lưu transcript", str(exc))
+            return
+        dialog.save_succeeded()
+        self._refresh_transcripts(prefer_selected=True)
 
     def _current_transcript(self):
         return self.state.transcript_candidate(str(self.transcript_combo.currentData() or ""))

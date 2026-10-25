@@ -34,6 +34,38 @@ class TranscriptSegment:
     merge_parts: tuple[dict[str, object], ...] = ()
 
 
+TIMELINE_ISSUE_LABELS = {
+    "invalid_interval": "Start/End không hợp lệ",
+    "non_increasing_start": "Start trùng hoặc sai thứ tự",
+    "overlap": "Chồng thời gian",
+}
+
+
+def assess_transcript_timeline(segments) -> list[dict[str, object]]:
+    """Collect editable timing errors without changing any transcript content."""
+    flags: dict[int, set[str]] = {}
+    valid = []
+    for index, item in enumerate(segments, start=1):
+        segment_id = getattr(item, "id", index)
+        if (not math.isfinite(item.start) or not math.isfinite(item.end)
+                or item.start < 0 or item.end <= item.start):
+            flags.setdefault(segment_id, set()).add("invalid_interval")
+        else:
+            valid.append((segment_id, item))
+        if index > 1 and item.start <= segments[index - 2].start:
+            for affected in (segment_id, getattr(segments[index - 2], "id", index - 1)):
+                flags.setdefault(affected, set()).add("non_increasing_start")
+    active = []
+    for segment_id, item in sorted(valid, key=lambda pair: pair[1].start):
+        active = [(previous_id, previous) for previous_id, previous in active if previous.end > item.start]
+        for previous_id, _ in active:
+            flags.setdefault(previous_id, set()).add("overlap")
+            flags.setdefault(segment_id, set()).add("overlap")
+        active.append((segment_id, item))
+    return [{"id": getattr(item, "id", index), "issues": sorted(flags[getattr(item, "id", index)])}
+            for index, item in enumerate(segments, start=1) if getattr(item, "id", index) in flags]
+
+
 @dataclass(frozen=True, slots=True)
 class Transcription:
     segments: list[TranscriptSegment]
@@ -124,6 +156,7 @@ class SpeechToTextService:
                 raw_recovered = []
             normalized_recovered = []
             recovery_fallback_indices: set[int] = set()
+            recovery_input_warnings: list[dict[str, object]] = []
             recovery_info = result.get("asr_recovery", {})
             timing_audit = recovery_info.get("main_timing_audit", []) if isinstance(recovery_info, dict) else []
             for item in raw_recovered:
@@ -149,10 +182,17 @@ class SpeechToTextService:
                             if float(main["start"]) <= start < float(main["end"])
                         ]
                     if not parents:
-                        raise ValueError(
-                            f"Recovery tại {start}s thiếu end và không có Main bao phủ để lấy mốc dự phòng."
-                        )
-                    end = max(parents, key=lambda interval: interval[0])[1]
+                        # Keep the utterance as an explicitly invalid interval
+                        # for manual repair, never invent a usable duration.
+                        if end is None or not math.isfinite(end):
+                            end = start
+                        recovery_input_warnings.append({
+                            "stage": "segment", "start": start, "end": end,
+                            "text": str(item["text"]),
+                            "reason": "missing_recovery_end_requires_manual_timing",
+                        })
+                    else:
+                        end = max(parents, key=lambda interval: interval[0])[1]
                 normalized_recovered.append({
                     "start": start,
                     "end": end,
@@ -374,7 +414,7 @@ class SpeechToTextService:
             key=lambda pair: (pair[0].start, pair[0].end),
         )
         ordered = [item for item, _ in tagged]
-        timeline_warnings: list[dict[str, object]] = []
+        timeline_warnings = list(recovery_input_warnings)
         resolved = self._non_overlapping_timeline(
             ordered, recovery_main_pairs, timeline_warnings,
         )
@@ -390,7 +430,10 @@ class SpeechToTextService:
         ]
         segments = resolved
         recovery_metadata["postprocess_overlap_warnings"] = timeline_warnings
-        recovery_metadata["max_main_overlap_seconds"] = 0.0
+        recovery_metadata["max_main_overlap_seconds"] = max(
+            (self._max_overlap(item.start, item.end, [main for main, source in tagged if source == "main"])
+             for item, source in tagged if source == "recovery"), default=0.0,
+        )
         recovery_metadata["final_segment_sources"] = [
             {
                 "id": index, **source_details[id(item)],
@@ -452,22 +495,13 @@ class SpeechToTextService:
                 not math.isfinite(item.start) or not math.isfinite(item.end)
                 or item.start < 0 or item.end <= item.start
             ):
-                raise SpeechToTextError(
-                    "Timestamp nguồn không hợp lệ",
-                    f"Segment {index + 1} có khoảng {item.start}–{item.end}.",
-                    "Kiểm tra mốc thời gian nguồn; không tự bỏ lời thoại hoặc tạo thời gian giả.",
-                    item.text,
-                )
+                warnings.append({"stage": "final_segment", "start": item.start, "end": item.end,
+                                 "text": item.text, "reason": "invalid_interval_requires_manual_timing"})
+                return list(segments)
             if index and item.start <= segments[index - 1].start:
-                raise SpeechToTextError(
-                    "Không thể tách hai segment trùng start",
-                    f"Hai segment cùng bắt đầu tại {item.start}s.",
-                    "Cần xác định thứ tự/mốc bắt đầu; không tạo đoạn 0 giây làm mất lời thoại.",
-                    json.dumps([
-                        {"start": previous.start, "end": previous.end, "text": previous.text}
-                        for previous in segments[index - 1:index + 1]
-                    ], ensure_ascii=False),
-                )
+                warnings.append({"stage": "final_segment", "start": item.start, "end": item.end,
+                                 "text": item.text, "reason": "non_increasing_start_requires_manual_timing"})
+                return list(segments)
         result = list(segments)
         positions = {id(item): index for index, item in enumerate(segments)}
         for recovery_id, main_id in sorted(recovery_main_pairs.items(), key=lambda pair: positions[pair[0]]):
@@ -491,12 +525,8 @@ class SpeechToTextService:
                 segments[recovery_index + 1].start if recovery_index + 1 < len(segments) else recovery.end,
             )
             if main_end <= main.start or slot_end <= slot_start:
-                raise SpeechToTextError(
-                    "Không đủ thời lượng để tách Main và Recovery",
-                    f"Không thể giữ thời lượng dương cho cặp tại {recovery.start}s.",
-                    "Kiểm tra timestamp nguồn; không bỏ text hoặc xén segment ngoài cặp.",
-                    json.dumps(warning, ensure_ascii=False),
-                )
+                warnings.append({**warning, "reason": "recovery_pair_requires_manual_timing"})
+                continue
             # Both margins are taken from Recovery, never from Main or neighbors.
             recovery_start = slot_start + RECOVERY_FALLBACK_GAP_SECONDS
             recovery_end = slot_end - RECOVERY_FALLBACK_GAP_SECONDS
@@ -519,18 +549,9 @@ class SpeechToTextService:
         # Never repair an unresolved collision by trimming an unrelated neighbor.
         for previous, following in zip(result, result[1:]):
             if previous.end > following.start:
-                raise SpeechToTextError(
-                    "Không thể tách timeline trong phạm vi cặp Recovery–Main",
-                    f"Còn chồng thời gian tại {following.start}s; các segment ngoài cặp được giữ nguyên.",
-                    "Kiểm tra lại timestamp nguồn; không tự cắt segment ngoài cặp hoặc bỏ lời thoại.",
-                    json.dumps({
-                        "segments": [
-                            {"start": item.start, "end": item.end, "text": item.text}
-                            for item in (previous, following)
-                        ],
-                        "warnings": warnings,
-                    }, ensure_ascii=False),
-                )
+                warnings.append({"stage": "final_segment", "start": following.start,
+                                 "end": previous.end, "text": following.text,
+                                 "reason": "overlap_requires_manual_timing"})
         return result
 
     @staticmethod

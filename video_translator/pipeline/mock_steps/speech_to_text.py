@@ -7,7 +7,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ...common.models import Segment, StepId, StepResult, TranscriptCandidate
-from ...steps.step2_transcription.service import SpeechToTextService
+from ...steps.step2_transcription.service import SpeechToTextService, assess_transcript_timeline
 from ...steps.step2_transcription.service import (
     SPEAKER_CHANGE_MIN_DURATION_SECONDS,
     SPEAKER_CHANGE_MIN_WORDS,
@@ -57,6 +57,7 @@ def execute(
         for index, item in enumerate(transcription.segments, start=1)
     ]
 
+    timeline_issues = assess_transcript_timeline(segments)
     now = datetime.now(timezone.utc)
     candidate_id = f"stt-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
     transcript_path = Path(state.workspace_path("transcripts", candidate_id, "transcript.json"))
@@ -86,6 +87,8 @@ def execute(
         },
         "duration_seconds": transcription.duration_seconds,
         "asr_recovery": transcription.asr_recovery or {"enabled": False},
+        "timeline_issues": timeline_issues,
+        "timeline_error_count": len(timeline_issues),
         "segments": [
             {
                 "id": segment.id,
@@ -127,6 +130,8 @@ def execute(
     ))
     if recovered_count:
         summary += f" · phục hồi {recovered_count} segment"
+    if timeline_issues:
+        summary += f" · đã lưu output, {len(timeline_issues)} segment cần sửa timeline"
     metadata = {
         **settings,
         "language": transcription.language,
@@ -137,6 +142,8 @@ def execute(
         "device_selection_reason": transcription.device_selection_reason,
         "duration_seconds": transcription.duration_seconds,
         "asr_recovery": transcription.asr_recovery or {"enabled": False},
+        "timeline_issues": timeline_issues,
+        "timeline_error_count": len(timeline_issues),
         "diarization": bool(settings.get("diarization", False)),
         "merge_adjacent_segments": bool(settings.get("merge_adjacent_segments", False)),
         "diarization_model": transcription.diarization_model,

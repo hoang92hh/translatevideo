@@ -25,6 +25,7 @@ from .common.models import (
     TtsCandidate,
 )
 from .project import VideoProject
+from .steps.step2_transcription.service import assess_transcript_timeline
 
 
 class ProjectState(QObject):
@@ -360,18 +361,105 @@ class ProjectState(QObject):
         self.selected_transcript_candidate_id = candidate_id
         self.default_transcript_candidate_id = candidate_id
         if not selection_changed:
+            self.results[StepId.STT] = result
+            has_errors = bool(result.metadata.get("timeline_error_count", 0))
+            self.statuses[StepId.STT] = StepStatus.ERROR if has_errors else StepStatus.DONE
+            if has_errors:
+                self.invalidate_from(StepId.TRANSLATE)
+            self.step_changed.emit(StepId.STT.value)
             self.project_changed.emit()
             self.save_project()
             return True
         self.results[StepId.STT] = result
-        self.statuses[StepId.STT] = StepStatus.DONE
+        has_errors = bool(result.metadata.get("timeline_error_count", 0))
+        self.statuses[StepId.STT] = StepStatus.ERROR if has_errors else StepStatus.DONE
         self.invalidate_from(StepId.TRANSLATE)
-        self.statuses[StepId.TRANSLATE] = StepStatus.READY
+        if not has_errors:
+            self.statuses[StepId.TRANSLATE] = StepStatus.READY
         self.step_changed.emit(StepId.STT.value)
         self.step_changed.emit(StepId.TRANSLATE.value)
         self.project_changed.emit()
         self.save_project()
         return True
+
+    def save_transcript_candidate_edits(self, candidate_id: str, updates: dict) -> int:
+        candidate = self.transcript_candidate(candidate_id)
+        if not candidate or candidate_id != self.selected_transcript_candidate_id:
+            raise UserFacingError("Chưa chọn transcript", "Chỉ lưu transcript đang dùng làm input Step 3.",
+                                  "Chọn Dùng làm input Step 3 rồi mở lại popup.")
+        result = self._result_from_transcript(candidate_id)
+        if result is None or set(updates) != {item.id for item in result.segments}:
+            raise UserFacingError("Transcript không khớp", "Danh sách ID đã thay đổi hoặc không đọc được file.",
+                                  "Mở lại popup từ output cần sửa.")
+        edited = []
+        for item in result.segments:
+            try:
+                start, end = float(updates[item.id]["start"]), float(updates[item.id]["end"])
+                if not math.isfinite(start) or not math.isfinite(end):
+                    raise ValueError("Thời gian phải là số hữu hạn")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise UserFacingError("Thời gian không hợp lệ", f"Kiểm tra Start/End của ID {item.id}.",
+                                      "Nhập số giây.", str(exc)) from exc
+            parts = item.merge_parts
+            if (start, end) != (item.start, item.end):
+                parts = [{**part, "start": start, "end": end,
+                          "duration": max(0.0, end - start)} for part in parts]
+            edited.append(replace(item, start=start, end=end, merge_parts=parts))
+        path = Path(candidate.path)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            rows = payload["segments"]
+            if len(rows) != len(edited) or {int(row["id"]) for row in rows} != set(updates):
+                raise ValueError("Danh sách ID trong file đã thay đổi")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise UserFacingError("Không đọc được transcript", "File transcript không còn khớp.",
+                                  "Mở lại output để kiểm tra.", str(exc)) from exc
+        by_id = {item.id: item for item in edited}
+        for row in rows:
+            item = by_id[int(row["id"])]
+            row.update(start=item.start, end=item.end, merge_parts=item.merge_parts)
+        issues = assess_transcript_timeline(edited)
+        payload["timeline_issues"] = issues
+        payload["timeline_error_count"] = len(issues)
+        payload["manually_edited_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        recovery = payload.get("asr_recovery", {})
+        if isinstance(recovery, dict):
+            original_by_id = {item.id: item for item in result.segments}
+            for record in recovery.get("final_segment_sources", []):
+                item = by_id.get(record.get("id"))
+                if item and (item.start, item.end) != (original_by_id[item.id].start, original_by_id[item.id].end):
+                    record.update(after_start=item.start, after_end=item.end,
+                                  action="manually_adjusted", reason="manual_timeline_edit")
+            sources = {record.get("id"): record.get("source")
+                       for record in recovery.get("final_segment_sources", [])}
+            recovery["max_main_overlap_seconds"] = max((
+                max(0.0, min(main.end, recovered.end) - max(main.start, recovered.start))
+                for main in edited if sources.get(main.id) == "main"
+                for recovered in edited if sources.get(recovered.id) == "recovery"
+            ), default=0.0)
+        temporary = path.with_suffix(path.suffix + ".part")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        candidate.metadata.update({key: value for key, value in payload.items() if key != "segments"})
+        result.segments = edited
+        result.metadata = {**result.metadata, **candidate.metadata}
+        candidate.summary = result.summary = (
+            f"Transcript {len(edited)} segment · "
+            + (f"đã lưu, còn {len(issues)} segment lỗi timeline" if issues else "timeline hợp lệ")
+        )
+        self.results[StepId.STT] = result
+        self.statuses[StepId.STT] = StepStatus.ERROR if issues else StepStatus.DONE
+        self.invalidate_from(StepId.TRANSLATE)
+        if not issues:
+            self.statuses[StepId.TRANSLATE] = StepStatus.READY
+        self.step_changed.emit(StepId.STT.value)
+        self.step_changed.emit(StepId.TRANSLATE.value)
+        self.project_changed.emit()
+        self.save_project()
+        return len(issues)
 
     def remove_transcript_candidate(self, candidate_id: str) -> None:
         removed_selected = candidate_id == self.selected_transcript_candidate_id
@@ -442,11 +530,18 @@ class ProjectState(QObject):
         current_path = current.artifacts.get("transcript", "") if current else ""
         if current and current_path and Path(current_path) == Path(candidate.path):
             current.metadata["transcript_candidate_id"] = candidate.id
+            issues = assess_transcript_timeline(current.segments)
+            current.metadata.update(timeline_issues=issues, timeline_error_count=len(issues))
+            self.statuses[StepId.STT] = StepStatus.ERROR if issues else StepStatus.DONE
+            if issues:
+                self.invalidate_from(StepId.TRANSLATE)
             return
         result = self._result_from_transcript(candidate.id)
         if result:
             self.results[StepId.STT] = result
-            self.statuses[StepId.STT] = StepStatus.DONE
+            self.statuses[StepId.STT] = (
+                StepStatus.ERROR if result.metadata.get("timeline_error_count", 0) else StepStatus.DONE
+            )
             for later in STEP_ORDER[STEP_ORDER.index(StepId.TRANSLATE) :]:
                 self.results.pop(later, None)
                 self.statuses[later] = StepStatus.PENDING
@@ -488,6 +583,8 @@ class ProjectState(QObject):
             return None
         metadata = {**candidate.metadata, **{key: value for key, value in payload.items() if key != "segments"}}
         metadata["transcript_candidate_id"] = candidate.id
+        issues = assess_transcript_timeline(segments)
+        metadata.update(timeline_issues=issues, timeline_error_count=len(issues))
         summary = candidate.summary or f"Transcript {candidate.label} · {len(segments)} segment"
         return StepResult(
             step=StepId.STT,
@@ -733,7 +830,7 @@ class ProjectState(QObject):
         result.metadata["translation_candidate_id"] = candidate_id
 
     def _restore_selected_translation(self) -> None:
-        if StepId.STT not in self.results:
+        if StepId.STT not in self.results or self.statuses[StepId.STT] != StepStatus.DONE:
             return
         choices = (
             self.selected_translation_candidate_id,
@@ -1501,6 +1598,8 @@ class ProjectState(QObject):
         self.results[result.step] = result
         has_blocking_errors = (
             result.step == StepId.SYNC and int(result.metadata.get("error_count", 0)) > 0
+        ) or (
+            result.step == StepId.STT and int(result.metadata.get("timeline_error_count", 0)) > 0
         )
         self.statuses[result.step] = StepStatus.ERROR if has_blocking_errors else StepStatus.DONE
         for later in STEP_ORDER[index + 1 :]:

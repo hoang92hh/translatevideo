@@ -448,6 +448,12 @@ class MainWindow(QMainWindow):
     def _execute_batch_step(self, step: StepId) -> None:
         if not self.batch_project or not self.batch_state.project:
             return
+        pending_transcript = self.batch_state.results.get(StepId.STT)
+        if step == StepId.STT and pending_transcript and pending_transcript.metadata.get("timeline_error_count", 0):
+            self._fail_batch_video(
+                "Output Step 2 đã lưu. Mở Kiểm tra / sửa timeline để sửa, không cần chạy lại ASR.", step,
+            )
+            return
         if step.value not in self.batch_settings:
             self._fail_batch_video("Step chưa có thiết lập project.", step)
             return
@@ -488,7 +494,13 @@ class MainWindow(QMainWindow):
                 self._fail_batch_video(outcome["failure_payload"], step)
                 return
             if not outcome["success"]:
-                self._fail_batch_video("Step còn lỗi cần xử lý.", step)
+                saved = self.batch_state.results.get(step)
+                message = (
+                    "Output Step 2 đã lưu. Mở Kiểm tra / sửa timeline để sửa trước khi tiếp tục."
+                    if step == StepId.STT and saved and saved.metadata.get("timeline_error_count", 0)
+                    else "Step còn lỗi cần xử lý."
+                )
+                self._fail_batch_video(message, step)
                 return
             next_index = STEP_ORDER.index(step) + 1
             if next_index < len(STEP_ORDER):
@@ -993,6 +1005,14 @@ class MainWindow(QMainWindow):
         )
         if next_step is None:
             self._finish_pipeline_sequence()
+            return
+        pending_transcript = self.state.results.get(StepId.STT)
+        if next_step == StepId.STT and pending_transcript and pending_transcript.metadata.get("timeline_error_count", 0):
+            self.tabs.setCurrentWidget(self.pages[StepId.STT])
+            QMessageBox.information(
+                self, "Transcript đã lưu, cần sửa timeline",
+                "Mở Kiểm tra / sửa timeline ở Step 2 rồi lưu. Sau khi hết lỗi, Continue sẽ chạy từ Step 3, không nhận dạng lại.",
+            )
             return
         self.running_all = True
         self.continue_button.setVisible(True)

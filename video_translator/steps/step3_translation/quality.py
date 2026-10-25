@@ -11,7 +11,6 @@ MANUAL_ISSUE_LABELS = {
     "source_language_leftovers": "Còn chữ Trung Quốc",
     "missing_number": "Nghi thiếu số",
     "translation_too_short": "Câu quá ngắn",
-    "duplicate_translation": "Trùng câu dịch liền trước/sau",
     "recovery_speaker": "Speaker Recovery",
 }
 
@@ -21,7 +20,6 @@ def assess_manual_segments(
 ) -> list[dict[str, object]]:
     """Produce advisory flags only; never change text, speakers, or timing."""
     issues: dict[int, list[str]] = {}
-    spoken = [segment for segment in segments if segment.translated_text.strip()]
     for segment in segments:
         reasons = []
         text = segment.translated_text.strip()
@@ -37,12 +35,6 @@ def assess_manual_segments(
                 reasons.append("translation_too_short")
         if reasons:
             issues[segment.id] = reasons
-    for previous, following in zip(spoken, spoken[1:]):
-        if " ".join(previous.translated_text.casefold().split()) == " ".join(
-            following.translated_text.casefold().split()
-        ):
-            for segment in (previous, following):
-                issues.setdefault(segment.id, []).append("duplicate_translation")
     return [{"id": segment.id, "issues": list(dict.fromkeys(issues[segment.id]))}
             for segment in segments if segment.id in issues]
 

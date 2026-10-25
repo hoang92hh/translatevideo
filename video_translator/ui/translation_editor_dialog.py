@@ -324,9 +324,9 @@ class TranslationEditorDialog(QDialog):
         visible = set(reasons)
         context_ids = {
             segment_id for segment_id, flags in reasons.items()
-            if "recovery_speaker" in flags or "duplicate_translation" in flags
+            if "recovery_speaker" in flags
         }
-        # Only recovery and duplicate flags need neighboring nonempty dialogue.
+        # Only recovery flags need neighboring nonempty dialogue.
         previous = None
         for item in segments:
             if item["id"] in context_ids and previous is not None:

@@ -18,7 +18,7 @@ ProgressCallback = Callable[[int, str], None]
 SPEAKER_CHANGE_MIN_DURATION_SECONDS = 0.8
 SPEAKER_CHANGE_MIN_WORDS = 2
 RECOVERY_MAX_MAIN_OVERLAP_SECONDS = 0.1
-RECOVERY_FALLBACK_GAP_SECONDS = 0.5
+RECOVERY_FALLBACK_GAP_SECONDS = 0.2
 
 
 class SpeechToTextError(UserFacingError):
@@ -324,12 +324,8 @@ class SpeechToTextService:
             return min(indices) if indices else fallback
 
         source_details: dict[int, dict[str, object]] = {}
-        protected_word_ends: dict[int, float] = {}
         for index, item in enumerate(segments):
             origin = source_index(item, index)
-            raw = normalized[origin] if origin < len(normalized) else {}
-            if self._has_reliable_word_timing(raw):
-                protected_word_ends[id(item)] = max(float(word["end"]) for word in raw["words"])
             audit = main_audit[origin] if isinstance(main_audit, list) and origin < len(main_audit) else {}
             source_details[id(item)] = {
                 "source": "main", "source_index": origin,
@@ -343,8 +339,6 @@ class SpeechToTextService:
             origin = source_index(item, index)
             raw = normalized_recovered[origin] if origin < len(normalized_recovered) else {}
             reliable_timing = self._has_reliable_word_timing(raw)
-            if reliable_timing:
-                protected_word_ends[id(item)] = max(float(word["end"]) for word in raw["words"])
             if (
                 origin in recovery_fallback_indices
                 or not reliable_timing
@@ -358,44 +352,37 @@ class SpeechToTextService:
                 "reason": "targeted_asr_recovery",
                 "action": "kept",
             }
+        recovery_main_pairs: dict[int, int] = {}
+        for recovery in final_recovered:
+            if id(recovery) not in fallback_recovery_ids:
+                continue
+            overlapping = [
+                main for main in segments
+                if min(main.end, recovery.end) > max(main.start, recovery.start)
+            ]
+            if overlapping:
+                # The Recovery start anchors the split. A later Main is only
+                # an end limit when the Recovery already begins inside a Main.
+                containing_start = [main for main in overlapping if main.start < recovery.start]
+                main = (
+                    max(containing_start, key=lambda item: item.start)
+                    if containing_start else min(overlapping, key=lambda item: item.start)
+                )
+                recovery_main_pairs[id(recovery)] = id(main)
         tagged = sorted(
             [(item, "main") for item in segments] + [(item, "recovery") for item in final_recovered],
             key=lambda pair: (pair[0].start, pair[0].end),
         )
         ordered = [item for item, _ in tagged]
-        resolved = self._non_overlapping_timeline(ordered, fallback_recovery_ids, protected_word_ends)
         timeline_warnings: list[dict[str, object]] = []
-        for index, (original, adjusted) in enumerate(zip(ordered, resolved, strict=True)):
+        resolved = self._non_overlapping_timeline(
+            ordered, recovery_main_pairs, timeline_warnings,
+        )
+        for original, adjusted in zip(ordered, resolved, strict=True):
             detail = dict(source_details[id(original)])
-            if adjusted.end != original.end:
-                detail["action"] = "trimmed"
-                following = ordered[index + 1]
-                fallback_boundary = id(original) in fallback_recovery_ids or id(following) in fallback_recovery_ids
-                detail["reason"] = (
-                    "recovery_fallback_gap_0.5s" if fallback_boundary
-                    else "end_trimmed_to_next_segment_start"
-                )
-                timeline_warnings.append({
-                    "stage": "final_segment",
-                    "start": original.start,
-                    "end": original.end,
-                    "text": original.text,
-                    "main_overlap_seconds": round(
-                        max(0.0, min(original.end, following.end) - following.start), 3,
-                    ),
-                    "reason": detail["reason"],
-                })
-            if index + 1 < len(ordered):
-                following = ordered[index + 1]
-                if (
-                    (id(original) in fallback_recovery_ids or id(following) in fallback_recovery_ids)
-                    and following.start - adjusted.end < RECOVERY_FALLBACK_GAP_SECONDS - 1e-9
-                ):
-                    timeline_warnings.append({
-                        "stage": "final_segment", "start": adjusted.start, "end": adjusted.end,
-                        "text": adjusted.text,
-                        "reason": "insufficient_duration_for_recovery_fallback_gap",
-                    })
+            if (adjusted.start, adjusted.end) != (original.start, original.end):
+                detail["action"] = "adjusted"
+                detail["reason"] = "recovery_main_pair_timing_fallback"
             source_details[id(adjusted)] = detail
         tagged = [
             (adjusted, origin)
@@ -456,10 +443,10 @@ class SpeechToTextService:
     @staticmethod
     def _non_overlapping_timeline(
         segments: list[TranscriptSegment],
-        fallback_recovery_ids: set[int] | None = None,
-        protected_word_ends: dict[int, float] | None = None,
+        recovery_main_pairs: dict[int, int],
+        warnings: list[dict[str, object]],
     ) -> list[TranscriptSegment]:
-        """Use known boundaries first; trim only overlaps left after alignment."""
+        """Adjust only a selected overlapping Recovery/Main pair at a time."""
         for index, item in enumerate(segments):
             if (
                 not math.isfinite(item.start) or not math.isfinite(item.end)
@@ -481,34 +468,69 @@ class SpeechToTextService:
                         for previous in segments[index - 1:index + 1]
                     ], ensure_ascii=False),
                 )
-        fallback_recovery_ids = fallback_recovery_ids or set()
-        protected_word_ends = protected_word_ends or {}
-        result: list[TranscriptSegment] = []
-        for index, item in enumerate(segments):
-            end = item.end
-            if index + 1 < len(segments):
-                following = segments[index + 1]
-                end = min(end, following.start)
-                if id(item) in fallback_recovery_ids or id(following) in fallback_recovery_ids:
-                    separated_end = min(end, following.start - RECOVERY_FALLBACK_GAP_SECONDS)
-                    # Preserve the complete text and a positive interval if the
-                    # requested gap cannot fit; the caller records a warning.
-                    if (
-                        separated_end > item.start
-                        and separated_end >= protected_word_ends.get(id(item), item.start)
-                    ):
-                        end = separated_end
-            if end == item.end:
-                result.append(item)
-                continue
-            # This is a timing fallback, never a rewrite/split of ASR text.
-            parts = tuple({
-                **part,
-                "start": item.start,
-                "end": end,
-                "duration": round(end - item.start, 3),
-            } for part in item.merge_parts)
-            result.append(replace(item, end=end, merge_parts=parts))
+        result = list(segments)
+        positions = {id(item): index for index, item in enumerate(segments)}
+        for recovery_id, main_id in sorted(recovery_main_pairs.items(), key=lambda pair: positions[pair[0]]):
+            recovery_index, main_index = positions[recovery_id], positions[main_id]
+            recovery, main = segments[recovery_index], result[main_index]
+            warning = {
+                "stage": "final_segment", "start": recovery.start, "end": recovery.end,
+                "text": recovery.text,
+            }
+            main_end = min(main.end, recovery.start) if main_index < recovery_index else main.end
+            # Only this Main and Recovery may change. Other rows provide fixed
+            # boundaries; neither their start nor their end is moved for padding.
+            lower = max(
+                (main_end if index == main_index else item.end
+                 for index, item in enumerate(result[:recovery_index])),
+                default=recovery.start,
+            )
+            slot_start = max(recovery.start, lower)
+            slot_end = min(
+                recovery.end,
+                segments[recovery_index + 1].start if recovery_index + 1 < len(segments) else recovery.end,
+            )
+            if main_end <= main.start or slot_end <= slot_start:
+                raise SpeechToTextError(
+                    "Không đủ thời lượng để tách Main và Recovery",
+                    f"Không thể giữ thời lượng dương cho cặp tại {recovery.start}s.",
+                    "Kiểm tra timestamp nguồn; không bỏ text hoặc xén segment ngoài cặp.",
+                    json.dumps(warning, ensure_ascii=False),
+                )
+            # Both margins are taken from Recovery, never from Main or neighbors.
+            recovery_start = slot_start + RECOVERY_FALLBACK_GAP_SECONDS
+            recovery_end = slot_end - RECOVERY_FALLBACK_GAP_SECONDS
+            if recovery_end <= recovery_start:
+                # Keep the available positive interval rather than delete text.
+                recovery_start, recovery_end = slot_start, slot_end
+                warnings.append({**warning, "reason": "insufficient_duration_for_recovery_fallback_gap"})
+            updates = (
+                (main_index, main, main.start, main_end),
+                (recovery_index, recovery, recovery_start, recovery_end),
+            )
+            for index, item, start, end in updates:
+                if (start, end) == (item.start, item.end):
+                    continue
+                parts = tuple({
+                    **part, "start": start, "end": end,
+                    "duration": round(end - start, 3),
+                } for part in item.merge_parts)
+                result[index] = replace(item, start=start, end=end, merge_parts=parts)
+        # Never repair an unresolved collision by trimming an unrelated neighbor.
+        for previous, following in zip(result, result[1:]):
+            if previous.end > following.start:
+                raise SpeechToTextError(
+                    "Không thể tách timeline trong phạm vi cặp Recovery–Main",
+                    f"Còn chồng thời gian tại {following.start}s; các segment ngoài cặp được giữ nguyên.",
+                    "Kiểm tra lại timestamp nguồn; không tự cắt segment ngoài cặp hoặc bỏ lời thoại.",
+                    json.dumps({
+                        "segments": [
+                            {"start": item.start, "end": item.end, "text": item.text}
+                            for item in (previous, following)
+                        ],
+                        "warnings": warnings,
+                    }, ensure_ascii=False),
+                )
         return result
 
     @staticmethod

@@ -133,7 +133,7 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         for page_type in STEP_PAGE_TYPES:
             page = page_type(self.state)
-            if page.spec.step in {StepId.STT, StepId.TRANSLATE, StepId.TTS}:
+            if page.spec.step in {StepId.STT, StepId.TRANSLATE, StepId.TTS, StepId.BUILD_AUDIO}:
                 page.run_from_here_requested.connect(self._run_from_here_requested)
             elif page.spec.step == StepId.RENDER:
                 page.run_requested.connect(self._run_requested)
@@ -1002,7 +1002,7 @@ class MainWindow(QMainWindow):
 
     def _finish_pipeline_sequence(self, needs_continue: bool = False) -> None:
         self.running_all = False
-        for chain_step in (StepId.STT, StepId.TRANSLATE, StepId.TTS):
+        for chain_step in (StepId.STT, StepId.TRANSLATE, StepId.TTS, StepId.BUILD_AUDIO):
             chain_page = self.pages.get(chain_step)
             if hasattr(chain_page, "set_chain_running"):
                 chain_page.set_chain_running(False)

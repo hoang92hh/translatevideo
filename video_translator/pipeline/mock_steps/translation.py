@@ -95,6 +95,41 @@ def _apply_gemini_empty_results(
         first.merge_parts = parts
 
 
+def _merge_duplicate_translation_pairs(segments: list[Any], batch_size: int) -> None:
+    """Consume touching identical translations as disjoint pairs, never runs."""
+    size = max(1, batch_size)
+    for batch_start in range(0, len(segments), size):
+        spoken = [item for item in segments[batch_start:batch_start + size]
+                  if item.translated_text.strip()]
+        index = 0
+        while index + 1 < len(spoken):
+            first, second = spoken[index:index + 2]
+            first_text = " ".join(first.translated_text.casefold().split())
+            second_text = " ".join(second.translated_text.casefold().split())
+            if first_text != second_text or first.end != second.start:
+                index += 1
+                continue
+            parts = []
+            for source in (first, second):
+                parts.extend(deepcopy(source.merge_parts) or [{
+                    "source_id": source.id, "start": source.start, "end": source.end,
+                    "duration": source.duration, "text": source.source_text,
+                }])
+            total = sum(max(0.0, float(part.get("duration", 0.0))) for part in parts)
+            for part in parts:
+                part["ratio"] = (
+                    max(0.0, float(part.get("duration", 0.0))) / total
+                    if total else 1.0 / len(parts)
+                )
+            first.end = second.end
+            first.merge_parts = parts
+            second.translated_text = ""
+            second.start = second.end
+            # Move past BOTH members: a third duplicate stays independent,
+            # but may form the next pair with a fourth identical sentence.
+            index += 2
+
+
 def _review_gemini_segments(
     translation_provider: Any,
     segments: list[Any],
@@ -269,6 +304,7 @@ def execute(
 
     if uses_empty_groups:
         _apply_gemini_empty_results(segments, original_segments, batch_size)
+        _merge_duplicate_translation_pairs(segments, batch_size)
 
     # Temporarily disable automatic assessment/review for Gemini and ChatGPT Web.
     # Translation corrections are handled manually in Step 5.

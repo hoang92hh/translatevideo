@@ -31,7 +31,33 @@ class BuildAudioStepPage(StepPage):
 
     def __init__(self, state) -> None:
         self._processing = False
+        self._chain_running = False
         super().__init__(state)
+
+    def _build_header(self) -> QHBoxLayout:
+        header = super()._build_header()
+        self.rerun_chain_button = QPushButton("Chạy lại Step 6 → 7")
+        self.rerun_chain_button.setObjectName("primaryButton")
+        self.rerun_chain_button.clicked.connect(
+            lambda: self.run_from_here_requested.emit(self.spec.step.value)
+        )
+        header.addWidget(self.rerun_chain_button)
+        return header
+
+    def _refresh_rerun_button(self) -> None:
+        if not hasattr(self, "rerun_chain_button"):
+            return
+        busy = self._processing or self._chain_running
+        self.rerun_chain_button.setEnabled(
+            not busy and self.state.can_run(self.spec.step)
+        )
+        self.rerun_chain_button.setText(
+            "Đang chạy Step 6 → 7…" if busy else "Chạy lại Step 6 → 7"
+        )
+
+    def set_chain_running(self, running: bool) -> None:
+        self._chain_running = running
+        self._refresh_rerun_button()
 
     def build_result_extra(self) -> QWidget:
         # Step 6 chỉ cần voice track hoàn chỉnh, không cần bảng từng segment.
@@ -107,12 +133,14 @@ class BuildAudioStepPage(StepPage):
         self._release_player("Đã giải phóng trình phát để chạy lại Step 6…")
 
     def refresh_special(self) -> None:
+        self._refresh_rerun_button()
         if hasattr(self, "audio_combo") and not self._processing:
             self._refresh_outputs()
 
     def set_busy(self, busy: bool) -> None:
         self._processing = busy
         super().set_busy(busy)
+        self._refresh_rerun_button()
         if not busy and hasattr(self, "audio_combo"):
             self._refresh_outputs(prefer_selected=True)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -281,6 +282,42 @@ class VideoRenderService:
         filters.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[{output_label}]")
         return filters, output_label
 
+    def _nvenc_available(self) -> tuple[bool, str]:
+        probe = [
+            self.ffmpeg.ffmpeg_path, "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "color=c=black:s=16x16:r=1",
+            "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-",
+        ]
+        result = subprocess.run(
+            probe, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+        if result.returncode == 0:
+            return True, ""
+        return False, result.stderr.strip() or f"NVENC probe exit code: {result.returncode}"
+
+    def _run_ffmpeg(self, command: list[str], output_duration: float, progress: ProgressCallback | None) -> tuple[int, str]:
+        process = subprocess.Popen(
+            command, cwd=str(Path(command[-1]).parent), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            key, _, value = raw_line.strip().partition("=")
+            if key not in {"out_time_us", "out_time_ms"}:
+                continue
+            try:
+                elapsed = int(value) / 1_000_000
+            except ValueError:
+                continue
+            percent = min(99, max(0, round(elapsed / max(output_duration, 0.001) * 100)))
+            if progress:
+                progress(percent, f"Đang render video… {percent}%")
+        stderr = process.stderr.read() if process.stderr else ""
+        return process.wait(), stderr
+
     def render(
         self,
         source_video_path: str | Path,
@@ -322,6 +359,7 @@ class VideoRenderService:
                 f"FFprobe không xác định được thời lượng: {source_video}",
             )
         edits = self._timing_edits(video_timing_plan, duration)
+        smart_copy = not edits and not burn_subtitle
         output_duration = duration + sum(float(edit["extension_duration"]) for edit in edits)
 
         output = Path(output_path)
@@ -391,22 +429,32 @@ class VideoRenderService:
         video_map = f"[{video_label}]" if video_label else "0:v:0"
         if edits:
             filter_script.write_text(audio_filter, encoding="utf-8")
+            # FFmpeg 7+ supports reading a complex filter graph from a file
+            # with the slash-prefixed option. This avoids Windows command-line
+            # length limits for long timing/audio graphs.
             command.extend(["-/filter_complex", str(filter_script)])
         else:
             command.extend(["-filter_complex", audio_filter])
         command.extend(["-map", video_map, "-map", "[audio]"])
         if burn_subtitle and subtitle is not None and not edits:
             command.extend(["-vf", f"subtitles=filename={subtitle.name}:charenc=UTF-8"])
+        fallback_reason = ""
+        if smart_copy:
+            video_codec = "copy"
+            video_options = ["-c:v", "copy"]
+        else:
+            nvenc_ok, nvenc_reason = self._nvenc_available()
+            video_codec = "h264_nvenc" if nvenc_ok else "libx264"
+            fallback_reason = "" if nvenc_ok else nvenc_reason
+            video_options = [
+                "-c:v", video_codec,
+                "-preset", "p5" if nvenc_ok else "medium",
+                *( ["-cq", "20"] if nvenc_ok else ["-crf", "20"] ),
+                "-pix_fmt", "yuv420p",
+            ]
         command.extend(
             [
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "20",
-                "-pix_fmt",
-                "yuv420p",
+                *video_options,
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -423,17 +471,9 @@ class VideoRenderService:
         )
         if progress:
             progress(0, "Đang render video, voice và background…")
+        started_at = time.perf_counter()
         try:
-            process = subprocess.Popen(
-                command,
-                cwd=str(output.parent),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            return_code, stderr = self._run_ffmpeg(command, output_duration, progress)
         except OSError as exc:
             filter_script.unlink(missing_ok=True)
             raise VideoRenderError(
@@ -442,20 +482,21 @@ class VideoRenderService:
                 "Kiểm tra FFmpeg, đường dẫn và quyền truy cập thư mục output.",
                 repr(exc),
             ) from exc
-        assert process.stdout is not None
-        for raw_line in process.stdout:
-            key, _, value = raw_line.strip().partition("=")
-            if key not in {"out_time_us", "out_time_ms"}:
-                continue
+        if return_code != 0 and video_codec == "h264_nvenc":
+            temporary.unlink(missing_ok=True)
+            fallback_reason = stderr.strip() or "NVENC encode failed"
+            command = ["libx264" if item == "h264_nvenc" else item for item in command]
+            command = ["medium" if item == "p5" else item for item in command]
+            command = ["-crf" if item == "-cq" else item for item in command]
+            # Replace NVENC quality option pair with libx264 CRF 20.
             try:
-                elapsed = int(value) / 1_000_000
+                cq_index = command.index("20")
+                if cq_index > 0 and command[cq_index - 1] == "-cq":
+                    command[cq_index - 1] = "-crf"
             except ValueError:
-                continue
-            percent = min(99, max(0, round(elapsed / output_duration * 100)))
-            if progress:
-                progress(percent, f"Đang render video… {percent}%")
-        stderr = process.stderr.read() if process.stderr else ""
-        return_code = process.wait()
+                pass
+            return_code, stderr = self._run_ffmpeg(command, output_duration, progress)
+            video_codec = "libx264"
         filter_script.unlink(missing_ok=True)
         if return_code != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
             temporary.unlink(missing_ok=True)
@@ -467,6 +508,14 @@ class VideoRenderService:
             )
         temporary.replace(output)
         measured = self.ffmpeg.probe_duration(output) or duration
+        elapsed_seconds = time.perf_counter() - started_at
+        if not self._validate_output(output, output_duration, measured):
+            output.unlink(missing_ok=True)
+            raise VideoRenderError(
+                "File MP4 đầu ra không hợp lệ",
+                "FFprobe không xác nhận được video và audio stream hợp lệ.",
+                "Kiểm tra lại FFmpeg, audio track và video nguồn.",
+            )
         if progress:
             progress(100, "Đã render video hoàn chỉnh.")
         return {
@@ -483,9 +532,28 @@ class VideoRenderService:
             "video_edit_count": len(edits),
             "source_video_duration": duration,
             "extended_duration": output_duration,
-            "video_codec": "H.264",
+            "video_codec": "stream-copy" if smart_copy else video_codec,
             "audio_codec": "AAC",
+            "smart_render": smart_copy,
+            "render_time_seconds": round(elapsed_seconds, 3),
+            "encoder_fallback_reason": fallback_reason,
         }
+
+    def _validate_output(self, output: Path, expected_duration: float, measured: float) -> bool:
+        if not output.is_file() or output.stat().st_size <= 0 or measured <= 0:
+            return False
+        if abs(measured - expected_duration) > max(5.0, expected_duration * 0.35):
+            return False
+        if not self.ffmpeg.ffprobe_path:
+            return True
+        command = [
+            self.ffmpeg.ffprobe_path, "-v", "error", "-show_entries",
+            "stream=codec_type", "-of", "csv=p=0", str(output),
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", check=False)
+        stream_types = {line.strip() for line in completed.stdout.splitlines()}
+        return completed.returncode == 0 and {"video", "audio"}.issubset(stream_types)
 
 
 

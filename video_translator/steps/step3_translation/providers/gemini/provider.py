@@ -37,6 +37,7 @@ class TranslationItem(BaseModel):
 
 class SourceVerifiedTranslationItem(BaseModel):
     id: int
+    speaker_id: str
     source_text: str
     translated_text: str
 
@@ -93,6 +94,7 @@ class DialogueProfileOutput(BaseModel):
 
 class TranslationCorrection(BaseModel):
     id: int
+    speaker_id: str = ""
     corrected_text: str
     issue_type: str
     reason: str = ""
@@ -148,9 +150,10 @@ class GoogleTranslationService:
             first_id,
             last_id,
         )
+        template_id = "review" if stage == "REVIEW" and (self.diagnostics_root is not None) else self.prompt_template
         prompt = render_prompt_template(
             GEMINI_PROVIDER_NAME,
-            self.prompt_template,
+            template_id,
             stage,
             source_language=self.source_language,
             target_language=self.target_language,
@@ -549,8 +552,11 @@ class GoogleTranslationService:
         prompt += (
             "\n\nFor every translated item, copy id and source_text exactly from the "
             "corresponding segments_to_translate item in the attached JSON. "
-            "Return only objects with id, source_text, and translated_text. "
-            "Never rewrite, normalize, merge, or renumber source_text or IDs."
+            "Return only objects with id, speaker_id, source_text, and translated_text. "
+            "Keep id and source_text exactly unchanged. For speaker_id, choose the correct "
+            "speaker from the speaker IDs present in the request, correcting diarization errors "
+            "when the dialogue context clearly shows that another speaker is speaking. Never invent "
+            "a new speaker ID, merge segments, or renumber IDs."
         )
         expected_ids = [segment.id for segment in segments]
         expected_source_by_id = {segment.id: segment.source_text for segment in segments}
@@ -580,6 +586,7 @@ class GoogleTranslationService:
                 f"Batch {batch_index}/{batch_total}: phản hồi không phải danh sách bản dịch. Nhật ký: {diagnostic_dir / 'error.json' if diagnostic_dir else 'không có'}",
             )
         result: dict[int, str] = {}
+        corrected_speakers: dict[int, str] = {}
         duplicate_ids: set[int] = set()
         source_text_mismatches: list[dict[str, object]] = []
         invalid_items: list[dict[str, object]] = []
@@ -605,6 +612,7 @@ class GoogleTranslationService:
                     "received_source_text": value.source_text,
                 })
             result[value.id] = value.translated_text.strip()
+            corrected_speakers[value.id] = value.speaker_id.strip()
         expected = set(expected_ids)
         actual = set(result)
         missing_ids = sorted(expected - actual)
@@ -685,7 +693,7 @@ class GoogleTranslationService:
                 "Mở request.json, response.json và error.json để đối chiếu.",
                 json.dumps(issues, ensure_ascii=False, indent=2),
             )
-        return TranslationResponse(result, credential_source)
+        return TranslationResponse(result, credential_source, corrected_speakers)
 
     def review_translation(
         self,
@@ -718,6 +726,7 @@ class GoogleTranslationService:
         if not isinstance(parsed, list):
             raise ValueError("Provider không trả về danh sách correction.")
         corrections: dict[int, str] = {}
+        corrected_speakers: dict[int, str] = {}
         issues: list[dict[str, object]] = []
         for item in parsed:
             value = (
@@ -728,8 +737,10 @@ class GoogleTranslationService:
             if value.id in corrections or not value.corrected_text.strip():
                 raise ValueError(f"Correction trùng hoặc trống: {value.id}")
             corrections[value.id] = value.corrected_text.strip()
+            if value.speaker_id.strip():
+                corrected_speakers[value.id] = value.speaker_id.strip()
             issues.append(value.model_dump(mode="json"))
-        return TranslationReviewResponse(corrections, issues, credential_source)
+        return TranslationReviewResponse(corrections, issues, credential_source, corrected_speakers)
 
     def translate(
         self,

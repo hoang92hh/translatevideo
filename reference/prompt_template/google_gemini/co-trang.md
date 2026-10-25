@@ -28,6 +28,19 @@ Do not assume different speaker IDs always represent different characters. Do no
 
 ## STAGE 2 — HISTORICAL DIALOGUE TRANSLATION
 
+This is the primary translation pass. Translate every target segment into `{target_language}`. Never copy the source sentence as the translation when the languages differ.
+
+**Speaker Verification**
+
+- Return the correct `speaker_id` for every target segment using dialogue context and story references.
+- Evaluate neighboring segments as a continuous dialogue group. Keep one speaker across sentence fragments and split utterances unless clear context proves a new turn.
+- Preserve continuity for short fragments, forms of address, interjections, and sentence continuations; do not switch speaker in the middle of an utterance.
+- Correct diarization errors when the context clearly shows another speaker is speaking.
+- Use only speaker IDs already present in the attached input; never invent, rename, merge, or delete speaker IDs.
+- If uncertain, keep the original `speaker_id` from `segments_to_translate`.
+- Change speaker only with clear evidence from dialogue turns and surrounding context, never only because adjacent diarization labels differ.
+- Reconstruct each contiguous time-adjacent utterance before translating, but return every original ID as a separate response object. Do not merge, omit, or renumber objects; the application may combine adjacent same-speaker segments after validation.
+
 Translate each segment accurately according to its own source text and the established story context.
 
 Translation priorities:
@@ -85,7 +98,8 @@ Do not add historical explanations, invented relationships, unnecessary titles, 
 
 Do not omit essential meaning or excessively shorten the original.
 
-Choose the shortest natural Vietnamese phrasing that preserves the complete meaning.
+Translate all essential meaning completely, but choose the shortest natural and concise Vietnamese phrasing that preserves it.
+Remove unnecessary repetition and filler without omitting information.
 
 Target an estimated spoken duration of approximately 0.8–1.5x the source duration using `duration_seconds` when available. Accuracy always takes priority.
 
@@ -117,9 +131,10 @@ Ensure every target ID is returned exactly once. Do not include context-only IDs
 
 Return ONLY a valid JSON array of objects:
 
-{"id": integer, "source_text": string, "translated_text": string}
+{"id": integer, "speaker_id": string, "source_text": string, "translated_text": string}
 
 Copy `id` and `source_text` exactly from the same `segments_to_translate` item in the attached input. Do not renumber IDs or change the source text.
+Return a valid existing `speaker_id` for every item, correcting diarization only by selecting another existing speaker ID.
 
 The application will save the response as "{output_filename}".
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from ...common.models import Segment
@@ -12,6 +12,7 @@ ProgressCallback = Callable[[int, str], None]
 class TranslationResponse:
     translations: dict[int, str]
     credential_source: str = ""
+    corrected_speakers: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,7 @@ class TranslationReviewResponse:
     corrections: dict[int, str]
     issues: list[dict[str, object]]
     credential_source: str = ""
+    corrected_speakers: dict[int, str] = field(default_factory=dict)
 
 
 class TranslationProvider(Protocol):

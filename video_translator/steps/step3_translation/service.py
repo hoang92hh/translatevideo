@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Callable
 
 from ...errors import UserFacingError
@@ -112,12 +113,60 @@ class TranslationWorkflow:
         normalized = {segment_id: str(text).strip() for segment_id, text in result.items()}
         return normalized
 
+    @staticmethod
+    def _validate_target_language(
+        result: dict[int, str],
+        expected_segments: list[Segment],
+        target_language: str,
+    ) -> None:
+        source_by_id = {segment.id: segment.source_text.strip() for segment in expected_segments}
+        unchanged = [segment_id for segment_id, text in result.items()
+                     if source_by_id.get(segment_id) and text.strip() == source_by_id[segment_id]]
+        cjk_leftovers = [segment_id for segment_id, text in result.items()
+                         if target_language == "Vietnamese" and re.search(r"[\u3400-\u9fff]", text)]
+        if unchanged or cjk_leftovers:
+            raise UserFacingError(
+                "Bản dịch chưa đạt ngôn ngữ đích",
+                "Gemini trả lại segment nguyên văn hoặc còn ký tự ngôn ngữ nguồn.",
+                "Step 3 sẽ chạy lại batch lỗi; nếu tiếp tục lỗi, đổi model hoặc kiểm tra prompt template.",
+                f"Unchanged IDs: {unchanged}; source-language leftovers: {cjk_leftovers}",
+            )
+
+    @staticmethod
+    def _validate_speakers(
+        result: dict[int, str],
+        expected_segments: list[Segment],
+    ) -> dict[int, str]:
+        expected_ids = {segment.id for segment in expected_segments}
+        known_speakers = {
+            segment.speaker_id.strip() or "SPEAKER_UNKNOWN"
+            for segment in expected_segments
+        }
+        if not result:
+            return {}
+        if set(result) != expected_ids:
+            raise UserFacingError(
+                "AI trả về sai danh sách speaker",
+                "Kết quả hiệu chỉnh speaker không giữ đúng danh sách ID segment.",
+                "Chạy lại Step 3 hoặc chọn provider/model khác.",
+            )
+        invalid = sorted({speaker for speaker in result.values() if speaker not in known_speakers})
+        if invalid:
+            raise UserFacingError(
+                "AI trả về speaker không hợp lệ",
+                "Gemini đã tạo speaker mới thay vì chọn một speaker có trong transcript.",
+                "Kiểm tra transcript đầu vào hoặc chạy lại Step 3.",
+                f"Invalid speakers: {invalid}",
+            )
+        return {segment_id: speaker.strip() for segment_id, speaker in result.items()}
+
     def run(
         self,
         segments: list[Segment],
         consistency_enabled: bool = True,
         proper_name_policy: dict[str, object] | None = None,
         progress: ProgressCallback | None = None,
+        target_language: str = "",
     ) -> TranslationWorkflowResult:
         if not segments:
             raise UserFacingError(
@@ -149,19 +198,37 @@ class TranslationWorkflow:
                     percent,
                     f"AI đang phân tích, dịch và kiểm tra batch {index}/{len(batches)}…",
                 )
-            response = self.provider.translate_batch(
-                batch,
-                dialogue_profile,
-                before,
-                after,
-                recent_translations,
-                resolved_name_policy,
-                response_file=True,
-                batch_index=index,
-                batch_total=len(batches),
-            )
-            batch_result = self._validate_translations(response.translations, batch, "dịch")
+            last_error: UserFacingError | None = None
+            for attempt in range(2):
+                try:
+                    response = self.provider.translate_batch(
+                        batch,
+                        dialogue_profile,
+                        before,
+                        after,
+                        recent_translations,
+                        resolved_name_policy,
+                        response_file=True,
+                        batch_index=index,
+                        batch_total=len(batches),
+                    )
+                    batch_result = self._validate_translations(response.translations, batch, "dịch")
+                    # The first-pass translation must already be usable. Do not defer
+                    # source-language leakage to the optional review pass.
+                    self._validate_target_language(batch_result, batch, target_language)
+                    break
+                except UserFacingError as exc:
+                    last_error = exc
+                    if attempt == 1:
+                        raise
+            else:
+                assert last_error is not None
+                raise last_error
             translated.update(batch_result)
+            corrected_speakers = self._validate_speakers(response.corrected_speakers, batch)
+            for segment in batch:
+                if segment.id in corrected_speakers:
+                    segment.speaker_id = corrected_speakers[segment.id]
             credential_source = response.credential_source or credential_source
 
         for segment in segments:

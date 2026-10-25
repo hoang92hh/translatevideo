@@ -102,6 +102,12 @@ class SingleVoiceTtsSettings(QWidget):
         self._add_reference_page(MELO_OPENVOICE_PROVIDER, MELO_SPEAKERS, "Giọng nền")
         self._add_edge_page()
         card.content_layout.addWidget(self.stack)
+        self.deep_validation = QCheckBox("Deep Validation (kiểm tra WAV nghi vấn bằng Faster-Whisper)")
+        self.deep_validation.setChecked(False)
+        self.deep_validation.setToolTip(
+            "Mặc định tắt để giữ tốc độ. Chỉ nhận dạng lại các segment bị Fast Validation đánh dấu nghi vấn."
+        )
+        card.content_layout.addWidget(self.deep_validation)
         self.provider.currentIndexChanged.connect(self.stack.setCurrentIndex)
         root.addWidget(card)
 
@@ -165,6 +171,7 @@ class SingleVoiceTtsSettings(QWidget):
         base: dict[str, Any] = {
             "provider": provider,
             "single_voice": True,
+            "deep_validation": self.deep_validation.isChecked(),
             "speaker_profiles": {},
             "speaker_group_profiles": {},
             "speaker_profile_assignments": {},
@@ -212,6 +219,7 @@ class SingleVoiceTtsSettings(QWidget):
         }
 
     def set_values(self, values: dict[str, Any]) -> None:
+        self.deep_validation.setChecked(bool(values.get("deep_validation", False)))
         provider = str(values.get("provider", VIENEU_PROVIDER))
         index = self.provider.findText(provider)
         self.provider.setCurrentIndex(index if index >= 0 else 0)

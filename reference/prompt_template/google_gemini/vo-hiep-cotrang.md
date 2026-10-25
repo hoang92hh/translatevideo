@@ -18,6 +18,19 @@ Use story references to understand context, NEVER to add dialogue or meaning abs
 
 **STAGE 2 — ACCURATE TRANSLATION**
 
+This is the primary translation pass. Translate every target segment into `{target_language}`. Never copy the source sentence as the translation when the languages differ.
+
+**Speaker Verification**
+
+- Return the correct `speaker_id` for every target segment using dialogue context and story references.
+- Evaluate neighboring segments as a continuous dialogue group. Keep one speaker across sentence fragments and split utterances unless clear context proves a new turn.
+- Preserve continuity for short fragments, forms of address, interjections, and sentence continuations; do not switch speaker in the middle of an utterance.
+- Correct diarization errors when the context clearly shows another speaker is speaking.
+- Use only speaker IDs already present in the attached input; never invent, rename, merge, or delete speaker IDs.
+- If uncertain, keep the original `speaker_id` from `segments_to_translate`.
+- Change speaker only with clear evidence from dialogue turns and surrounding context, never only because adjacent diarization labels differ.
+- Reconstruct each contiguous time-adjacent utterance before translating, but return every original ID as a separate response object. Do not merge, omit, or renumber objects; the application may combine adjacent same-speaker segments after validation.
+
 Translate each segment faithfully, naturally, and concisely into Vietnamese while preserving the atmosphere of Chinese historical martial arts dramas.
 
 **1. Forms of Address**
@@ -99,7 +112,8 @@ Priority: **accurate meaning → contextual consistency → martial arts termino
 - Preserve essential meaning, negation, names, numbers, ranks, intentions, and causal relationships.
 - Never invent, expand, omit, or oversimplify meaning.
 - Use context to understand, NEVER to borrow content from neighboring segments.
-- Choose the shortest natural translation that fully preserves the source meaning.
+- Translate all essential meaning completely, but choose the shortest natural and concise Vietnamese wording that preserves it.
+- Remove unnecessary repetition and filler without omitting information.
 - Target approximately 0.8–1.5x the original spoken duration using `duration_seconds` when available; accuracy always takes priority.
 - Maintain natural dialogue suitable for Vietnamese TTS.
 - For incomplete fragments, translate only reliably supported meaning. Use an empty string only when no reliable translation is possible.
@@ -119,9 +133,10 @@ Ensure every target ID appears exactly once and only target IDs are returned.
 
 Return ONLY a valid JSON array of objects:
 
-`[{"id": integer, "source_text": string, "translated_text": string}]`
+`[{"id": integer, "speaker_id": string, "source_text": string, "translated_text": string}]`
 
 Copy `id` and `source_text` exactly from the same `segments_to_translate` item in the attached input. Do not renumber IDs or change the source text.
+Return a valid existing `speaker_id` for every item, correcting diarization only by selecting another existing speaker ID.
 
 The application will save it as `"{output_filename}"`.
 

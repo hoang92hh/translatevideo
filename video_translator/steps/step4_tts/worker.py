@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import traceback
+import time
 from pathlib import Path
 from typing import Any
 
@@ -48,10 +50,65 @@ def select_torch_device(requested: str) -> tuple[str, str]:
     return ("cuda", "GPU (CUDA)") if cuda_available else ("cpu", "CPU")
 
 
+def validate_waveform(audio: Any, sample_rate: int) -> tuple[str, list[str], float]:
+    import numpy as np
+    original_type = type(audio).__name__
+    try:
+        # VieNeu may return a CPU/GPU torch tensor or an array with leading
+        # singleton dimensions depending on the backend/runtime version.
+        if hasattr(audio, "detach"):
+            audio = audio.detach().to("cpu").numpy()
+        elif isinstance(audio, dict):
+            audio = audio.get("audio", audio.get("waveform", audio.get("samples")))
+        elif isinstance(audio, (tuple, list)) and audio:
+            # Some runtimes return (waveform, sample_rate).
+            if len(audio) >= 2 and isinstance(audio[1], (int, float)):
+                sample_rate = int(audio[1])
+            audio = audio[0]
+        values = np.asarray(audio, dtype=np.float32)
+        values = np.squeeze(values)
+    except (TypeError, ValueError, RuntimeError):
+        return "invalid_audio", [f"waveform_conversion_failed:{original_type}"], 0.0
+    if values.size == 0 or not np.isfinite(values).all() or sample_rate <= 0:
+        return "invalid_audio", [f"empty_or_nonfinite:{original_type}:{getattr(values, 'shape', None)}"], 0.0
+    if values.ndim == 1:
+        mono = values
+    elif values.ndim == 2:
+        # Accept either [channels, frames] or [frames, channels].
+        channel_axis = 0 if values.shape[0] <= 8 and values.shape[0] < values.shape[1] else 1
+        mono = values.mean(axis=channel_axis)
+    else:
+        # Remaining dimensions are runtime wrappers, not separate audio
+        # streams; flatten them instead of rejecting a valid waveform.
+        mono = values.reshape(-1)
+    duration = float(mono.size) / sample_rate
+    if float(np.max(np.abs(mono))) < 1e-5:
+        return "silent_audio", [], duration
+    return "valid", [], duration
+
+
+def validate_wav(path: Path) -> tuple[str, list[str], float]:
+    try:
+        import soundfile as sf
+        audio, sample_rate = sf.read(path, dtype="float32", always_2d=False)
+        return validate_waveform(audio, int(sample_rate))
+    except Exception as exc:
+        return "invalid_audio", [repr(exc)], 0.0
+
+
 def normalize_audio(source: Path, target: Path, speed: float = 1.0) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("Không tìm thấy FFmpeg trong PATH để chuẩn hóa output TTS.")
+    if abs(speed - 1.0) <= 0.001:
+        try:
+            import soundfile as sf
+            info = sf.info(source)
+            if info.samplerate == 48000 and info.channels == 1 and info.subtype == "PCM_16":
+                source.replace(target)
+                return
+        except Exception:
+            pass
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(source)]
     if abs(speed - 1.0) > 0.001:
         command.extend(["-filter:a", f"atempo={speed:.4f}"])
@@ -125,7 +182,11 @@ def run_vieneu(settings: dict[str, Any], segments: list[dict[str, Any]], output:
     files: list[str] = []
     segment_results: list[dict[str, Any]] = []
     speed = float(settings.get("speed", 1.0))
+    deep_validation = bool(settings.get("deep_validation", False))
+    cache_root = output.parent.parent / "_cache" / "vieneu"
+    cache_root.mkdir(parents=True, exist_ok=True)
     for index, item in enumerate(segments, start=1):
+        started = time.perf_counter()
         profile = speaker_profile(settings, item)
         reference = profile["reference_voice"] or None
         voice_name = profile["voice"] or "Default"
@@ -136,12 +197,40 @@ def run_vieneu(settings: dict[str, Any], segments: list[dict[str, Any]], output:
             kwargs["ref_audio"] = reference
         elif voice_name != "Default":
             kwargs["voice"] = voice_name
-        audio = model.infer(**kwargs)
-        sf.write(temporary, audio, int(getattr(model, "sample_rate", 48000)), subtype="PCM_16")
-        normalize_audio(temporary, target, speed)
+        cache_key = hashlib.sha256(json.dumps({
+            "text": str(item["text"]), "model": "VieNeu-TTS v3 Turbo",
+            "backend": backend, "voice": voice_name, "reference": reference or "",
+            "speed": speed,
+        }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        cached = cache_root / f"{cache_key}.wav"
+        cache_hit = cached.is_file() and validate_wav(cached)[0] == "valid"
+        if cache_hit:
+            shutil.copy2(cached, target)
+        else:
+            audio = model.infer(**kwargs)
+            raw_status, raw_warnings, _ = validate_waveform(
+                audio, int(getattr(model, "sample_rate", 48000))
+            )
+            if raw_status in {"invalid_audio", "silent_audio"}:
+                raise RuntimeError(
+                    f"VieNeu waveform không hợp lệ: {raw_status} tại segment {item['id']} "
+                    f"({'; '.join(raw_warnings) or 'không có chi tiết'})"
+                )
+            sf.write(temporary, audio, int(getattr(model, "sample_rate", 48000)), subtype="PCM_16")
+            normalize_audio(temporary, target, speed)
+            final_status, final_warnings, _ = validate_wav(target)
+            if final_status in {"invalid_audio", "silent_audio"}:
+                target.unlink(missing_ok=True)
+                raise RuntimeError(f"WAV chuẩn hóa không hợp lệ: {final_status} tại segment {item['id']}")
+            shutil.copy2(target, cached)
         files.append(str(target.resolve()))
         segment_results.append(
-            segment_result(item, VIENEU_PROVIDER, "VieNeu-TTS v3 Turbo", voice_name, reference or "", actual)
+            segment_result(
+                item, VIENEU_PROVIDER, "VieNeu-TTS v3 Turbo", voice_name, reference or "", actual,
+                {"validation_mode": "deep" if deep_validation else "fast",
+                 "validation_status": "valid", "cache_hit": cache_hit,
+                 "processing_time": round(time.perf_counter() - started, 4)},
+            )
         )
         progress(index, len(segments), f"VieNeu-TTS: đã tạo {index}/{len(segments)} segment…")
     voices = {item["voice"] for item in segment_results}

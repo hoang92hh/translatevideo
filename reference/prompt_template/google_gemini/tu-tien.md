@@ -18,6 +18,19 @@ Use story references to understand context, NEVER to add dialogue or meaning abs
 
 Translate each segment faithfully, naturally, and concisely into Vietnamese while preserving the atmosphere of Xianxia and cultivation dramas.
 
+This is the primary translation pass. Every target segment must be genuinely translated into `{target_language}`. Never copy `source_text` into `translated_text` when the languages differ, and never use source-language text as a placeholder.
+
+**0. Speaker Verification**
+
+- Review the dialogue context and story references to determine who is actually speaking each segment.
+- Evaluate consecutive target segments as a dialogue group, not as isolated items. When a sentence or utterance is split across adjacent segments, assign the same speaker to all parts by default.
+- Preserve speaker continuity across short fragments, interjections, names, vocatives, and sentence continuations. Do not switch speaker in the middle of a grammatical utterance.
+- Return the correct `speaker_id` for every target segment. If diarization assigned the wrong speaker, correct it using the available context.
+- Choose only a `speaker_id` that already appears in the attached input. Never invent, rename, merge, or delete speaker IDs.
+- If the context is genuinely insufficient, keep the original `speaker_id` from `segments_to_translate`.
+- Change speaker only when there is clear evidence of a new turn, a direct response, an explicit vocative/addressee cue, or a contradiction with the surrounding dialogue. Do not alternate speakers merely because adjacent segment IDs have different diarization labels.
+- First reconstruct the meaning and speaker continuity of each contiguous time-adjacent group, then translate each segment. Return every segment separately with its original ID; do not merge, omit, or renumber response objects. The application may combine adjacent same-speaker segments after validation.
+
 **1. Forms of Address**
 
 Preserve character identity, hierarchy, seniority, relationships, respect, and arrogance.
@@ -68,7 +81,8 @@ Priority: **accurate meaning → contextual consistency → cultivation terminol
 - Preserve essential meaning, negation, names, numbers, cultivation ranks, intentions, and causal relationships.
 - Never invent, expand, omit, or oversimplify meaning.
 - Use context to understand, NEVER to borrow content from neighboring segments.
-- Choose the shortest natural translation that fully preserves the source meaning.
+- Translate all essential meaning completely, but choose the shortest natural and concise Vietnamese wording that preserves it.
+- Keep the translation brief enough for audiovisual speech; remove unnecessary repetition, filler, and redundant wording without removing information.
 - Target approximately 0.8–1.5x the original spoken duration using `duration_seconds` when available; accuracy always takes priority.
 - Avoid excessively modern language or unnatural pseudo-classical expressions.
 - For incomplete fragments, translate only reliably supported meaning. Use an empty string only when no reliable translation is possible.
@@ -88,13 +102,14 @@ Ensure every target ID appears exactly once and only target IDs are returned.
 
 Return ONLY a valid JSON array of objects:
 
-`[{"id": integer, "source_text": string, "translated_text": string}]`
+`[{"id": integer, "speaker_id": string, "source_text": string, "translated_text": string}]`
 
 Copy `id` and `source_text` exactly from the same `segments_to_translate` item in the attached input. Do not renumber IDs or change the source text.
+Copy the selected `speaker_id` exactly from an existing speaker ID in the attached input, except when correcting a diarization error by selecting another existing speaker ID.
 
 The application will save it as `"{output_filename}"`.
 
-No Markdown, explanations, analysis, comments, or additional fields.
+No Markdown, explanations, analysis, comments, or additional fields. Return every target ID exactly once.
 
 **ATTACHED INPUT**
 

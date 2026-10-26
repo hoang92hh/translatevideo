@@ -39,7 +39,9 @@ Các prompt tiếng Việt dùng riêng cho tác vụ viết hồ sơ câu chuy�
 
 Các file này được đọc nguyên văn bởi tác vụ tạo story, không phải template dịch và không
 xuất hiện trong danh sách prompt dịch của Step 3. Đầu vào chỉ gồm ngôn ngữ nguồn và các
-video theo thứ tự, mỗi video có `video_order` và danh sách `source_text`; không có speaker,
+video theo thứ tự, mỗi video có `video_order`, `video_id`, `video_filename` và danh sách `source_text`; không có speaker,
 timestamp hoặc ánh xạ ID câu. AI trả nội dung Markdown tiếng Việt qua trường `story_markdown`,
 ứng dụng lưu thành một file `stories/story_<min>_<max>.md` trong project, không lưu JSON ánh xạ.
 Tác vụ dùng provider/model được chọn trong thiết lập Step 3 nhưng không chạy hay sửa luồng dịch.
+
+Prompt dịch theo story trong popup batch được quản lý riêng tại `../prompt_batch/`.

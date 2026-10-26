@@ -6,6 +6,7 @@ import re
 from typing import Any, Callable
 
 from pydantic import ValidationError
+from .....config.batch_prompts import prepare_translation_prompt
 
 from .....config.web_translation import (
     CHATGPT_EXTENSION_ID,
@@ -16,7 +17,6 @@ from .....config.web_translation import (
 )
 from .....config.prompt_templates import (
     DEFAULT_PROMPT_TEMPLATE_ID,
-    render_prompt_template,
     step3_batch_filenames,
 )
 from .....errors import UserFacingError
@@ -56,6 +56,8 @@ class WebTranslationService:
         self.provider_name = provider_name
         self.provider_id = provider_id
         self.model_name = model_name
+        context = (options or {}).get("batch_prompt_context")
+        self.batch_prompt_context = dict(context) if context is not None else None
         self.source_language = source_language
         self.target_language = target_language
         self.project_url = str((options or {}).get("project_url", "")).strip()
@@ -79,10 +81,11 @@ class WebTranslationService:
             first_id,
             last_id,
         )
-        prompt = render_prompt_template(
+        prompt = prepare_translation_prompt(
             self.provider_name,
             self.prompt_template,
             stage,
+            batch_context=self.batch_prompt_context,
             source_language=self.source_language,
             target_language=self.target_language,
             input_filename=input_filename,

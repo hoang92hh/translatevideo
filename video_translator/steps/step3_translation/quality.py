@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import replace
+from difflib import SequenceMatcher
 
 from ...common.models import Segment
 
@@ -9,10 +11,20 @@ _NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)?")
 
 MANUAL_ISSUE_LABELS = {
     "source_language_leftovers": "Còn chữ Trung Quốc",
-    "missing_number": "Nghi thiếu số",
-    "translation_too_short": "Câu quá ngắn",
-    "recovery_speaker": "Speaker Recovery",
+    "similar_translation_with_neighbor": "Giống câu liền kề ≥70%",
+    "contained_translation_with_neighbor": "Câu liền kề chứa nhau",
 }
+
+
+def _translation_words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", unicodedata.normalize("NFC", text).casefold())
+
+
+def _contains_words(shorter: list[str], longer: list[str]) -> bool:
+    return bool(shorter) and any(
+        longer[index:index + len(shorter)] == shorter
+        for index in range(len(longer) - len(shorter) + 1)
+    )
 
 
 def assess_manual_segments(
@@ -20,22 +32,34 @@ def assess_manual_segments(
 ) -> list[dict[str, object]]:
     """Produce advisory flags only; never change text, speakers, or timing."""
     issues: dict[int, list[str]] = {}
+    related: dict[int, set[int]] = {}
+    similarity: dict[int, float] = {}
     for segment in segments:
-        reasons = []
         text = segment.translated_text.strip()
-        source = segment.source_text.strip()
-        if segment.speaker_id == "SPEAKER_RECOVERY":
-            reasons.append("recovery_speaker")
-        if text:
-            if target_language == "Vietnamese" and re.search(r"[\u3400-\u9fff]", text):
-                reasons.append("source_language_leftovers")
-            if _NUMBER_PATTERN.search(source) and not _NUMBER_PATTERN.search(text):
-                reasons.append("missing_number")
-            if len(text) < 2 and len(source) >= 4:
-                reasons.append("translation_too_short")
+        if text and target_language == "Vietnamese" and re.search(r"[\u3400-\u9fff\uf900-\ufaff]", text):
+            issues.setdefault(segment.id, []).append("source_language_leftovers")
+    # Empty merge/skip markers do not separate adjacent spoken translations.
+    spoken = [segment for segment in segments if segment.translated_text.strip()]
+    for first, second in zip(spoken, spoken[1:]):
+        left, right = _translation_words(first.translated_text), _translation_words(second.translated_text)
+        if not left or not right:
+            continue
+        # Ratio = 2 * matched words / total words, preserving their order.
+        ratio = SequenceMatcher(None, left, right, autojunk=False).ratio()
+        reasons = []
+        if ratio >= 0.7:
+            reasons.append("similar_translation_with_neighbor")
+        if left != right and (_contains_words(left, right) or _contains_words(right, left)):
+            reasons.append("contained_translation_with_neighbor")
         if reasons:
-            issues[segment.id] = reasons
-    return [{"id": segment.id, "issues": list(dict.fromkeys(issues[segment.id]))}
+            for current, neighbor in ((first, second), (second, first)):
+                issues.setdefault(current.id, []).extend(reasons)
+                related.setdefault(current.id, set()).add(neighbor.id)
+                similarity[current.id] = max(similarity.get(current.id, 0.0), ratio)
+    return [{"id": segment.id, "issues": list(dict.fromkeys(issues[segment.id])),
+             **({"related_ids": sorted(related[segment.id]),
+                 "similarity_percent": round(similarity[segment.id] * 100, 1)}
+                if segment.id in related else {})}
             for segment in segments if segment.id in issues]
 
 # Review is text-only. Length can suggest an edit, never force loss of meaning.

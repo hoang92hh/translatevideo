@@ -76,6 +76,10 @@ class StoryWorker(QThread):
             coverage = [
                 f"> Phạm vi: các video có STT {', '.join(map(str, self.selected_positions))} tại lúc bắt đầu batch.",
             ]
+            for video in self.videos:
+                coverage.append(
+                    f"> Video {video['video_order']}: {video['video_filename']} (mã video: {video['video_id']})."
+                )
             if self.missing_positions:
                 coverage.append(
                     f"> Chưa có lời thoại của video STT {', '.join(map(str, self.missing_positions))}; hồ sơ chưa bao phủ các video này."

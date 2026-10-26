@@ -6,6 +6,7 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..batch_project import BatchProject, BatchProjectService
+from ..batch_project import BatchProject, BatchProjectService, InputVideo
 from ..config.gemini import GEMINI_PROVIDER_NAME
 from ..config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
 from ..steps.step4_tts.providers import provider_id, provider_value, load_provider_symbol
@@ -405,13 +406,32 @@ class ProjectSettingsDialog(QDialog):
         form.addRow("Ngôn ngữ đích", self.target_language)
         card.content_layout.addLayout(form)
         layout.addWidget(card)
-        self.video_table = QTableWidget(0, 3)
-        self.video_table.setHorizontalHeaderLabels(["Chọn", "Video", "Trạng thái"])
+        video_actions = QHBoxLayout()
+        self.video_up_button = QPushButton("Di chuyển lên")
+        self.video_down_button = QPushButton("Di chuyển xuống")
+        self.video_up_button.clicked.connect(lambda: self._move_video(-1))
+        self.video_down_button.clicked.connect(lambda: self._move_video(1))
+        video_actions.addWidget(self.video_up_button)
+        video_actions.addWidget(self.video_down_button)
+        save_label = "Lưu thiết lập" if self.project else "Tạo project"
+        order_hint = QLabel(f"Thứ tự chung cho Videos, Outputs và các chế độ batch. Lưu bằng nút {save_label}.")
+        order_hint.setWordWrap(True)
+        video_actions.addWidget(order_hint, 1)
+        layout.addLayout(video_actions)
+        self.video_table = QTableWidget(0, 4)
+        self.video_table.setHorizontalHeaderLabels(["Chọn", "STT", "Video", "Trạng thái"])
         self.video_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.video_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.video_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.video_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.video_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.video_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.video_table.verticalHeader().setVisible(False)
+        self.video_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.video_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.video_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.video_table.setSortingEnabled(False)
+        self.video_table.itemSelectionChanged.connect(self._update_video_actions)
         layout.addWidget(self.video_table, 1)
+        self._update_video_actions()
         self._add_section("Project & Input", _scroll_page("Project & Input", "Thông tin chung và danh sách video.", content))
 
     def _add_provider_page(self, spec) -> None:
@@ -467,6 +487,14 @@ class ProjectSettingsDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "Không thể đọc thư mục input", str(exc))
             return
+        if self.project:
+            available = {str(Path(video.path).resolve()): video for video in videos}
+            existing = []
+            for record in self.project.ordered_videos():
+                path = str(Path(record.source_path).resolve())
+                existing.append(available.pop(path, InputVideo(path, record.name, status=record.status)))
+            # Newly discovered files always appear after the existing project videos.
+            videos = [*existing, *available.values()]
         self.video_table.setRowCount(0)
         for video in videos:
             row = self.video_table.rowCount()
@@ -478,8 +506,48 @@ class ProjectSettingsDialog(QDialog):
             )
             checked.setData(Qt.ItemDataRole.UserRole, video.path)
             self.video_table.setItem(row, 0, checked)
-            self.video_table.setItem(row, 1, QTableWidgetItem(video.name))
-            self.video_table.setItem(row, 2, QTableWidgetItem(video.status))
+            self.video_table.setItem(row, 1, QTableWidgetItem(str(row + 1)))
+            name = QTableWidgetItem(video.name)
+            name.setToolTip(video.path)
+            self.video_table.setItem(row, 2, name)
+            self.video_table.setItem(row, 3, QTableWidgetItem(video.status))
+        if self.video_table.rowCount():
+            self.video_table.setCurrentCell(0, 2)
+            self.video_table.selectRow(0)
+        self._update_video_actions()
+
+    def _update_video_actions(self) -> None:
+        row = self.video_table.currentRow()
+        self.video_up_button.setEnabled(row > 0)
+        self.video_down_button.setEnabled(0 <= row < self.video_table.rowCount() - 1)
+
+    def _move_video(self, offset: int) -> None:
+        row = self.video_table.currentRow()
+        target = row + offset
+        if row < 0 or not 0 <= target < self.video_table.rowCount():
+            return
+        self.video_table.blockSignals(True)
+        try:
+            current = [self.video_table.takeItem(row, column) for column in range(self.video_table.columnCount())]
+            other = [self.video_table.takeItem(target, column) for column in range(self.video_table.columnCount())]
+            for column, item in enumerate(current):
+                self.video_table.setItem(target, column, item)
+            for column, item in enumerate(other):
+                self.video_table.setItem(row, column, item)
+            for index in range(self.video_table.rowCount()):
+                self.video_table.item(index, 1).setText(str(index + 1))
+            self.video_table.setCurrentCell(target, 2)
+            self.video_table.selectRow(target)
+            self.video_table.scrollToItem(self.video_table.item(target, 2))
+        finally:
+            self.video_table.blockSignals(False)
+        self._update_video_actions()
+
+    def video_order_paths(self) -> list[str]:
+        return [
+            str(self.video_table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.video_table.rowCount())
+        ]
 
     def _selected_videos(self) -> list[str]:
         return [
@@ -531,7 +599,7 @@ class ProjectSettingsDialog(QDialog):
             item = self.video_table.item(row, 0)
             path = str(item.data(Qt.ItemDataRole.UserRole)) if item else ""
             if item and str(Path(path).resolve()) in existing_paths:
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         settings = project.batch_settings
         for step, panel in self.step_panels.items():
             panel.set_values(dict(settings.get(step.value, {})))

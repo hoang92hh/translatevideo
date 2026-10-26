@@ -225,6 +225,13 @@ class TranslationEditorDialog(QDialog):
             options.addWidget(refresh_button)
             options.addStretch()
             root.addLayout(options)
+            hint = QLabel(
+                "Cảnh báo còn chữ Trung Quốc, câu liền kề giống ≥70% hoặc chứa nhau; "
+                "kèm một câu trước và một câu sau để đối chiếu. "
+                "Cảnh báo chỉ để tham khảo, không bắt buộc sửa và không khóa Step 4."
+            )
+            hint.setWordWrap(True)
+            root.addWidget(hint)
 
         self.table = QTableView()
         self.table.setModel(self.proxy_model)
@@ -321,12 +328,10 @@ class TranslationEditorDialog(QDialog):
             for item in segments
         ], self.target_language)
         reasons = {int(item["id"]): item["issues"] for item in assessed}
+        details = {int(item["id"]): item for item in assessed}
         visible = set(reasons)
-        context_ids = {
-            segment_id for segment_id, flags in reasons.items()
-            if "recovery_speaker" in flags
-        }
-        # Only recovery flags need neighboring nonempty dialogue.
+        context_ids = set(reasons)
+        # Add one preceding/following spoken segment around every flagged pair.
         previous = None
         for item in segments:
             if item["id"] in context_ids and previous is not None:
@@ -343,6 +348,10 @@ class TranslationEditorDialog(QDialog):
             item["issue_label"] = "; ".join(
                 MANUAL_ISSUE_LABELS[reason] for reason in reasons.get(item["id"], [])
             ) or ("Câu lân cận" if item["id"] in visible else "")
+            detail = details.get(item["id"], {})
+            if detail.get("related_ids"):
+                ids = ", ".join(str(value) for value in detail["related_ids"])
+                item["issue_label"] += f" · ID {ids} · giống {detail['similarity_percent']:g}%"
         if segments:
             self.model.dataChanged.emit(self.model.index(0, 6), self.model.index(len(segments) - 1, 6))
         self.proxy_model.allowed_ids = None if self.show_all.isChecked() else visible

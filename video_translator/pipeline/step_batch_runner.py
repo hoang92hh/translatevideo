@@ -6,15 +6,16 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from ..batch_project import BatchProject, BatchProjectService
-from ..common.models import StepId, StepResult, StepStatus
+from ..common.models import STEP_ORDER, StepId, StepResult, StepStatus
 from ..state import ProjectState
+from ..steps.step3_translation.quality import assess_manual_segments
 from .mock_pipeline import MockPipeline
 from .worker import PipelineWorker
 from .story_worker import StoryWorker
 
 
 class StepBatchRunner(QObject):
-    """Run Step 1 or 2 sequentially; Step 2 ends with a story-writing task."""
+    """Run one selected step; Step 2 additionally writes a story."""
 
     video_changed = Signal(str)
     progress_changed = Signal(int, str)
@@ -31,10 +32,10 @@ class StepBatchRunner(QObject):
         video_positions: dict[str, int] | None = None,
     ) -> None:
         super().__init__(parent)
-        if step not in {StepId.EXTRACT, StepId.STT}:
-            raise ValueError("Runner hiện chỉ hỗ trợ Step 1 và Step 2.")
+        if step not in {StepId.EXTRACT, StepId.STT, StepId.TRANSLATE}:
+            raise ValueError("Runner hiện chỉ hỗ trợ Step 1, Step 2 và Step 3.")
         self.step = step
-        self.step_number = 1 if step == StepId.EXTRACT else 2
+        self.step_number = STEP_ORDER.index(step) + 1
         self.project = project
         self.pipeline = pipeline
         self.video_ids = list(dict.fromkeys(video_ids))
@@ -42,6 +43,7 @@ class StepBatchRunner(QObject):
         self.position = 0
         self.success_count = 0
         self.failure_count = 0
+        self.review_video_count = 0
         self.state: ProjectState | None = None
         self.worker: PipelineWorker | StoryWorker | None = None
         self.result: StepResult | None = None
@@ -49,7 +51,7 @@ class StepBatchRunner(QObject):
         self.story_settings = dict(story_settings or {})
         self.video_positions = (
             dict(video_positions) if video_positions is not None
-            else {video.id: index + 1 for index, video in enumerate(project.videos)}
+            else {video.id: index + 1 for index, video in enumerate(project.ordered_videos())}
         )
         self.story_videos: list[dict[str, Any]] = []
         self.transcript_video_ids: set[str] = set()
@@ -79,12 +81,24 @@ class StepBatchRunner(QObject):
             state.bind_project(BatchProjectService.open_video(self.project, video_id))
             self.state = state
             if not state.can_run(self.step):
-                raise ValueError(f"Step {self.step_number} chưa có đủ đầu vào. Hãy hoàn tất Step 1 và chọn audio hợp lệ.")
+                raise ValueError(
+                    f"Step {self.step_number} chưa có đủ đầu vào. "
+                    "Hãy hoàn tất step trước và chọn output hợp lệ."
+                )
             settings = dict(self.settings)
             if self.step == StepId.STT:
                 settings["input_audio"] = state.audio_input_path()
                 settings["input_candidate_id"] = state.selected_audio_candidate_id
                 settings["input_stem"] = state.selected_audio_stem
+            elif self.step == StepId.TRANSLATE:
+                context = dict(settings["batch_prompt_context"])
+                context.update({
+                    "video_id": video_id,
+                    "video_order": self.video_positions[video_id],
+                    "video_name": record.name,
+                    "video_filename": Path(record.source_path).name,
+                })
+                settings["batch_prompt_context"] = context
             record.restart_step = self.step.value
             state.mark_running(self.step)
             BatchProjectService.update_video_status(
@@ -145,6 +159,10 @@ class StepBatchRunner(QObject):
                 if self.state is None or self.result is None:
                     raise RuntimeError(f"Step {self.step_number} kết thúc nhưng chưa có kết quả.")
                 self.state.set_result(self.result)
+                if self.step == StepId.TRANSLATE and assess_manual_segments(
+                    self.result.segments, self.state.target_language,
+                ):
+                    self.review_video_count += 1
                 if self.step == StepId.STT:
                     video_id = self.video_ids[self.position - 1]
                     texts = [segment.source_text.strip() for segment in self.result.segments if segment.source_text.strip()]
@@ -152,6 +170,8 @@ class StepBatchRunner(QObject):
                         raise ValueError("Step 2 không nhận được lời thoại nào.")
                     self.story_videos.append({
                         "video_order": self.video_positions[video_id],
+                        "video_id": video_id,
+                        "video_filename": Path(self.state.input_video).name,
                         "source_text": texts,
                     })
                     self.transcript_video_ids.add(video_id)
@@ -172,7 +192,7 @@ class StepBatchRunner(QObject):
             except Exception as exc:
                 error += f"\nKhông thể lưu trạng thái step: {exc}"
         if record is not None:
-            next_step = StepId.STT if self.step == StepId.EXTRACT else StepId.TRANSLATE
+            next_step = STEP_ORDER[STEP_ORDER.index(self.step) + 1]
             record.restart_step = self.step.value if error else next_step.value
             try:
                 BatchProjectService.update_video_status(
@@ -195,7 +215,7 @@ class StepBatchRunner(QObject):
         QTimer.singleShot(0, self._next_video)
 
     def _finish_queue(self) -> None:
-        if self.step == StepId.EXTRACT:
+        if self.step != StepId.STT:
             self.finished.emit(self.success_count, self.failure_count)
             return
         if not self.story_videos:

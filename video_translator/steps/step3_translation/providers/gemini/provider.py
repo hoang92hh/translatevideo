@@ -10,9 +10,9 @@ from typing import Callable
 from pydantic import BaseModel, Field, ValidationError
 
 from .....config.gemini import GEMINI_PROVIDER_NAME, GEMINI_RECOMMENDED_MODEL_IDS
+from .....config.batch_prompts import prepare_translation_prompt
 from .....config.prompt_templates import (
     DEFAULT_PROMPT_TEMPLATE_ID,
-    render_prompt_template,
     step3_batch_filenames,
 )
 from .....errors import UserFacingError
@@ -119,6 +119,8 @@ class GoogleTranslationService:
         options: dict[str, object] | None = None,
     ) -> None:
         self.model_name = model_name
+        context = (options or {}).get("batch_prompt_context")
+        self.batch_prompt_context = dict(context) if context is not None else None
         self.source_language = source_language
         self.target_language = target_language
         self.prompt_template = str(
@@ -161,10 +163,11 @@ class GoogleTranslationService:
             last_id,
         )
         template_id = "review" if stage == "REVIEW" else self.prompt_template
-        prompt = render_prompt_template(
+        prompt = prepare_translation_prompt(
             GEMINI_PROVIDER_NAME,
             template_id,
             stage,
+            batch_context=self.batch_prompt_context,
             source_language=self.source_language,
             target_language=self.target_language,
             input_filename=input_filename,

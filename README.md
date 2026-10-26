@@ -98,16 +98,23 @@ bỏ qua để chạy video tiếp theo. Step 4 tạm thời dùng một cấu h
 speaker và video.
 
 Batch dùng trạng thái xử lý riêng và không tự đổi video đang được xem trên các tab Step.
-Nút **Chạy batch theo step** mở popup sắp xếp toàn bộ video: chọn một dòng rồi dùng
-**Di chuyển lên / Di chuyển xuống**, sau đó **Lưu thứ tự**. Vùng chọn đi theo video
-và STT cập nhật sau mỗi lần di chuyển. Thứ tự này được lưu riêng trong `project.json`
-qua `step_batch_video_order`, không thay đổi thứ tự batch hiện tại; video mới nằm cuối
-danh sách. Đóng popup khi chưa lưu sẽ hỏi lưu hoặc bỏ thay đổi.
+**Thiết lập project → Project & Input** là nơi duy nhất chỉnh thứ tự video. Bảng giữ
+checkbox chọn video và thêm cột **STT**; các nút **Di chuyển lên / Di chuyển xuống** nằm
+phía trên bảng. Khi di chuyển, dòng được chọn và checkbox đi theo video, STT cập nhật ngay.
+Bấm **Lưu thiết lập** (hoặc **Tạo project** khi tạo mới) để ghi nhận thứ tự; Cancel không lưu
+các thay đổi thứ tự. Video mới được phát hiện/thêm nằm cuối danh sách hiện có.
+Thứ tự chung lưu trong `project.json`, tiếp tục dùng khóa `step_batch_video_order` để giữ
+tương thích và giữ nguyên các thứ tự đã lưu trước đây. Video không còn tồn tại trong project
+được bỏ khỏi danh sách thứ tự; các video chưa có ID trong thứ tự được nối vào cuối.
+Popup **Videos**, **Outputs**, **Chạy batch theo step**, select box **Video đang xem** và các
+hàng đợi đều dùng cùng thứ tự này. Các popup không có nút di chuyển hoặc lưu thứ tự riêng.
+Checkbox chọn chạy/chọn ghép và các thao tác nghiệp vụ khác vẫn giữ nguyên.
+Nút **Chạy batch theo step** mở popup chọn video để chạy từng bước theo thứ tự chung.
 Nút **Step 1** chạy lần lượt các video được tích chọn theo thứ tự đang hiển thị,
 dùng cấu hình Step 1 trong **Thiết lập project**. Video lỗi được ghi nhận rồi chuyển
 sang video kế tiếp; hết danh sách thì dừng. Video đã có output vẫn chạy lại nếu được
-tích chọn, và kết quả các step sau cần cập nhật. Popup hiển thị tiến độ, khóa chọn/sắp xếp
-và không cho đóng trong khi chạy. Batch đầy đủ hiện tại giữ nguyên; Step 3–7 trong popup chưa kết nối.
+tích chọn, và kết quả các step sau cần cập nhật. Popup hiển thị tiến độ, khóa chọn video
+và không cho đóng trong khi chạy. Batch đầy đủ hiện tại giữ nguyên; Step 4–7 trong popup chưa kết nối.
 Nút **Step 2** chạy tuần tự các video được tích chọn, dùng audio được chọn của Step 1
 và cấu hình nhận dạng trong project. Video thiếu đầu vào hoặc lỗi được ghi nhận rồi chuyển
 sang video kế tiếp. Step đã có output vẫn chạy lại nếu được chọn; kết quả các step sau cần cập nhật.
@@ -120,7 +127,30 @@ Story ghi bối cảnh, cuộc trò chuyện, nhân vật chính/phụ, quan h�
 địa danh, sự kiện và những điểm chưa chắc chắn. Transcript có lời thoại nhưng lỗi timeline
 vẫn được dùng làm bối cảnh và ghi chú để kiểm tra trước khi dịch; video không có lời thoại
 được ghi rõ là chưa được bao phủ. Nếu AI lỗi hoặc không có lời thoại, không tạo story trống
-và không làm mất transcript đã lưu. Chưa tích hợp story vào luồng dịch Step 3.
+và không làm mất transcript đã lưu. Story mới ghi rõ STT, tên file và mã video nguồn để đối chiếu
+kể cả khi thứ tự bảng được thay đổi sau đó.
+Nút **Step 3** chạy tuần tự các video được tích chọn với story đang chọn trong vùng Output Step 2.
+Nếu story đang sửa, cần lưu hoặc bỏ thay đổi trước khi chạy. Nội dung story được chốt lúc bắt đầu
+batch và điền vào mỗi prompt cùng STT/tên/mã video, lượt dịch và khoảng ID segment.
+Khâu chuẩn bị dùng prompt riêng tại `reference/prompt_batch/google_gemini/translation.md`
+hoặc `reference/prompt_batch/chatgpt_web/translation.md`: đọc story, phân tích đoạn hiện tại,
+rồi dịch và tự kiểm tra trong cùng một request. Luồng chia segment, gửi/nhận, xác thực và lưu
+output dùng chung Step 3 hiện tại; cấu hình `Segments / batch` và tùy chọn dịch toàn bộ một lượt
+giữ nguyên ý nghĩa trong project. Output segment vẫn gồm `id`, `speaker_id`, `source_text`,
+`translated_text`; metadata lưu tên story và video để đối chiếu. Luồng dịch ngoài popup vẫn
+dùng `prompt_template`. Không chọn được story, story trống hoặc thiếu đầu vào Step 2 sẽ báo lỗi.
+**Kiểm tra / sửa bản dịch** ở Step 3 mặc định chỉ liệt kê câu còn chữ Trung Quốc và cặp câu
+dịch có nội dung liền kề giống từ 70% hoặc chứa nhau theo chuỗi từ đầy đủ. Khi so sánh, bỏ qua
+hoa/thường, dấu câu, khoảng trắng thừa và segment rỗng do gộp/bỏ qua; giữ dấu tiếng Việt và thứ tự từ.
+Độ giống tính bằng `2 × số từ khớp theo thứ tự / tổng số từ hai câu`. Popup hiển thị cả hai
+câu nghi trùng cùng một câu có nội dung trước và một câu sau; các dòng ngữ cảnh ghi **Câu lân cận**.
+Không tự gộp các cặp dịch giống hệt nhau để người dùng còn có thể đối chiếu. Nút **Đánh giá lại**
+và thao tác lưu cập nhật danh sách cảnh báo; vẫn có lựa chọn hiển thị toàn bộ segment.
+Đây là cảnh báo tham khảo: Step 3 vẫn hoàn thành, output vẫn là input hợp lệ cho Step 4.
+Batch theo video dừng chuỗi tự động của video có cảnh báo sau Step 3, lưu checkpoint Step 4 rồi
+chuyển video kế tiếp; thống kê cuối batch cho biết số video đã dừng để kiểm tra. Người dùng chạy
+từ Step 4 bằng các thao tác hiện có, không bắt buộc sửa và không có nút tiếp tục mới.
+Batch theo step vẫn lưu output Step 3, báo số video có cảnh báo và dịch tiếp video kế tiếp.
 Popup hiển thị riêng các cột **Step 1–7** cho mỗi video: chưa chạy, đang chạy,
 hoàn thành, lỗi hoặc cần cập nhật, dựa trên dữ liệu đã lưu. Di chuột lên ô để xem
 chi tiết; nếu không đọc được dữ liệu, ô hiển thị **Không rõ**.
@@ -133,12 +163,24 @@ hoặc `.md` trong project. Có thể sửa nội dung và **Lưu story**; đổ
 lưu sẽ hỏi xác nhận. Story mới được tự chọn sau khi tạo xong; trong khi batch đang chạy,
 vùng story chỉ cho đọc để tránh mất nội dung chỉnh sửa.
 Select box **Video đang xem** chọn video cần kiểm tra output. Mỗi video lưu Step đang chạy,
-Step lỗi và checkpoint; lần **Chạy batch** tiếp theo bỏ qua video đã hoàn thành, còn video
-chưa hoàn thành hoặc bị lỗi sẽ tiếp tục từ Step sớm nhất cần xử lý lại.
+Step lỗi và checkpoint. Bảng Videos có hai cột riêng: **Step gợi ý / đang chạy** chỉ để
+tham khảo theo output hợp lệ, và **Step bắt đầu** cho phép người dùng chọn Step 1–7 cho
+từng video. **Chạy batch video đã chọn** chạy đúng từ lựa chọn của người dùng đến Step 7,
+không dùng step gợi ý để thay đổi điểm bắt đầu. Chọn Step 4 thì chạy Step 4–7; video đã xong
+Step 7 vẫn có thể chạy lại từ bước được chọn. Lựa chọn chưa thiết lập để trống, cần chọn
+cho mọi video đã tích trước khi chạy. **Lưu Step bắt đầu** hoặc nút chạy batch ghi lựa chọn
+vào trường `batch_start_step` của từng video trong `project.json`; đóng khi chưa lưu sẽ hỏi
+lưu hoặc bỏ thay đổi. Thiếu đầu vào hợp lệ cho step đã chọn thì báo lỗi video đó rồi chuyển
+video kế tiếp, không tự lùi về step thấp hơn. Chỉ kiểm tra các output làm đầu vào trước step
+được chọn, không bắt buộc output cũ của bước sắp chạy lại phải còn hợp lệ. Candidate lịch sử
+ngoài pipeline hiện tại không tự được khôi phục làm đầu vào. Việc mở bảng chỉ đọc thông tin,
+không tạo workspace hay ghi manifest. Nút **Chạy batch** tự động và các nút batch theo từng
+step vẫn giữ chế độ hiện có.
 
 Nút **Outputs** hiển thị một row cho mỗi video. Select box trong row chọn phiên bản
 render cần xem; checkbox chọn các phiên bản cần ghép. Các row được ghép theo thứ tự
-hiển thị và tạo một MP4 mới trong `output/merged/` hoặc vị trí do người dùng chọn.
+chung đã lưu trong thiết lập project và tạo một MP4 mới trong `output/merged/` hoặc vị trí
+do người dùng chọn. Để đổi thứ tự ghép, chỉnh thứ tự video tại **Project & Input** trước.
 
 ## Trạng thái hiện tại
 

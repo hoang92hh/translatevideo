@@ -65,7 +65,7 @@ class ProjectState(QObject):
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
 
-    def bind_project(self, project: VideoProject) -> None:
+    def bind_project(self, project: VideoProject, *, restore_candidates: bool = True) -> None:
         self.project = project
         self.input_video = str(project.path(project.input_video))
         self.output_folder = str(project.path("output"))
@@ -147,14 +147,17 @@ class ProjectState(QObject):
             self.results[step] = self._deserialize_result(step, stored)
             self.statuses[step] = StepStatus.DONE
         self._register_legacy_transcript()
-        self._restore_selected_transcript()
+        if restore_candidates:
+            self._restore_selected_transcript()
         self._register_legacy_translation()
-        self._restore_selected_translation()
+        if restore_candidates:
+            self._restore_selected_translation()
         self._register_legacy_tts()
-        self._restore_selected_tts()
-        self._restore_selected_sync()
-        self._restore_selected_build_audio()
-        self._restore_selected_render()
+        if restore_candidates:
+            self._restore_selected_tts()
+            self._restore_selected_sync()
+            self._restore_selected_build_audio()
+            self._restore_selected_render()
         for index, step in enumerate(STEP_ORDER):
             if self.statuses[step] == StepStatus.DONE:
                 continue
@@ -166,6 +169,78 @@ class ProjectState(QObject):
         for step in STEP_ORDER:
             self.step_changed.emit(step.value)
         self.project_changed.emit()
+
+    def batch_resume_step(self, *, before_step: StepId | None = None) -> StepId | None:
+        """Validate the active pipeline in order, without resurrecting old outputs."""
+        artifacts = {
+            StepId.EXTRACT: ("source_audio",),
+            StepId.STT: ("transcript",),
+            StepId.TRANSLATE: ("translation",),
+            StepId.TTS: ("tts_manifest",),
+            StepId.SYNC: ("sync_manifest",),
+            StepId.BUILD_AUDIO: ("voice_track", "build_audio_manifest"),
+            StepId.RENDER: ("output_video", "render_manifest"),
+        }
+        candidates = {
+            StepId.STT: ("transcript_candidate_id", self.selected_transcript_candidate_id, self._result_from_transcript),
+            StepId.TRANSLATE: ("translation_candidate_id", self.selected_translation_candidate_id, self._result_from_translation),
+            StepId.TTS: ("tts_candidate_id", self.selected_tts_candidate_id, self._result_from_tts),
+            StepId.SYNC: ("sync_candidate_id", self.selected_sync_candidate_id,
+                          lambda value: self._result_from_sync(value, allow_incomplete=True)),
+            StepId.BUILD_AUDIO: ("build_audio_candidate_id", self.selected_build_audio_candidate_id, self._result_from_build_audio),
+            StepId.RENDER: ("render_candidate_id", self.selected_render_candidate_id, self._result_from_render),
+        }
+        sources = {
+            StepId.STT: ("input_candidate_id", self.selected_audio_candidate_id),
+            StepId.TRANSLATE: ("source_transcript_candidate_id", self.selected_transcript_candidate_id),
+            StepId.TTS: ("source_translation_candidate_id", self.selected_translation_candidate_id),
+            StepId.SYNC: ("source_tts_candidate_id", self.selected_tts_candidate_id),
+            StepId.BUILD_AUDIO: ("source_sync_candidate_id", self.selected_sync_candidate_id),
+            StepId.RENDER: ("source_build_audio_candidate_id", self.selected_build_audio_candidate_id),
+        }
+        for index, step in enumerate(STEP_ORDER):
+            if step == before_step:
+                # An explicit start only needs valid inputs from preceding steps.
+                return step
+            result = self.results.get(step)
+            # A file/candidate outside the active saved pipeline is not a checkpoint.
+            valid = bool(self.project and self.project.pipeline.get(step.value) and result)
+            if valid and step in candidates:
+                key, selected_id, loader = candidates[step]
+                candidate_id = str(result.metadata.get(key, ""))
+                if candidate_id:
+                    if selected_id and candidate_id != selected_id:
+                        valid = False
+                    else:
+                        restored = loader(candidate_id)
+                        valid = restored is not None
+                        if restored is not None:
+                            result = restored
+                            self.results[step] = result
+            if valid:
+                valid = all(Path(str(result.artifacts.get(key, ""))).is_file() for key in artifacts[step])
+            if valid and step == StepId.EXTRACT:
+                valid = bool(self.audio_input_path() and Path(self.audio_input_path()).is_file())
+            if valid and step in sources:
+                key, source_id = sources[step]
+                recorded_id = str(result.metadata.get(key, ""))
+                if recorded_id and source_id and recorded_id != source_id:
+                    valid = False
+            if not valid:
+                self.invalidate_from(step)
+                return step
+            blocking_errors = (
+                step == StepId.STT and int(result.metadata.get("timeline_error_count", 0)) > 0
+            ) or (
+                step == StepId.SYNC and int(result.metadata.get("error_count", 0)) > 0
+            )
+            if blocking_errors:
+                self.statuses[step] = StepStatus.ERROR
+                if index + 1 < len(STEP_ORDER):
+                    self.invalidate_from(STEP_ORDER[index + 1])
+                return step
+            self.statuses[step] = StepStatus.DONE
+        return None
 
     def workspace_path(self, *parts: str) -> str:
         if self.project:

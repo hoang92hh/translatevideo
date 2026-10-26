@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ...config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
+from ...config.batch_prompts import load_batch_prompt
 from ...config.translation import PROPER_NAME_MODE_AUTO, resolve_proper_name_policy
 from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from ...common.models import StepId, StepResult, TranslationCandidate
@@ -253,7 +254,24 @@ def execute(
     prompt_template_id = str(
         settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)
     ).strip() or DEFAULT_PROMPT_TEMPLATE_ID
-    prompt_template = load_prompt_template(provider, prompt_template_id)
+    batch_context = settings.get("batch_prompt_context")
+    prompt_template = (
+        load_batch_prompt(provider) if batch_context is not None
+        else load_prompt_template(provider, prompt_template_id)
+    )
+    prompt_context_metadata = {}
+    if batch_context is not None:
+        prompt_context_metadata = {
+            "prompt_source": "prompt_batch",
+            "story_reference": {
+                "name": batch_context["story_name"],
+                "path": batch_context["story_path"],
+            },
+            "video_context": {
+                key: batch_context[key]
+                for key in ("video_id", "video_order", "video_name", "video_filename")
+            },
+        }
     configured_batch_size = max(1, int(settings.get("batch_size", 30)))
     proper_name_mode = str(settings.get("proper_name_mode", PROPER_NAME_MODE_AUTO))
     proper_name_policy = resolve_proper_name_policy(
@@ -304,7 +322,6 @@ def execute(
 
     if uses_empty_groups:
         _apply_gemini_empty_results(segments, original_segments, batch_size)
-        _merge_duplicate_translation_pairs(segments, batch_size)
 
     # Temporarily disable automatic assessment/review for Gemini and ChatGPT Web.
     # Translation corrections are handled manually in Step 5.
@@ -351,6 +368,7 @@ def execute(
     output_path.parent.mkdir(parents=True, exist_ok=False)
     payload = {
         "version": 3,
+        **prompt_context_metadata,
         "candidate_id": candidate_id,
         "created_at": now.isoformat(timespec="seconds"),
         "source_transcript_candidate_id": state.selected_transcript_candidate_id,
@@ -391,6 +409,7 @@ def execute(
     }
     profile_payload = {
         "version": 1,
+        **prompt_context_metadata,
         "candidate_id": candidate_id,
         "created_at": now.isoformat(timespec="seconds"),
         "source_transcript_candidate_id": state.selected_transcript_candidate_id,
@@ -432,6 +451,7 @@ def execute(
     )
     metadata = {
         "provider": provider,
+        **prompt_context_metadata,
         "model": model_name,
         "prompt_template": prompt_template.template_id,
         "prompt_template_name": prompt_template.name,

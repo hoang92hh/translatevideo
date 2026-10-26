@@ -32,16 +32,12 @@ class StepBatchDialog(QDialog):
 
     step1_requested = Signal(object)
     step2_requested = Signal(object)
+    step3_requested = Signal(object)
 
     def __init__(self, project: BatchProject, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.project = project
-        available = {video.id for video in project.videos}
-        self.video_ids: list[str] = []
-        for video_id in [*project.step_batch_video_order, *(video.id for video in project.videos)]:
-            if video_id in available and video_id not in self.video_ids:
-                self.video_ids.append(video_id)
-        self.saved_order = list(self.video_ids)
+        self.video_ids = [video.id for video in project.ordered_videos()]
         self.checked_video_ids: set[str] = set()
         self.step_buttons: list[QPushButton] = []
         self.batch_busy = False
@@ -67,17 +63,7 @@ class StepBatchDialog(QDialog):
         self.clear_selection_button.clicked.connect(lambda: self._set_all_checked(False))
         actions.addWidget(self.select_all_button)
         actions.addWidget(self.clear_selection_button)
-        self.up_button = QPushButton("Di chuyển lên")
-        self.down_button = QPushButton("Di chuyển xuống")
-        self.save_button = QPushButton("Lưu thứ tự")
-        self.save_button.setObjectName("primaryButton")
-        self.up_button.clicked.connect(lambda: self._move_selected(-1))
-        self.down_button.clicked.connect(lambda: self._move_selected(1))
-        self.save_button.clicked.connect(self._save_order)
-        for button in (self.up_button, self.down_button, self.save_button):
-            actions.addWidget(button)
-        self.order_label = QLabel()
-        actions.addWidget(self.order_label)
+        actions.addWidget(QLabel("Thứ tự được quản lý tại Thiết lập project → Project & Input."))
         self.selection_label = QLabel()
         actions.addWidget(self.selection_label)
         actions.addStretch()
@@ -103,9 +89,9 @@ class StepBatchDialog(QDialog):
         layout.addWidget(self.table, 1)
 
         helper = QLabel(
-            "Tích checkbox để chọn video; dòng được tô sáng dùng để di chuyển lên/xuống. "
-            "Step 1/2 chạy tuần tự các video được tích chọn; Step 2 tạo story sau khi hết hàng đợi. "
-            "Step 3–7 chưa được kết nối."
+            "Tích checkbox để chọn video theo thứ tự chung đã lưu trong thiết lập project. "
+            "Step 1–3 chạy tuần tự các video được tích chọn; Step 2 tạo story, "
+            "Step 3 dịch với story đang chọn. Step 4–7 chưa được kết nối."
         )
         helper.setWordWrap(True)
         layout.addWidget(helper)
@@ -119,7 +105,7 @@ class StepBatchDialog(QDialog):
         self.batch_progress = QProgressBar()
         self.batch_progress.setRange(0, 100)
         self.batch_progress.setValue(0)
-        self.batch_label = QLabel("Sẵn sàng chạy Step 1 hoặc Step 2 cho các video được tích chọn.")
+        self.batch_label = QLabel("Sẵn sàng chạy Step 1, 2 hoặc 3 cho các video được tích chọn.")
         self.batch_label.setWordWrap(True)
         layout.addWidget(self.batch_progress)
         layout.addWidget(self.batch_label)
@@ -341,12 +327,6 @@ class StepBatchDialog(QDialog):
         self._refresh_table(max(0, self.table.currentRow()))
 
     def _refresh_actions(self) -> None:
-        row = self.table.currentRow()
-        self.up_button.setEnabled(not self.batch_busy and row > 0)
-        self.down_button.setEnabled(not self.batch_busy and 0 <= row < len(self.video_ids) - 1)
-        dirty = self.video_ids != self.saved_order
-        self.save_button.setEnabled(dirty and not self.batch_busy)
-        self.order_label.setText("Có thay đổi chưa lưu" if dirty else "Thứ tự hiện tại đã lưu")
         count = len(self.checked_video_ids)
         self.selection_label.setText(f"Đã chọn {count}/{len(self.video_ids)} video")
         self.select_all_button.setEnabled(not self.batch_busy and count < len(self.video_ids))
@@ -376,12 +356,19 @@ class StepBatchDialog(QDialog):
             self.step_statuses[video_id] = self._read_step_statuses(video)
             self._refresh_table(max(0, self.table.currentRow()))
 
-    def batch_finished(self, succeeded: int, failed: int, story_error: str = "") -> None:
+    def batch_finished(
+        self, succeeded: int, failed: int, story_error: str = "", review_video_count: int = 0,
+    ) -> None:
         self.set_batch_busy(False)
         title = f"Batch Step {self.active_step_number} hoàn tất"
         message = f"{title} · Thành công: {succeeded} · Lỗi: {failed}."
         if self.active_step_number == 2:
             message += "\nChưa tạo được story; transcript đã xử lý vẫn được giữ." if story_error else "\nĐã lưu story và nạp vào vùng Output Step 2."
+        elif self.active_step_number == 3 and review_video_count:
+            message += (
+                f"\n{review_video_count} video có cảnh báo bản dịch; mở Kiểm tra / sửa bản dịch ở Step 3 để xem. "
+                "Output đã lưu và vẫn có thể dùng cho Step 4 mà không cần sửa."
+            )
         self.update_batch_progress(100, message)
         if story_error:
             box = QMessageBox(QMessageBox.Icon.Warning, title, message, parent=self)
@@ -390,34 +377,13 @@ class StepBatchDialog(QDialog):
         else:
             QMessageBox.information(self, title, message)
 
-    def _move_selected(self, offset: int) -> None:
-        row = self.table.currentRow()
-        target = row + offset
-        if row < 0 or not 0 <= target < len(self.video_ids):
-            return
-        self.video_ids[row], self.video_ids[target] = self.video_ids[target], self.video_ids[row]
-        self._refresh_table(target)
-
-    def _save_order(self) -> bool:
-        previous_order = self.project.step_batch_video_order
-        self.project.step_batch_video_order = list(self.video_ids)
-        try:
-            self.project.save()
-        except OSError as exc:
-            self.project.step_batch_video_order = previous_order
-            QMessageBox.warning(self, "Không thể lưu thứ tự", str(exc))
-            return False
-        self.saved_order = list(self.video_ids)
-        self._refresh_actions()
-        return True
-
     def _step_clicked(self, number: int) -> None:
         if self.batch_busy or not self.checked_video_ids:
             return
-        if number in {1, 2}:
-            if number == 2 and not self._confirm_story_changes():
+        if number in {1, 2, 3}:
+            if number in {2, 3} and not self._confirm_story_changes():
                 return
-            requested = self.step1_requested if number == 1 else self.step2_requested
+            requested = {1: self.step1_requested, 2: self.step2_requested, 3: self.step3_requested}[number]
             requested.emit([
                 video_id for video_id in self.video_ids if video_id in self.checked_video_ids
             ])
@@ -435,18 +401,4 @@ class StepBatchDialog(QDialog):
             return
         if not self._confirm_story_changes():
             return
-        if self.video_ids != self.saved_order:
-            choice = QMessageBox.question(
-                self,
-                "Thứ tự chưa được lưu",
-                "Bạn có muốn lưu thứ tự video trước khi đóng?",
-                QMessageBox.StandardButton.Save
-                | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-            if choice == QMessageBox.StandardButton.Cancel:
-                return
-            if choice == QMessageBox.StandardButton.Save and not self._save_order():
-                return
         super().done(result)

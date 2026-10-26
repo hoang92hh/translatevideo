@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .common.models import StepId
 from .project import PROJECT_FOLDERS, VIDEO_PROJECT_FILE, VideoProject
 
 
@@ -61,6 +62,7 @@ class ProjectVideo:
     failed_step: str = ""
     restart_step: str = ""
     last_attempt_at: str = ""
+    batch_start_step: str = ""
 
 
 @dataclass(slots=True)
@@ -96,7 +98,18 @@ class BatchProject:
     def video(self, video_id: str) -> ProjectVideo | None:
         return next((item for item in self.videos if item.id == video_id), None)
 
+    def ordered_videos(self) -> list[ProjectVideo]:
+        """One project-wide order; retain legacy saved IDs and append new videos."""
+        available = {video.id: video for video in self.videos}
+        ids = dict.fromkeys([*self.step_batch_video_order, *(video.id for video in self.videos)])
+        return [available[video_id] for video_id in ids if video_id in available]
+
+    def set_video_order(self, video_ids: list[str]) -> None:
+        self.step_batch_video_order = list(video_ids)
+        self.step_batch_video_order = [video.id for video in self.ordered_videos()]
+
     def save(self) -> None:
+        self.step_batch_video_order = [video.id for video in self.ordered_videos()]
         self.updated_at = utc_now()
         write_json(self.manifest_path, asdict(self))
 
@@ -296,12 +309,26 @@ class BatchProjectService:
 
     @staticmethod
     def open_video(batch: BatchProject, video_id: str) -> VideoProject:
+        project = BatchProjectService.read_video(batch, video_id)
+        if project is None:
+            record = batch.video(video_id)
+            if record is None:
+                raise ValueError("Video không thuộc project.")
+            return BatchProjectService._create_video_project(batch, record)
+        for folder in WORK_FOLDERS:
+            project.path(folder).mkdir(exist_ok=True)
+        Path(project.output_root).mkdir(parents=True, exist_ok=True)
+        return project
+
+    @staticmethod
+    def read_video(batch: BatchProject, video_id: str) -> VideoProject | None:
+        """Read the saved video without creating folders or changing its manifest."""
         record = batch.video(video_id)
         if record is None:
             raise ValueError("Video không thuộc project.")
         manifest = batch.path(record.workspace, VIDEO_PROJECT_FILE)
         if not manifest.is_file():
-            return BatchProjectService._create_video_project(batch, record)
+            return None
         data = json.loads(manifest.read_text(encoding="utf-8"))
         data["root"] = str(manifest.parent)
         data["input_video"] = record.source_path
@@ -309,11 +336,18 @@ class BatchProjectService:
         data["source_language"] = batch.source_language
         data["target_language"] = batch.target_language
         data["output_root"] = str(batch.path("output", record.workspace))
-        project = VideoProject(**data)
-        for folder in WORK_FOLDERS:
-            project.path(folder).mkdir(exist_ok=True)
-        Path(project.output_root).mkdir(parents=True, exist_ok=True)
-        return project
+        return VideoProject(**data)
+
+    @staticmethod
+    def video_resume_step(batch: BatchProject, video_id: str) -> StepId | None:
+        from .state import ProjectState
+
+        project = BatchProjectService.read_video(batch, video_id)
+        if project is None:
+            return StepId.EXTRACT
+        state = ProjectState()
+        state.bind_project(project, restore_candidates=False)
+        return state.batch_resume_step()
 
     @staticmethod
     def update_video_status(

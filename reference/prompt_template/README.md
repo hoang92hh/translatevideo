@@ -29,3 +29,17 @@ Tên file được tạo từ ID đầu và cuối thực tế của từng batc
 Template cũ có ba phần vẫn đọc được: ứng dụng lấy nội dung `TRANSLATION` làm prompt duy nhất. Khi lưu lại trong popup, file được chuyển sang định dạng `PROMPT` mới.
 
 Mỗi project chỉ lưu provider và mã template đã chọn. Popup **Quản lý Prompt** trên màn hình chính là nơi thêm, sửa và xóa template; màn hình **Thiết lập project** chỉ lựa chọn template có sẵn.
+
+## Prompt tạo story sau batch Step 2
+
+Các prompt tiếng Việt dùng riêng cho tác vụ viết hồ sơ câu chuyện được lưu tại:
+
+- `google_gemini/story/story.md`
+- `chatgpt_web/story/story.md`
+
+Các file này được đọc nguyên văn bởi tác vụ tạo story, không phải template dịch và không
+xuất hiện trong danh sách prompt dịch của Step 3. Đầu vào chỉ gồm ngôn ngữ nguồn và các
+video theo thứ tự, mỗi video có `video_order` và danh sách `source_text`; không có speaker,
+timestamp hoặc ánh xạ ID câu. AI trả nội dung Markdown tiếng Việt qua trường `story_markdown`,
+ứng dụng lưu thành một file `stories/story_<min>_<max>.md` trong project, không lưu JSON ánh xạ.
+Tác vụ dùng provider/model được chọn trong thiết lập Step 3 nhưng không chạy hay sửa luồng dịch.

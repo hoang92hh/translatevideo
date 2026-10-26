@@ -98,6 +98,40 @@ bỏ qua để chạy video tiếp theo. Step 4 tạm thời dùng một cấu h
 speaker và video.
 
 Batch dùng trạng thái xử lý riêng và không tự đổi video đang được xem trên các tab Step.
+Nút **Chạy batch theo step** mở popup sắp xếp toàn bộ video: chọn một dòng rồi dùng
+**Di chuyển lên / Di chuyển xuống**, sau đó **Lưu thứ tự**. Vùng chọn đi theo video
+và STT cập nhật sau mỗi lần di chuyển. Thứ tự này được lưu riêng trong `project.json`
+qua `step_batch_video_order`, không thay đổi thứ tự batch hiện tại; video mới nằm cuối
+danh sách. Đóng popup khi chưa lưu sẽ hỏi lưu hoặc bỏ thay đổi.
+Nút **Step 1** chạy lần lượt các video được tích chọn theo thứ tự đang hiển thị,
+dùng cấu hình Step 1 trong **Thiết lập project**. Video lỗi được ghi nhận rồi chuyển
+sang video kế tiếp; hết danh sách thì dừng. Video đã có output vẫn chạy lại nếu được
+tích chọn, và kết quả các step sau cần cập nhật. Popup hiển thị tiến độ, khóa chọn/sắp xếp
+và không cho đóng trong khi chạy. Batch đầy đủ hiện tại giữ nguyên; Step 3–7 trong popup chưa kết nối.
+Nút **Step 2** chạy tuần tự các video được tích chọn, dùng audio được chọn của Step 1
+và cấu hình nhận dạng trong project. Video thiếu đầu vào hoặc lỗi được ghi nhận rồi chuyển
+sang video kế tiếp. Step đã có output vẫn chạy lại nếu được chọn; kết quả các step sau cần cập nhật.
+Sau khi hết hàng đợi, tác vụ nền gom toàn bộ `source_text` nhận được theo thứ tự video,
+không gửi speaker hoặc timestamp, rồi dùng provider/model đang cấu hình ở **Thiết lập project → Step 3**
+(Google Gemini hoặc ChatGPT Web) để viết hồ sơ câu chuyện bằng tiếng Việt.
+Tên file `stories/story_<min-STT>_<max-STT>.md` lấy từ STT các video được chọn lúc bắt đầu,
+kể cả khi chọn không liên tiếp. Nếu trùng tên, tạo `_v2`, `_v3`… để giữ bản đã chỉnh sửa.
+Story ghi bối cảnh, cuộc trò chuyện, nhân vật chính/phụ, quan hệ, cách xưng hô, tên riêng,
+địa danh, sự kiện và những điểm chưa chắc chắn. Transcript có lời thoại nhưng lỗi timeline
+vẫn được dùng làm bối cảnh và ghi chú để kiểm tra trước khi dịch; video không có lời thoại
+được ghi rõ là chưa được bao phủ. Nếu AI lỗi hoặc không có lời thoại, không tạo story trống
+và không làm mất transcript đã lưu. Chưa tích hợp story vào luồng dịch Step 3.
+Popup hiển thị riêng các cột **Step 1–7** cho mỗi video: chưa chạy, đang chạy,
+hoàn thành, lỗi hoặc cần cập nhật, dựa trên dữ liệu đã lưu. Di chuột lên ô để xem
+chi tiết; nếu không đọc được dữ liệu, ô hiển thị **Không rõ**.
+Checkbox **Chọn** dùng để chọn/bỏ chọn từng video; các nút **Chọn tất cả / Bỏ chọn tất cả**
+nằm phía trên bảng. Lựa chọn đi theo video khi đổi thứ tự và chỉ giữ trong lần mở popup.
+Các nút Step chỉ bật khi có video được tích chọn.
+Popup chia theo chiều dọc: bảng video và các nút Step ở trên, vùng **Output Step 2 — Story**
+ở dưới; kéo thanh phân cách để đổi chiều cao. Combobox liệt kê các file `stories/story_*.txt`
+hoặc `.md` trong project. Có thể sửa nội dung và **Lưu story**; đổi story hoặc đóng khi chưa
+lưu sẽ hỏi xác nhận. Story mới được tự chọn sau khi tạo xong; trong khi batch đang chạy,
+vùng story chỉ cho đọc để tránh mất nội dung chỉnh sửa.
 Select box **Video đang xem** chọn video cần kiểm tra output. Mỗi video lưu Step đang chạy,
 Step lỗi và checkpoint; lần **Chạy batch** tiếp theo bỏ qua video đã hoàn thành, còn video
 chưa hoàn thành hoặc bị lỗi sẽ tiếp tục từ Step sớm nhất cần xử lý lại.
@@ -124,7 +158,7 @@ hiển thị và tạo một MP4 mới trong `output/merged/` hoặc vị trí d
 - Step 2 dùng Faster Whisper với word timestamp và pyannote Community-1 chạy local để nhận dạng lời nói, gắn `speaker_id`, rồi làm mượt nhiễu ranh giới trước khi tạo segment. Một lần đổi speaker được giữ khi kéo dài ít nhất `0,8` giây hoặc chứa ít nhất 2 từ; khoảng `SPEAKER_UNKNOWN` và speaker đơn lẻ ngắn hơn cả hai ngưỡng được gán về speaker ổn định gần nhất. Tùy chọn **Gộp segment liền kề cùng speaker** được bật mặc định; khi bật, các đoạn cùng speaker có độ lệch nhỏ hơn `0,01` giây được gộp, còn khi tắt thì từng đoạn nguyên tử được giữ riêng. Mọi segment đều lưu `merge_parts` gồm ID/timestamp gốc và tỷ lệ thời lượng; transcript cũng lưu `diarization_turns` thô để đối chiếu. Mỗi lần chạy thành công tạo một candidate riêng tại `transcripts/<candidate-id>/transcript.json`.
 - Nếu Step 1–4 gặp lỗi không tạo được output hợp lệ, candidate chưa hoàn chỉnh không được đăng ký và input thành công trước đó được giữ nguyên. Riêng Step 5 giữ candidate `needs_edit` để người dùng sửa từng segment, nhưng không chọn candidate đó làm input Step 6 cho tới khi hết lỗi.
 - Step 3 dùng workflow dịch độc lập provider. Gemini giữ tùy chọn chất lượng ba giai đoạn: phân tích toàn truyện, dịch theo batch và kiểm duyệt kết quả. Với ChatGPT Web và Claude Web, checkbox **Dịch toàn bộ segment của project trong một lượt** được bật mặc định: toàn bộ segment được gửi trong một file JSON và nhận một file kết quả; khi bỏ chọn, ứng dụng chia tuần tự theo `Segments / batch`. Mỗi file web được AI đọc trọn vẹn để phân tích ngữ cảnh trước khi dịch, được extension tải xuống và được ứng dụng xác thực đủ ID trước khi gửi lượt kế tiếp. Quy tắc tên riêng mặc định tự thích ứng theo cặp ngôn ngữ: Chinese → Vietnamese ưu tiên Hán–Việt; Chinese → ngôn ngữ khác ưu tiên Pinyin; người dùng có thể ép Hán–Việt, Pinyin hoặc giữ chữ gốc. Step 3 có giao diện tab cho Google Gemini API, ChatGPT Web và Claude Web; hai web provider dùng Chrome extension qua bridge localhost, còn model được chọn trực tiếp trên trang. Structured output giữ nguyên ID, timestamp, `speaker_id` và `merge_parts`; mỗi lần thành công tạo `translations/<candidate-id>/translated_segments.json` làm input Step 4 và `dialogue_profile.json` để tham chiếu vai trò/giọng cho từng speaker.
-- Google API key được quản lý tập trung tại **Cài đặt → API & Providers** và lưu trong Windows Credential Locker. Speaker diarization chỉ đọc model local được chọn trong cùng màn hình; Step 2 không cần Hugging Face token và không gọi mạng khi xử lý.
+- Google API key được quản lý tập trung tại **Cài đặt → API & Providers** và lưu trong Windows Credential Locker. Speaker diarization chỉ đọc model local được chọn trong cùng màn hình; phần nhận dạng/diarization Step 2 không cần Hugging Face token và không gọi mạng khi xử lý. Riêng tác vụ tạo story sau batch Step 2 gửi lời thoại đến provider AI đã cấu hình.
 - Faster Whisper hỗ trợ `small`, `medium`, `large-v3`, VAD và ba chế độ `Auto`, `CPU`, `GPU`. Model được lưu tại cache riêng của TransLanguage trong `%LOCALAPPDATA%`.
 - Profile CUDA khóa cuBLAS `12.6.4.1` và cuDNN `9.6.0.74` để tiếp tục hỗ trợ GPU Pascal như GTX 1060.
 - Lỗi provider được hiển thị theo nhóm nguyên nhân, kèm hướng xử lý và phần chi tiết kỹ thuật có thể mở rộng.

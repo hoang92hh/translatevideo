@@ -35,6 +35,10 @@ class TranslationItem(BaseModel):
     translated_text: str
 
 
+class StoryOutput(BaseModel):
+    story_markdown: str = Field(min_length=1)
+
+
 class SourceVerifiedTranslationItem(BaseModel):
     id: int
     speaker_id: str
@@ -490,6 +494,15 @@ class GoogleTranslationService:
             }
             for segment in segments
         ]
+
+    def generate_story(
+        self, content: object, prompt: str, input_filename: str, output_filename: str,
+    ) -> str:
+        parsed, _credential_source = self._generate_structured(
+            content, prompt, StoryOutput, 0.1, input_filename, output_filename,
+        )
+        result = parsed if isinstance(parsed, StoryOutput) else StoryOutput.model_validate(parsed)
+        return result.story_markdown
 
     def analyze_dialogue(
         self,

@@ -27,6 +27,7 @@ from ..gemini.provider import (
     TranslationCorrection,
     TranslationItem,
     SourceVerifiedTranslationItem,
+    StoryOutput,
 )
 from .. import (
     DialogueAnalysisResponse,
@@ -266,6 +267,16 @@ class WebTranslationService:
                 raise ValueError(f"ID trùng hoặc nội dung trống: {value.id}")
             result[value.id] = text
         return result
+
+    def generate_story(
+        self, content: object, prompt: str, input_filename: str, output_filename: str,
+    ) -> str:
+        parsed = self._request_json(
+            prompt, content,
+            'Một JSON object có đúng trường "story_markdown" là toàn bộ tài liệu Markdown tiếng Việt.',
+            attachment_name=input_filename,
+        )
+        return StoryOutput.model_validate(parsed).story_markdown
 
     def analyze_dialogue(
         self,

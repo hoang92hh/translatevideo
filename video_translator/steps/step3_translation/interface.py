@@ -32,6 +32,10 @@ class TranslationReviewResponse:
 class TranslationProvider(Protocol):
     """Hợp đồng trung lập cho Gemini và các provider extension trong tương lai."""
 
+    def generate_story(
+        self, content: object, prompt: str, input_filename: str, output_filename: str,
+    ) -> str: ...
+
     def analyze_dialogue(
         self,
         segments: list[Segment],

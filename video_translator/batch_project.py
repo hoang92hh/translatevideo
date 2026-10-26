@@ -76,6 +76,7 @@ class BatchProject:
     videos: list[ProjectVideo] = field(default_factory=list)
     batch_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
     merge_outputs: list[dict[str, Any]] = field(default_factory=list)
+    step_batch_video_order: list[str] = field(default_factory=list)
 
     @property
     def root_path(self) -> Path:

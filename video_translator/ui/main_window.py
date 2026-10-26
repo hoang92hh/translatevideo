@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QThread, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QComboBox,
@@ -23,6 +23,8 @@ from ..config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ..batch_project import BatchProject, BatchProjectService
 from ..common.models import STEP_ORDER, StepId, StepStatus
 from ..pipeline import MockPipeline
+from ..pipeline.step_batch_runner import StepBatchRunner
+from ..pipeline.story_worker import validate_story_settings
 from ..pipeline.worker import (
     AudioSyncAiRewriteWorker,
     AudioSyncBatchRepairWorker,
@@ -31,6 +33,7 @@ from ..pipeline.worker import (
 )
 from ..state import ProjectState
 from .batch_dialogs import BatchVideosDialog, OutputManagerDialog
+from .step_batch_dialog import StepBatchDialog
 from .project_manager import ProjectManagerPage
 from .prompt_manager_dialog import PromptManagerDialog
 from ..app.project_settings import ProjectSettingsDialog
@@ -56,7 +59,7 @@ class MainWindow(QMainWindow):
         self.batch_queue: list[str] = []
         self.batch_rerun_ids: set[str] = set()
         self.batch_settings: dict[str, dict[str, object]] = {}
-        self.active_workers: set[PipelineWorker] = set()
+        self.active_workers: set[QThread] = set()
         self.pages: dict[StepId, StepPage] = {}
         self._loading_project = False
         self._dirty_steps: set[StepId] = set()
@@ -116,6 +119,9 @@ class MainWindow(QMainWindow):
         self.batch_button.setObjectName("primaryButton")
         self.batch_button.setEnabled(False)
         self.batch_button.clicked.connect(self._start_batch)
+        self.step_batch_button = QPushButton("Chạy batch theo step")
+        self.step_batch_button.setEnabled(False)
+        self.step_batch_button.clicked.connect(self._show_step_batch)
         project_settings_button = QPushButton("Thiết lập project")
         project_settings_button.clicked.connect(self._open_project_settings)
         top_layout.addWidget(project_button)
@@ -123,6 +129,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(project_settings_button)
         top_layout.addWidget(settings_button)
         top_layout.addWidget(self.batch_button)
+        top_layout.addWidget(self.step_batch_button)
         self.continue_button = QPushButton("Continue")
         self.continue_button.setObjectName("primaryButton")
         self.continue_button.clicked.connect(self._continue_pipeline)
@@ -267,6 +274,70 @@ class MainWindow(QMainWindow):
 
         dialog.run_requested.connect(run_selected)
         dialog.exec()
+
+    def _show_step_batch(self) -> None:
+        if self.batch_project:
+            dialog = StepBatchDialog(self.batch_project, self)
+            dialog.step1_requested.connect(lambda video_ids: self._start_step_batch(dialog, video_ids, StepId.EXTRACT))
+            dialog.step2_requested.connect(lambda video_ids: self._start_step_batch(dialog, video_ids, StepId.STT))
+            dialog.exec()
+
+    def _start_step_batch(self, dialog: StepBatchDialog, video_ids: list[str], step: StepId) -> None:
+        if not self.batch_project or not video_ids:
+            return
+        if self.batch_running or self.active_workers:
+            QMessageBox.information(dialog, "Pipeline đang chạy", "Hãy chờ tác vụ hiện tại hoàn tất.")
+            return
+        number = STEP_ORDER.index(step) + 1
+        settings = self.batch_project.batch_settings.get(step.value)
+        if not settings:
+            QMessageBox.information(dialog, f"Thiếu thiết lập Step {number}", f"Hãy hoàn tất Step {number} trong Thiết lập project trước khi chạy.")
+            return
+        story_settings = dict(self.batch_project.batch_settings.get(StepId.TRANSLATE.value, {}))
+        try:
+            if step == StepId.STT:
+                if not story_settings:
+                    raise ValueError("Hãy chọn Gemini hoặc ChatGPT và cấu hình AI tại Thiết lập project → Step 3 để tạo story.")
+                validate_story_settings(story_settings)
+            self.state.save_project()
+            for page in self.pages.values():
+                page.prepare_run()
+        except Exception as exc:
+            QMessageBox.warning(dialog, "Không thể chuẩn bị batch", str(exc))
+            return
+        runner = StepBatchRunner(
+            self.batch_project, self.pipeline, video_ids, settings, self,
+            step=step, story_settings=story_settings,
+            video_positions={video_id: index + 1 for index, video_id in enumerate(dialog.video_ids)},
+        )
+        self.batch_running = True
+        self.batch_status_message = f"Đang chuẩn bị batch Step {number}"
+        dialog.set_batch_busy(True, number)
+        self._refresh_header()
+        runner.worker_started.connect(self.active_workers.add)
+        runner.worker_finished.connect(self.active_workers.discard)
+        runner.video_changed.connect(dialog.refresh_video_status)
+        runner.video_changed.connect(lambda _video_id: self._refresh_header())
+        runner.progress_changed.connect(dialog.update_batch_progress)
+        runner.story_ready.connect(dialog.load_story)
+
+        def finished(succeeded: int, failed: int) -> None:
+            self.batch_running = False
+            self.batch_status_message = f"Batch Step {number} hoàn tất · Thành công: {succeeded} · Lỗi: {failed}"
+            if runner.story_error:
+                self.batch_status_message += " · Chưa tạo được story"
+            try:
+                if self.state.project and self.state.project.video_id in video_ids:
+                    self._reload_viewed_video(self.state.project.video_id)
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Không thể nạp lại video đang xem", str(exc))
+            self._refresh_header()
+            story_error = runner.story_error
+            runner.deleteLater()
+            dialog.batch_finished(succeeded, failed, story_error)
+
+        runner.finished.connect(finished)
+        runner.start()
 
     def _show_outputs(self) -> None:
         if not self.batch_project:
@@ -1094,6 +1165,9 @@ class MainWindow(QMainWindow):
         return f"Step {STEP_ORDER.index(step) + 1:02d}/{len(STEP_ORDER):02d} — {title}"
 
     def _refresh_batch_button(self) -> None:
+        self.step_batch_button.setEnabled(
+            bool(self.batch_project) and not self.batch_running and not self.active_workers
+        )
         available = bool(
             self.batch_project
             and any(

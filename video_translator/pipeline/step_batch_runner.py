@@ -107,6 +107,7 @@ class StepBatchRunner(QObject):
                     raise ValueError(f"Group {group_number} chưa có story để dịch.")
                 context = dict(story)
                 context.update({
+                    "batch_prompt_mode": "step",
                     "story_group": group_number,
                     "video_id": video_id,
                     "video_order": self.video_positions[video_id],

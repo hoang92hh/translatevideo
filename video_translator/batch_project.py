@@ -269,13 +269,6 @@ class BatchProjectService:
             if video.output_count != output_count:
                 video.output_count = output_count
                 normalized = True
-            if output_count > 0 and video.status == "pending":
-                video.status = "completed"
-                video.current_step = ""
-                video.failed_step = ""
-                video.restart_step = ""
-                video.last_error = ""
-                normalized = True
         if normalized:
             project.save()
         return project

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -57,7 +58,16 @@ class SyncRepairDialog(QDialog):
         self._default_visible_indexes: set[int] = set()
         self._row_by_segment_id: dict[int, int] = {}
         self.setWindowTitle("Xử lý segment quá thời lượng")
-        self.resize(1280, 720)
+        screen = QGuiApplication.screenAt(self.mapToGlobal(self.rect().center()))
+        screen = screen or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(
+                max(960, round(available.width() * 0.9)),
+                max(540, round(available.height() * 0.9)),
+            )
+        else:
+            self.resize(1280, 720)
 
         layout = QVBoxLayout(self)
         description = QLabel(

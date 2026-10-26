@@ -33,6 +33,21 @@ def validate_story_settings(settings: dict[str, Any]) -> Path:
     return path
 
 
+def validate_video_analysis_settings(settings: dict[str, Any]) -> Path:
+    provider = str(settings.get("provider", GEMINI_PROVIDER_NAME))
+    folder = STORY_PROMPT_FOLDERS.get(provider)
+    if folder is None:
+        raise ValueError("Phân tích video hiện chỉ hỗ trợ Google Gemini và ChatGPT Web.")
+    if provider == CHATGPT_WEB_PROVIDER_NAME:
+        error = project_url_error(provider, str(settings.get("project_url", "")))
+        if error:
+            raise ValueError(error)
+    path = PROMPT_TEMPLATE_ROOT / folder / "story" / "video_analysis.md"
+    if not path.is_file():
+        raise FileNotFoundError(f"Không tìm thấy prompt phân tích video: {path}")
+    return path
+
+
 class StoryWorker(QThread):
     succeeded = Signal(str)
     failed = Signal(object)
@@ -102,5 +117,48 @@ class StoryWorker(QThread):
                     raise
             self.progress_changed.emit(100, f"Đã lưu {path.name}")
             self.succeeded.emit(str(path))
+        except Exception as exc:
+            self.failed.emit(error_payload(exc))
+
+
+class VideoAnalysisWorker(QThread):
+    """Create a temporary context file for one video's legacy batch run."""
+
+    succeeded = Signal(str)
+    failed = Signal(object)
+    progress_changed = Signal(int, str)
+
+    def __init__(
+        self, output_path: Path, source_language: str, settings: dict[str, Any],
+        video: dict[str, Any],
+    ) -> None:
+        super().__init__()
+        self.output_path = output_path
+        self.source_language = source_language
+        self.settings = dict(settings)
+        self.video = dict(video)
+
+    def run(self) -> None:
+        try:
+            prompt_path = validate_video_analysis_settings(self.settings)
+            prompt = prompt_path.read_text(encoding="utf-8")
+            provider_name = str(self.settings.get("provider", GEMINI_PROVIDER_NAME))
+            provider = create_translation_provider(
+                provider_name, str(self.settings.get("model", GEMINI_DEFAULT_MODEL)),
+                self.source_language, "Vietnamese", self.settings,
+            )
+            self.progress_changed.emit(0, "Đang phân tích toàn bộ nội dung video…")
+            markdown = provider.generate_story(
+                {"source_language": self.source_language, "videos": [self.video]},
+                prompt, "video-analysis-input.json", "video-analysis-response.json",
+            ).strip()
+            if not markdown:
+                raise ValueError("AI trả về nội dung phân tích video trống.")
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            self.output_path.write_text(
+                f"# Hồ sơ phân tích video\n\n{markdown}\n", encoding="utf-8",
+            )
+            self.progress_changed.emit(100, f"Đã lưu {self.output_path.name}")
+            self.succeeded.emit(str(self.output_path))
         except Exception as exc:
             self.failed.emit(error_payload(exc))

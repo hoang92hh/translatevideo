@@ -25,7 +25,7 @@ from ..batch_project import BatchProject, BatchProjectService
 from ..common.models import STEP_ORDER, StepId, StepStatus
 from ..pipeline import MockPipeline
 from ..pipeline.step_batch_runner import StepBatchRunner
-from ..pipeline.story_worker import validate_story_settings
+from ..pipeline.story_worker import VideoAnalysisWorker, validate_story_settings
 from ..steps.step3_translation.quality import assess_manual_segments
 from ..pipeline.worker import (
     AudioSyncAiRewriteWorker,
@@ -63,6 +63,8 @@ class MainWindow(QMainWindow):
         self.batch_run_video_ids: list[str] = []
         self.batch_run_results: dict[str, dict[str, str]] = {}
         self.batch_current_video_id = ""
+        self.batch_context_video_id = ""
+        self.batch_context_path = ""
         self.batch_tracks_selected_results = False
         self.batch_review_video_ids: set[str] = set()
         self.batch_settings: dict[str, dict[str, object]] = {}
@@ -809,6 +811,24 @@ class MainWindow(QMainWindow):
             settings["input_audio"] = self.batch_state.audio_input_path()
             settings["input_candidate_id"] = self.batch_state.selected_audio_candidate_id
             settings["input_stem"] = self.batch_state.selected_audio_stem
+        if step == StepId.TRANSLATE and self.batch_context_video_id != self.batch_state.project.video_id:
+            self._start_video_context_analysis()
+            return
+        if step == StepId.TRANSLATE:
+            context_path = Path(self.batch_context_path)
+            if not context_path.is_file():
+                self._fail_batch_video("Không tìm thấy hồ sơ phân tích video.", step)
+                return
+            settings["batch_prompt_context"] = {
+                "story_name": context_path.name,
+                "story_path": str(context_path),
+                "story_content": context_path.read_text(encoding="utf-8-sig"),
+                "batch_prompt_mode": "legacy",
+                "video_id": self.batch_state.project.video_id,
+                "video_order": self.batch_run_video_ids.index(self.batch_state.project.video_id) + 1,
+                "video_name": Path(self.batch_state.project.input_video).name,
+                "video_filename": Path(self.batch_state.project.input_video).name,
+            }
         self.batch_state.mark_running(step)
         worker = PipelineWorker(self.pipeline, step, self.batch_state, settings)
         outcome: dict[str, object] = {
@@ -855,6 +875,50 @@ class MainWindow(QMainWindow):
 
         worker.succeeded.connect(succeeded)
         worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        QTimer.singleShot(150, worker.start)
+
+    def _start_video_context_analysis(self) -> None:
+        if not self.batch_project or not self.batch_state.project:
+            return
+        video_id = self.batch_state.project.video_id
+        project = self.batch_state.project
+        result = self.batch_state.results.get(StepId.STT)
+        if result is None:
+            self._fail_batch_video("Không có transcript Step 2 để phân tích video.", StepId.TRANSLATE)
+            return
+        record = self.batch_project.video(video_id)
+        if record is None:
+            self._fail_batch_video("Video không còn thuộc project.", StepId.TRANSLATE)
+            return
+        path = Path(project.output_root) / "video-analysis.md"
+        self.batch_status_message = f"Đang phân tích toàn bộ nội dung video: {record.name}"
+        self._refresh_header()
+        worker = VideoAnalysisWorker(
+            path, project.source_language,
+            dict(self.batch_settings.get(StepId.TRANSLATE.value, {})),
+            {
+                "video_order": self.batch_run_video_ids.index(video_id) + 1,
+                "video_id": video_id,
+                "video_filename": Path(project.input_video).name,
+                "source_text": [s.source_text.strip() for s in result.segments if s.source_text.strip()],
+            },
+        )
+        self.active_workers.add(worker)
+        outcome: dict[str, object] = {"error": None, "path": ""}
+        worker.succeeded.connect(lambda value: outcome.update(path=value))
+        worker.failed.connect(lambda value: outcome.update(error=value))
+
+        def finished() -> None:
+            self.active_workers.discard(worker)
+            worker.deleteLater()
+            if outcome["error"] is not None:
+                self._fail_batch_video(outcome["error"], StepId.TRANSLATE)
+                return
+            self.batch_context_video_id = video_id
+            self.batch_context_path = str(outcome["path"])
+            self._execute_batch_step(StepId.TRANSLATE)
+
         worker.finished.connect(finished)
         QTimer.singleShot(150, worker.start)
 

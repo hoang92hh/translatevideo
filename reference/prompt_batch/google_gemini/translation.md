@@ -1,10 +1,9 @@
-# Dịch batch với hồ sơ câu chuyện — Google Gemini
+# Dịch batch với hồ sơ phân tích video — Google Gemini
 
 ## Video và lượt dịch hiện tại
 
 Đang dịch video STT {video_order}: {video_name}.  
 Tên file video: {video_filename}. Mã video: {video_id}.  
-Story Group {story_group}: {story_name}.
 Lượt dịch {batch_index}/{batch_total}: {segment_count} segment đích, ID {segment_start} đến {segment_end}.
 
 ID segment chỉ có ý nghĩa trong video đang dịch; không ghép ID của các video khác nhau.

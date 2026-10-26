@@ -256,7 +256,7 @@ def execute(
     ).strip() or DEFAULT_PROMPT_TEMPLATE_ID
     batch_context = settings.get("batch_prompt_context")
     prompt_template = (
-        load_batch_prompt(provider) if batch_context is not None
+        load_batch_prompt(provider, str(batch_context.get("batch_prompt_mode", "step"))) if batch_context is not None
         else load_prompt_template(provider, prompt_template_id)
     )
     prompt_context_metadata = {}

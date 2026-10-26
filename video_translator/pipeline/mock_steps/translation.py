@@ -264,6 +264,7 @@ def execute(
         prompt_context_metadata = {
             "prompt_source": "prompt_batch",
             "story_reference": {
+                "group": batch_context.get("story_group"),
                 "name": batch_context["story_name"],
                 "path": batch_context["story_path"],
             },

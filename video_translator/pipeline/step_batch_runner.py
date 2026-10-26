@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,10 +31,12 @@ class StepBatchRunner(QObject):
         *, step: StepId = StepId.EXTRACT,
         story_settings: dict[str, Any] | None = None,
         video_positions: dict[str, int] | None = None,
+        story_video_ids: list[str] | None = None,
+        force_rebuild_stories: bool = False,
     ) -> None:
         super().__init__(parent)
-        if step not in {StepId.EXTRACT, StepId.STT, StepId.TRANSLATE}:
-            raise ValueError("Runner hiện chỉ hỗ trợ Step 1, Step 2 và Step 3.")
+        if step not in {StepId.EXTRACT, StepId.STT, StepId.TRANSLATE, StepId.RENDER}:
+            raise ValueError("Runner hiện chỉ hỗ trợ Step 1, Step 2, Step 3 và Step 7.")
         self.step = step
         self.step_number = STEP_ORDER.index(step) + 1
         self.project = project
@@ -49,15 +52,21 @@ class StepBatchRunner(QObject):
         self.result: StepResult | None = None
         self.failure = ""
         self.story_settings = dict(story_settings or {})
+        self.story_video_ids = list(dict.fromkeys(story_video_ids or self.video_ids))
+        self.force_rebuild_stories = force_rebuild_stories
         self.video_positions = (
             dict(video_positions) if video_positions is not None
             else {video.id: index + 1 for index, video in enumerate(project.ordered_videos())}
         )
-        self.story_videos: list[dict[str, Any]] = []
+        self.story_videos: dict[int, list[dict[str, Any]]] = {}
         self.transcript_video_ids: set[str] = set()
         self.timeline_warning_positions: list[int] = []
         self.story_path = ""
         self.story_error = ""
+        self.story_paths: list[str] = []
+        self.story_errors: list[str] = []
+        self.pending_story_groups: list[int] = []
+        self.current_story_group = 0
 
     def start(self) -> None:
         QTimer.singleShot(0, self._next_video)
@@ -91,8 +100,14 @@ class StepBatchRunner(QObject):
                 settings["input_candidate_id"] = state.selected_audio_candidate_id
                 settings["input_stem"] = state.selected_audio_stem
             elif self.step == StepId.TRANSLATE:
-                context = dict(settings["batch_prompt_context"])
+                group_number = self.project.video_group(video_id)
+                stories = dict(settings.pop("batch_group_stories"))
+                story = stories.get(str(group_number))
+                if not isinstance(story, dict):
+                    raise ValueError(f"Group {group_number} chưa có story để dịch.")
+                context = dict(story)
                 context.update({
+                    "story_group": group_number,
                     "video_id": video_id,
                     "video_order": self.video_positions[video_id],
                     "video_name": record.name,
@@ -168,7 +183,8 @@ class StepBatchRunner(QObject):
                     texts = [segment.source_text.strip() for segment in self.result.segments if segment.source_text.strip()]
                     if not texts:
                         raise ValueError("Step 2 không nhận được lời thoại nào.")
-                    self.story_videos.append({
+                    group_number = self.project.video_group(video_id)
+                    self.story_videos.setdefault(group_number, []).append({
                         "video_order": self.video_positions[video_id],
                         "video_id": video_id,
                         "video_filename": Path(self.state.input_video).name,
@@ -192,12 +208,24 @@ class StepBatchRunner(QObject):
             except Exception as exc:
                 error += f"\nKhông thể lưu trạng thái step: {exc}"
         if record is not None:
-            next_step = STEP_ORDER[STEP_ORDER.index(self.step) + 1]
-            record.restart_step = self.step.value if error else next_step.value
+            if error:
+                record.restart_step = self.step.value
+            elif self.step == StepId.RENDER:
+                record.restart_step = ""
+            else:
+                next_step = STEP_ORDER[STEP_ORDER.index(self.step) + 1]
+                record.restart_step = next_step.value
             try:
+                status = "failed" if error else "completed" if self.step == StepId.RENDER else "pending"
+                output_path = (
+                    str(self.result.artifacts.get("output_video", ""))
+                    if not error and self.step == StepId.RENDER and self.result is not None
+                    else ""
+                )
                 BatchProjectService.update_video_status(
-                    self.project, video_id, "failed" if error else "pending",
-                    error=error, step=self.step.value if error else "",
+                    self.project, video_id, status,
+                    error=error, output_path=output_path,
+                    step=self.step.value if error else "",
                 )
             except Exception as exc:
                 error = f"{error}\nKhông thể lưu trạng thái video: {exc}".strip()
@@ -218,17 +246,113 @@ class StepBatchRunner(QObject):
         if self.step != StepId.STT:
             self.finished.emit(self.success_count, self.failure_count)
             return
+        self._collect_saved_transcripts()
         if not self.story_videos:
             self.story_error = "Không có lời thoại từ lần chạy Step 2 này để tạo story."
             self.finished.emit(self.success_count, self.failure_count)
             return
         self.progress_changed.emit(85, "Step 2 đã hết hàng đợi; đang thu gom lời thoại và tạo story…")
+        groups = sorted({
+            self.project.video_group(video_id) for video_id in self.story_video_ids
+        })
+        if self.force_rebuild_stories:
+            self._archive_story_files()
+            self.project.story_group_files.clear()
+            self.project.save()
+            self.pending_story_groups = groups
+        else:
+            self.pending_story_groups = [
+                group for group in groups
+                if not (
+                    (path := self.project.story_path_for_group(group)) is not None
+                    and path.is_file()
+                )
+            ]
+        if not self.pending_story_groups:
+            self.finished.emit(self.success_count, self.failure_count)
+            return
+        self._start_next_story()
+
+    def _collect_saved_transcripts(self) -> None:
+        self.story_videos.clear()
+        self.transcript_video_ids.clear()
+        self.timeline_warning_positions.clear()
+        for video_id in self.story_video_ids:
+            try:
+                project = BatchProjectService.read_video(self.project, video_id)
+                if project is None:
+                    continue
+                state = ProjectState()
+                state.bind_project(project, restore_candidates=False)
+                result = state.candidate_result(
+                    StepId.STT, state.selected_transcript_candidate_id,
+                )
+                if result is None:
+                    continue
+                texts = [
+                    segment.source_text.strip()
+                    for segment in result.segments
+                    if segment.source_text.strip()
+                ]
+                if not texts:
+                    continue
+                group_number = self.project.video_group(video_id)
+                self.story_videos.setdefault(group_number, []).append({
+                    "video_order": self.video_positions[video_id],
+                    "video_id": video_id,
+                    "video_filename": Path(project.input_video).name,
+                    "source_text": texts,
+                })
+                self.transcript_video_ids.add(video_id)
+                if int(result.metadata.get("timeline_error_count", 0)) > 0:
+                    self.timeline_warning_positions.append(self.video_positions[video_id])
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                continue
+
+    def _archive_story_files(self) -> None:
+        folder = self.project.path("stories")
+        paths = [
+            path for path in folder.glob("story_*.*")
+            if path.is_file() and path.suffix.lower() in {".md", ".txt"}
+        ]
+        if not paths:
+            return
+        archive = folder / "archive" / f"rebuild-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+        archive.mkdir(parents=True, exist_ok=False)
+        for path in paths:
+            path.replace(archive / path.name)
+
+    def _start_next_story(self) -> None:
+        if not self.pending_story_groups:
+            self.story_error = "\n".join(self.story_errors)
+            self.finished.emit(self.success_count, self.failure_count)
+            return
+        group_number = self.pending_story_groups.pop(0)
+        self.current_story_group = group_number
+        videos = self.story_videos.get(group_number, [])
+        selected_ids = [
+            video_id for video_id in self.story_video_ids
+            if self.project.video_group(video_id) == group_number
+        ]
+        selected_positions = [self.video_positions[video_id] for video_id in selected_ids]
+        if not videos:
+            self.story_errors.append(
+                f"Group {group_number}: không có lời thoại thành công để tạo story."
+            )
+            QTimer.singleShot(0, self._start_next_story)
+            return
         try:
+            canonical_path = self.project.path("stories", f"story_group_{group_number}.md")
+            if canonical_path.is_file():
+                archive = canonical_path.parent / "archive" / f"replaced-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+                archive.mkdir(parents=True, exist_ok=True)
+                canonical_path.replace(archive / canonical_path.name)
             worker = StoryWorker(
                 self.project.root_path, self.project.source_language, self.story_settings,
-                self.story_videos, [self.video_positions[video_id] for video_id in self.video_ids],
-                [self.video_positions[video_id] for video_id in self.video_ids if video_id not in self.transcript_video_ids],
-                self.timeline_warning_positions,
+                videos, selected_positions,
+                [self.video_positions[video_id] for video_id in selected_ids if video_id not in self.transcript_video_ids],
+                [position for position in self.timeline_warning_positions if position in selected_positions],
+                group_number,
             )
             self.worker = worker
             worker.succeeded.connect(self._story_succeeded)
@@ -238,25 +362,36 @@ class StepBatchRunner(QObject):
             self.worker_started.emit(worker)
             worker.start()
         except Exception as exc:
-            self.story_error = f"Không thể bắt đầu tác vụ tạo story: {exc}"
-            self._story_done()
+            self.story_errors.append(
+                f"Group {group_number}: không thể bắt đầu tác vụ tạo story: {exc}"
+            )
+            QTimer.singleShot(0, self._start_next_story)
 
     @Slot(str)
     def _story_succeeded(self, path: str) -> None:
         self.story_path = path
+        self.story_paths.append(path)
+        self.project.set_story_for_group(self.current_story_group, path)
+        self.project.save()
 
     @Slot(object)
     def _story_failed(self, payload: object) -> None:
         if isinstance(payload, dict):
-            self.story_error = "\n".join(
+            detail = "\n".join(
                 str(payload[key]) for key in ("message", "suggestion", "technical_detail") if payload.get(key)
             ) or str(payload)
         else:
-            self.story_error = str(payload)
+            detail = str(payload)
+        self.story_errors.append(f"Group {self.current_story_group}: {detail}")
 
     @Slot(int, str)
     def _story_progress(self, value: int, message: str) -> None:
-        self.progress_changed.emit(85 + round(value * 0.15), message)
+        total = len(self.pending_story_groups) + len(self.story_paths) + len(self.story_errors) + 1
+        completed = len(self.story_paths) + len(self.story_errors)
+        progress = 85 + round(((completed * 100 + value) / max(1, total)) * 0.15)
+        self.progress_changed.emit(
+            progress, f"Group {self.current_story_group} · {message}",
+        )
 
     @Slot()
     def _story_done(self) -> None:
@@ -265,8 +400,13 @@ class StepBatchRunner(QObject):
         if worker is not None:
             self.worker_finished.emit(worker)
             worker.deleteLater()
+        if self.story_path and self.story_path not in self.story_paths:
+            self.story_paths.append(self.story_path)
         if self.story_path:
             self.story_ready.emit(self.story_path)
-        elif not self.story_error:
-            self.story_error = "Tác vụ AI kết thúc nhưng chưa tạo được file story."
-        self.finished.emit(self.success_count, self.failure_count)
+        elif not self.story_errors:
+            self.story_errors.append(
+                f"Group {self.current_story_group}: tác vụ AI kết thúc nhưng chưa tạo được file story."
+            )
+        self.story_path = ""
+        QTimer.singleShot(0, self._start_next_story)

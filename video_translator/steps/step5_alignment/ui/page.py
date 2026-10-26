@@ -144,19 +144,14 @@ class AudioSyncStepPage(StepPage):
             self._refresh_candidates(prefer_current=True)
 
     def _refresh_candidates(self, prefer_current: bool = False) -> None:
-        current = self.sync_combo.currentData()
-        result = self.state.results.get(StepId.SYNC)
-        result_id = str(result.metadata.get("sync_candidate_id", "")) if result else ""
         self.sync_combo.blockSignals(True)
         self.sync_combo.clear()
-        for candidate in self.state.sync_candidates.values():
+        for candidate in self.newest_candidates(self.state.sync_candidates.values()):
             suffix = "  [Input Step 6]" if candidate.id == self.state.selected_sync_candidate_id else ""
             if candidate.error_count:
                 suffix += f"  [Cần sửa: {candidate.error_count}]"
             self.sync_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
-        target_id = result_id if prefer_current else (current or result_id)
-        target = self.sync_combo.findData(target_id)
-        self.sync_combo.setCurrentIndex(target if target >= 0 else 0)
+        self.sync_combo.setCurrentIndex(0 if self.sync_combo.count() else -1)
         self.sync_combo.blockSignals(False)
         self._candidate_changed()
 

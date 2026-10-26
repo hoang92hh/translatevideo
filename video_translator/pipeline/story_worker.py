@@ -42,7 +42,7 @@ class StoryWorker(QThread):
         self, project_root: Path, source_language: str,
         settings: dict[str, Any], videos: list[dict[str, Any]],
         selected_positions: list[int], missing_positions: list[int],
-        timeline_warning_positions: list[int],
+        timeline_warning_positions: list[int], group_number: int,
     ) -> None:
         super().__init__()
         self.project_root = project_root
@@ -52,6 +52,7 @@ class StoryWorker(QThread):
         self.selected_positions = list(selected_positions)
         self.missing_positions = list(missing_positions)
         self.timeline_warning_positions = list(timeline_warning_positions)
+        self.group_number = group_number
 
     def run(self) -> None:
         try:
@@ -59,8 +60,7 @@ class StoryWorker(QThread):
                 raise ValueError("Không có lời thoại từ lần chạy Step 2 này để tạo story.")
             prompt_path = validate_story_settings(self.settings)
             prompt = prompt_path.read_text(encoding="utf-8")
-            first, last = min(self.selected_positions), max(self.selected_positions)
-            stem = f"story_{first}_{last}"
+            stem = f"story_group_{self.group_number}"
             provider_name = str(self.settings.get("provider", GEMINI_PROVIDER_NAME))
             provider = create_translation_provider(
                 provider_name, str(self.settings.get("model", GEMINI_DEFAULT_MODEL)),
@@ -74,6 +74,7 @@ class StoryWorker(QThread):
             if not markdown:
                 raise ValueError("AI trả về nội dung story trống.")
             coverage = [
+                f"> Group: {self.group_number}. Kích thước và thành viên Group đi theo STT đã lưu của project.",
                 f"> Phạm vi: các video có STT {', '.join(map(str, self.selected_positions))} tại lúc bắt đầu batch.",
             ]
             for video in self.videos:
@@ -91,22 +92,14 @@ class StoryWorker(QThread):
             content = "\n".join(coverage) + "\n\n" + markdown + "\n"
             folder = self.project_root / "stories"
             folder.mkdir(parents=True, exist_ok=True)
-            # Exclusive creation preserves existing files, including user-edited stories.
-            version = 1
-            while True:
-                suffix = "" if version == 1 else f"_v{version}"
-                path = folder / f"{stem}{suffix}.md"
+            path = folder / f"{stem}.md"
+            with path.open("x", encoding="utf-8") as stream:
                 try:
-                    with path.open("x", encoding="utf-8") as stream:
-                        try:
-                            stream.write(content)
-                        except Exception:
-                            stream.close()
-                            path.unlink(missing_ok=True)
-                            raise
-                    break
-                except FileExistsError:
-                    version += 1
+                    stream.write(content)
+                except Exception:
+                    stream.close()
+                    path.unlink(missing_ok=True)
+                    raise
             self.progress_changed.emit(100, f"Đã lưu {path.name}")
             self.succeeded.emit(str(path))
         except Exception as exc:

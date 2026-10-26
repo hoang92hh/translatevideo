@@ -145,19 +145,16 @@ class BuildAudioStepPage(StepPage):
             self._refresh_outputs(prefer_selected=True)
 
     def _refresh_outputs(self, prefer_selected: bool = False) -> None:
-        current = self.audio_combo.currentData()
         self.audio_combo.blockSignals(True)
         self.audio_combo.clear()
-        for candidate in self.state.build_audio_candidates.values():
+        for candidate in self.newest_candidates(self.state.build_audio_candidates.values()):
             suffix = (
                 "  [Input Step 7]"
                 if candidate.id == self.state.selected_build_audio_candidate_id
                 else ""
             )
             self.audio_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
-        target_id = self.state.selected_build_audio_candidate_id if prefer_selected else current
-        target = self.audio_combo.findData(target_id or self.state.selected_build_audio_candidate_id)
-        self.audio_combo.setCurrentIndex(target if target >= 0 else 0)
+        self.audio_combo.setCurrentIndex(0 if self.audio_combo.count() else -1)
         self.audio_combo.blockSignals(False)
         self._candidate_changed()
 
@@ -172,6 +169,7 @@ class BuildAudioStepPage(StepPage):
             self._set_player_enabled(False)
             self.show_candidate_result(None)
             return
+        self.show_candidate_result(self.state.candidate_result(StepId.BUILD_AUDIO, candidate.id))
         path = Path(candidate.audio_file)
         status = "Sẵn sàng để nghe" if path.is_file() else "File audio không tồn tại"
         self.audio_info.setText(

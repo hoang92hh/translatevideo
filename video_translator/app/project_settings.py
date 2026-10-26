@@ -399,11 +399,17 @@ class ProjectSettingsDialog(QDialog):
         self.target_language = QComboBox()
         self.target_language.addItems(LANGUAGES)
         self.target_language.setCurrentText("Vietnamese")
+        self.story_group_size = QSpinBox()
+        self.story_group_size.setRange(1, 10000)
+        self.story_group_size.setValue(10)
+        self.story_group_size.setSuffix(" video")
+        self.story_group_size.valueChanged.connect(self._refresh_video_groups)
         form.addRow("Tên project", self.name)
         form.addRow("Thư mục input", input_row)
         form.addRow("Lưu project tại", location_row)
         form.addRow("Ngôn ngữ nguồn", self.source_language)
         form.addRow("Ngôn ngữ đích", self.target_language)
+        form.addRow("Số video mỗi Group", self.story_group_size)
         card.content_layout.addLayout(form)
         layout.addWidget(card)
         video_actions = QHBoxLayout()
@@ -418,18 +424,20 @@ class ProjectSettingsDialog(QDialog):
         order_hint.setWordWrap(True)
         video_actions.addWidget(order_hint, 1)
         layout.addLayout(video_actions)
-        self.video_table = QTableWidget(0, 4)
-        self.video_table.setHorizontalHeaderLabels(["Chọn", "STT", "Video", "Trạng thái"])
+        self.video_table = QTableWidget(0, 5)
+        self.video_table.setHorizontalHeaderLabels(["Chọn", "STT", "Group", "Video", "Trạng thái"])
         self.video_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.video_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.video_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.video_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.video_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.video_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.video_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.video_table.verticalHeader().setVisible(False)
         self.video_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.video_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.video_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.video_table.setSortingEnabled(False)
         self.video_table.itemSelectionChanged.connect(self._update_video_actions)
+        self.video_table.itemChanged.connect(self._video_item_changed)
         layout.addWidget(self.video_table, 1)
         self._update_video_actions()
         self._add_section("Project & Input", _scroll_page("Project & Input", "Thông tin chung và danh sách video.", content))
@@ -507,12 +515,14 @@ class ProjectSettingsDialog(QDialog):
             checked.setData(Qt.ItemDataRole.UserRole, video.path)
             self.video_table.setItem(row, 0, checked)
             self.video_table.setItem(row, 1, QTableWidgetItem(str(row + 1)))
+            self.video_table.setItem(row, 2, QTableWidgetItem(""))
             name = QTableWidgetItem(video.name)
             name.setToolTip(video.path)
-            self.video_table.setItem(row, 2, name)
-            self.video_table.setItem(row, 3, QTableWidgetItem(video.status))
+            self.video_table.setItem(row, 3, name)
+            self.video_table.setItem(row, 4, QTableWidgetItem(video.status))
+        self._refresh_video_groups()
         if self.video_table.rowCount():
-            self.video_table.setCurrentCell(0, 2)
+            self.video_table.setCurrentCell(0, 3)
             self.video_table.selectRow(0)
         self._update_video_actions()
 
@@ -520,6 +530,29 @@ class ProjectSettingsDialog(QDialog):
         row = self.video_table.currentRow()
         self.video_up_button.setEnabled(row > 0)
         self.video_down_button.setEnabled(0 <= row < self.video_table.rowCount() - 1)
+
+    def _video_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == 0:
+            self._refresh_video_groups()
+
+    def _refresh_video_groups(self, *_args: object) -> None:
+        if not hasattr(self, "video_table"):
+            return
+        size = max(1, self.story_group_size.value())
+        position = 0
+        signals_were_blocked = self.video_table.signalsBlocked()
+        self.video_table.blockSignals(True)
+        try:
+            for row in range(self.video_table.rowCount()):
+                checked = self.video_table.item(row, 0)
+                group = self.video_table.item(row, 2)
+                if checked is not None and checked.checkState() == Qt.CheckState.Checked:
+                    position += 1
+                    group.setText(str((position - 1) // size + 1))
+                else:
+                    group.setText("—")
+        finally:
+            self.video_table.blockSignals(signals_were_blocked)
 
     def _move_video(self, offset: int) -> None:
         row = self.video_table.currentRow()
@@ -536,9 +569,10 @@ class ProjectSettingsDialog(QDialog):
                 self.video_table.setItem(row, column, item)
             for index in range(self.video_table.rowCount()):
                 self.video_table.item(index, 1).setText(str(index + 1))
-            self.video_table.setCurrentCell(target, 2)
+            self._refresh_video_groups()
+            self.video_table.setCurrentCell(target, 3)
             self.video_table.selectRow(target)
-            self.video_table.scrollToItem(self.video_table.item(target, 2))
+            self.video_table.scrollToItem(self.video_table.item(target, 3))
         finally:
             self.video_table.blockSignals(False)
         self._update_video_actions()
@@ -579,6 +613,7 @@ class ProjectSettingsDialog(QDialog):
             "source_language": self.source_language.currentText(),
             "target_language": self.target_language.currentText(),
             "batch_settings": self.settings_values(),
+            "story_group_size": self.story_group_size.value(),
         }
 
     def _load_project(self, project: BatchProject) -> None:
@@ -592,6 +627,7 @@ class ProjectSettingsDialog(QDialog):
         self.choose_location_button.setEnabled(False)
         self.source_language.setCurrentText(project.source_language)
         self.target_language.setCurrentText(project.target_language)
+        self.story_group_size.setValue(project.story_group_size)
         existing_paths = {str(Path(video.source_path).resolve()) for video in project.videos}
         self._existing_video_paths = existing_paths
         self._load_videos(project.input_folder, existing_paths)

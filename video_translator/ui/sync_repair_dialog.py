@@ -544,14 +544,15 @@ class SyncRepairDialog(QDialog):
             for segment_id, update in selected_updates.items()
             if (
                 float(update["start"]) < float(update["end"])
-                and (not update["translated_text"] or not update["speaker_id"])
+                and update["translated_text"]
+                and not update["speaker_id"]
             )
         ]
         if empty:
             QMessageBox.information(
                 self,
                 "Thông tin segment chưa hợp lệ",
-                "Segment có thời lượng lớn hơn 0 phải có speaker và nội dung: "
+                "Segment có nội dung và thời lượng lớn hơn 0 phải có speaker: "
                 + ", ".join(f"#{item:04d}" for item in empty),
             )
             return

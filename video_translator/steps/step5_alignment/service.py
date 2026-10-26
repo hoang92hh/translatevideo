@@ -851,12 +851,18 @@ def repair_sync_segments(
             "End phải lớn hơn hoặc bằng Start cho: "
             + ", ".join(f"#{item:04d}" for item in invalid_time_ids),
         )
+    # An empty effective translation means this voice is intentionally skipped.
+    # Collapse only the Step 5 candidate interval; upstream timelines stay untouched.
+    for update in normalized.values():
+        if not update["translated_text"]:
+            update["end"] = update["start"]
     empty_ids = [
         segment_id
         for segment_id, update in normalized.items()
         if (
             float(update["start"]) < float(update["end"])
-            and (not update["translated_text"] or not update["speaker_id"])
+            and update["translated_text"]
+            and not update["speaker_id"]
         )
     ]
     if empty_ids:
@@ -904,16 +910,12 @@ def repair_sync_segments(
         duration = end - start
         sync_segment = sync_segments[segment_id]
         previous_speaker = str(sync_segment.get("speaker_id", ""))
-        related = [translation_segments[segment_id], tts_segments[segment_id], sync_segments[segment_id]]
-        if transcript_segments:
-            related.append(transcript_segments[segment_id])
-        for item in related:
-            item["start"] = start
-            item["end"] = end
-            item["speaker_id"] = speaker_id
-            item["updated_in_step_5"] = True
-        translation_segments[segment_id]["translated_text"] = text
-        tts_segments[segment_id]["translated_text"] = text
+        sync_segment.setdefault("source_start", float(sync_segment.get("start", 0.0)))
+        sync_segment.setdefault("source_end", float(sync_segment.get("end", 0.0)))
+        sync_segment.setdefault("source_speaker_id", previous_speaker)
+        sync_segment["start"] = start
+        sync_segment["end"] = end
+        sync_segment["speaker_id"] = speaker_id
         sync_segment.setdefault("original_translated_text", str(sync_segment.get("translated_text", "")))
         previous_draft = str(sync_segment.get("draft_text") or sync_segment.get("translated_text", "")).strip()
         if text != previous_draft:
@@ -925,6 +927,7 @@ def repair_sync_segments(
         sync_segment["audio_adjusted_start"] = start
         sync_segment["corrected_in_step_5"] = True
         sync_segment["speaker_corrected_in_step_5"] = speaker_id != previous_speaker
+        sync_segment["skip_voice"] = not text or duration <= 0
 
     active_ids = [
         segment_id
@@ -936,6 +939,9 @@ def repair_sync_segments(
         sync_segment = sync_segments[segment_id]
         start = float(normalized[segment_id]["start"])
         sync_segment["synced_audio_file"] = ""
+        sync_segment["audio_file"] = ""
+        sync_segment["tts_skipped"] = True
+        sync_segment["skip_voice"] = True
         sync_segment["status"] = "ready"
         sync_segment["repair_status"] = "resolved"
         sync_segment["error"] = ""
@@ -981,18 +987,9 @@ def repair_sync_segments(
         zip(active_ids, generated_files, generated_segments, strict=True), start=1
     ):
         sync_segment = sync_segments[segment_id]
-        tts_segment = tts_segments[segment_id]
         text = str(normalized[segment_id]["translated_text"])
         speaker_id = str(normalized[segment_id]["speaker_id"])
-        target_audio_value = str(tts_segment.get("audio_file", "")).strip()
-        if target_audio_value:
-            target_audio = Path(target_audio_value)
-        else:
-            target_audio = Path(tts_manifest).parent / "segments" / f"segment_{segment_id:04d}.wav"
-        target_audio.parent.mkdir(parents=True, exist_ok=True)
-        audio_part = target_audio.with_name(f".{target_audio.stem}.repair{target_audio.suffix}")
-        shutil.copy2(generated_path, audio_part)
-        audio_part.replace(target_audio)
+        target_audio = Path(generated_path)
         synced_audio = sync_manifest.parent / "segments" / f"segment_{segment_id:04d}.wav"
         if progress:
             progress(55 + round(index / len(active_ids) * 35), f"Đang đồng bộ segment #{segment_id:04d}…")
@@ -1012,19 +1009,14 @@ def repair_sync_segments(
             synced_audio.unlink(missing_ok=True)
         outcomes[segment_id] = outcome
 
-        tts_segment["audio_file"] = str(target_audio)
-        tts_segment["tts_provider"] = segment_result.provider
-        tts_segment["tts_model"] = segment_result.model
-        tts_segment["tts_voice"] = segment_result.voice
-        tts_segment["tts_reference_voice"] = segment_result.reference_voice
-        tts_segment["tts_actual_device"] = segment_result.actual_device
-        tts_segment["updated_in_step_5"] = True
         sync_segment["audio_file"] = str(target_audio)
         sync_segment["tts_provider"] = segment_result.provider
         sync_segment["tts_model"] = segment_result.model
         sync_segment["tts_voice"] = segment_result.voice
         sync_segment["tts_reference_voice"] = segment_result.reference_voice
         sync_segment["tts_actual_device"] = segment_result.actual_device
+        sync_segment["tts_skipped"] = False
+        sync_segment["skip_voice"] = False
         sync_segment["sync_output_file"] = str(synced_audio)
         sync_segment["timeline_output_file"] = str(synced_audio)
         sync_segment["repair_attempts"] = int(sync_segment.get("repair_attempts", 0)) + 1
@@ -1097,16 +1089,9 @@ def repair_sync_segments(
     sync_payload["error_count"] = error_count
     sync_payload["status"] = "completed" if error_count == 0 else "needs_edit"
     sync_payload["repair_revision"] = int(sync_payload.get("repair_revision", 0)) + 1
-    translation_payload["repair_revision"] = int(translation_payload.get("repair_revision", 0)) + 1
-    tts_payload["repair_revision"] = int(tts_payload.get("repair_revision", 0)) + 1
-    if transcript_manifest and transcript_payload is not None:
-        transcript_payload["repair_revision"] = int(transcript_payload.get("repair_revision", 0)) + 1
-        _write_manifest(transcript_manifest, transcript_payload)
-    _write_manifest(translation_manifest, translation_payload)
-    _write_manifest(tts_manifest, tts_payload)
     _write_manifest(sync_manifest, sync_payload)
     if progress:
-        progress(100, "Đã cập nhật thời gian/speaker/nội dung trong chuỗi Step 2 → Step 5.")
+        progress(100, "Đã cập nhật timeline/nội dung riêng của candidate Step 5.")
     resolved = sum(1 for segment_id in target_ids if sync_segments[segment_id].get("status") == "ready")
     return {
         "candidate_id": str(sync_payload.get("candidate_id", "")),

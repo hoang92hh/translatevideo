@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from datetime import datetime, timezone
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -57,6 +59,22 @@ class StepPage(QWidget):
         root.addWidget(scroll, 1)
         root.addLayout(self._build_run_actions())
         self.refresh()
+
+    @staticmethod
+    def newest_candidates(candidates: Iterable[Any]) -> list[Any]:
+        """Sort display choices by creation time, without changing pipeline inputs."""
+        def order_key(item: tuple[int, Any]) -> tuple[datetime, int]:
+            index, candidate = item
+            try:
+                created = datetime.fromisoformat(str(candidate.created_at).strip())
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                created = created.astimezone(timezone.utc)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                created = datetime.min.replace(tzinfo=timezone.utc)
+            return created, index
+
+        return [candidate for _, candidate in sorted(enumerate(candidates), key=order_key, reverse=True)]
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from video_translator.common.models import StepId
+from video_translator.common.models import StepId, StepResult
 from video_translator.ui.components import Card
 from video_translator.ui.specs import FieldSpec, ProviderSpec, StepSpec
 from video_translator.ui.steps.base import StepPage
@@ -160,15 +160,12 @@ class ExtractStepPage(StepPage):
         return container
 
     def _refresh_candidates(self, prefer_selected: bool = False) -> None:
-        current = self.candidate_combo.currentData()
         self.candidate_combo.blockSignals(True)
         self.candidate_combo.clear()
-        for candidate in self.state.audio_candidates.values():
+        for candidate in self.newest_candidates(self.state.audio_candidates.values()):
             suffix = "  [Input Step 2]" if candidate.id == self.state.selected_audio_candidate_id else ""
             self.candidate_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
-        target_id = self.state.selected_audio_candidate_id if prefer_selected else current
-        target = self.candidate_combo.findData(target_id or self.state.selected_audio_candidate_id)
-        self.candidate_combo.setCurrentIndex(target if target >= 0 else 0)
+        self.candidate_combo.setCurrentIndex(0 if self.candidate_combo.count() else -1)
         self.candidate_combo.blockSignals(False)
         self._candidate_changed()
 
@@ -202,6 +199,10 @@ class ExtractStepPage(StepPage):
         exists = bool(path and Path(path).is_file())
         candidate = self.state.candidate(candidate_id)
         if candidate:
+            self.show_candidate_result(StepResult(
+                step=StepId.EXTRACT, summary=candidate.label,
+                artifacts=dict(candidate.stems), metadata=dict(candidate.metadata),
+            ))
             status = "Sẵn sàng" if exists else "File không tồn tại"
             actual_device = str(candidate.metadata.get("actual_device", "")).strip()
             device_text = f" · {actual_device}" if actual_device else ""
@@ -209,6 +210,7 @@ class ExtractStepPage(StepPage):
                 f"{candidate.provider} · {candidate.model_name}{device_text} · {stem} · {status}\n{path}"
             )
         else:
+            self.show_candidate_result(None)
             self.audio_info.setText("Chưa có candidate audio")
         self.play_button.setEnabled(exists)
 

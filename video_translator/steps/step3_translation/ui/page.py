@@ -125,29 +125,28 @@ class TranslationStepPage(StepPage):
         self._show_result_without_segments(result)
 
     def _refresh_translations(self, prefer_selected: bool = False) -> None:
-        current = self.translation_combo.currentData()
         self.translation_combo.blockSignals(True)
         self.translation_combo.clear()
-        for candidate in self.state.translation_candidates.values():
+        for candidate in self.newest_candidates(self.state.translation_candidates.values()):
             suffix = (
                 "  [Input Step 4]"
                 if candidate.id == self.state.selected_translation_candidate_id
                 else ""
             )
             self.translation_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
-        target_id = self.state.selected_translation_candidate_id if prefer_selected else current
-        target = self.translation_combo.findData(target_id or self.state.selected_translation_candidate_id)
-        self.translation_combo.setCurrentIndex(target if target >= 0 else 0)
+        self.translation_combo.setCurrentIndex(0 if self.translation_combo.count() else -1)
         self.translation_combo.blockSignals(False)
         self._translation_changed()
 
     def _translation_changed(self, *_: object) -> None:
         candidate = self._current_translation()
         if not candidate:
+            self.show_candidate_result(None)
             self.translation_info.setText("Chưa có bản dịch")
             self.editor_button.setEnabled(False)
             self.manual_check_button.setEnabled(False)
             return
+        self.show_candidate_result(self.state.candidate_result(StepId.TRANSLATE, candidate.id))
         output_exists = Path(candidate.path).is_file()
         status = "Sẵn sàng" if output_exists else "File không tồn tại"
         model = str(candidate.metadata.get("model", ""))

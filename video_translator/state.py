@@ -242,6 +242,64 @@ class ProjectState(QObject):
             self.statuses[step] = StepStatus.DONE
         return None
 
+    def restore_selected_inputs(self, before_step: StepId) -> StepId | None:
+        """Hydrate the selected output immediately preceding an explicit start step."""
+        target_index = STEP_ORDER.index(before_step)
+        if target_index == 0:
+            self.invalidate_from(before_step)
+            self.statuses[before_step] = StepStatus.READY
+            return before_step
+
+        input_step = STEP_ORDER[target_index - 1]
+        if input_step == StepId.EXTRACT:
+            input_path = self.audio_input_path()
+            if not input_path or not Path(input_path).is_file():
+                self.invalidate_from(before_step)
+                return input_step
+            self.statuses[input_step] = StepStatus.DONE
+        else:
+            selected_inputs = {
+                StepId.STT: (
+                    self.selected_transcript_candidate_id,
+                    self._result_from_transcript,
+                ),
+                StepId.TRANSLATE: (
+                    self.selected_translation_candidate_id,
+                    self._result_from_translation,
+                ),
+                StepId.TTS: (
+                    self.selected_tts_candidate_id,
+                    self._result_from_tts,
+                ),
+                StepId.SYNC: (
+                    self.selected_sync_candidate_id,
+                    lambda value: self._result_from_sync(value, allow_incomplete=True),
+                ),
+                StepId.BUILD_AUDIO: (
+                    self.selected_build_audio_candidate_id,
+                    self._result_from_build_audio,
+                ),
+            }
+            candidate_id, loader = selected_inputs[input_step]
+            result = loader(candidate_id) if candidate_id else None
+            blocking_errors = bool(result) and (
+                input_step == StepId.STT
+                and int(result.metadata.get("timeline_error_count", 0)) > 0
+                or input_step == StepId.SYNC
+                and int(result.metadata.get("error_count", 0)) > 0
+            )
+            if result is None or blocking_errors:
+                self.invalidate_from(before_step)
+                if blocking_errors:
+                    self.statuses[input_step] = StepStatus.ERROR
+                return input_step
+            self.results[input_step] = result
+            self.statuses[input_step] = StepStatus.DONE
+
+        self.invalidate_from(before_step)
+        self.statuses[before_step] = StepStatus.READY
+        return before_step
+
     def workspace_path(self, *parts: str) -> str:
         if self.project:
             return str(self.project.path(*parts))
@@ -493,6 +551,7 @@ class ProjectState(QObject):
         for row in rows:
             item = by_id[int(row["id"])]
             row.update(start=item.start, end=item.end, merge_parts=item.merge_parts)
+            row.pop("updated_in_step_5", None)
         issues = assess_transcript_timeline(edited)
         payload["timeline_issues"] = issues
         payload["timeline_error_count"] = len(issues)
@@ -638,26 +697,43 @@ class ProjectState(QObject):
             return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            segments = [
-                Segment(
+            segments = []
+            legacy_recovered = 0
+            for index, item in enumerate(payload.get("segments", []), start=1):
+                parts = [
+                    dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
+                ]
+                start = float(item.get("start", 0.0))
+                end = float(item.get("end", 0.0))
+                speaker_id = str(item.get("speaker_id", ""))
+                if item.get("updated_in_step_5") and parts:
+                    part_starts = [float(part["start"]) for part in parts if part.get("start") is not None]
+                    part_ends = [float(part["end"]) for part in parts if part.get("end") is not None]
+                    if part_starts and part_ends:
+                        start, end = min(part_starts), max(part_ends)
+                        legacy_recovered += 1
+                    original_speaker = next(
+                        (str(part.get("speaker_id", "")) for part in parts if part.get("speaker_id")),
+                        "",
+                    )
+                    speaker_id = original_speaker or speaker_id
+                segments.append(Segment(
                     id=int(item.get("id", index)),
-                    start=float(item.get("start", 0.0)),
-                    end=float(item.get("end", 0.0)),
-                    speaker_id=str(item.get("speaker_id", "")),
-                    merge_parts=[
-                        dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
-                    ],
+                    start=start,
+                    end=end,
+                    speaker_id=speaker_id,
+                    merge_parts=parts,
                     source_text=str(item.get("text", item.get("source_text", ""))),
                     translated_text=str(item.get("translated_text", "")),
                     audio_file=str(item.get("audio_file", "")),
                     synced_audio_file=str(item.get("synced_audio_file", "")),
-                )
-                for index, item in enumerate(payload.get("segments", []), start=1)
-            ]
+                ))
         except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
             return None
         metadata = {**candidate.metadata, **{key: value for key, value in payload.items() if key != "segments"}}
         metadata["transcript_candidate_id"] = candidate.id
+        if legacy_recovered:
+            metadata["legacy_step5_timeline_recovered"] = legacy_recovered
         issues = assess_transcript_timeline(segments)
         metadata.update(timeline_issues=issues, timeline_error_count=len(issues))
         summary = candidate.summary or f"Transcript {candidate.label} · {len(segments)} segment"

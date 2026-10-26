@@ -146,15 +146,12 @@ class TextToSpeechStepPage(StepPage):
             )
 
     def _refresh_outputs(self, prefer_selected: bool = False) -> None:
-        current = self.tts_combo.currentData()
         self.tts_combo.blockSignals(True)
         self.tts_combo.clear()
-        for candidate in self.state.tts_candidates.values():
+        for candidate in self.newest_candidates(self.state.tts_candidates.values()):
             suffix = "  [Input Step 5]" if candidate.id == self.state.selected_tts_candidate_id else ""
             self.tts_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
-        target_id = self.state.selected_tts_candidate_id if prefer_selected else current
-        target = self.tts_combo.findData(target_id or self.state.selected_tts_candidate_id)
-        self.tts_combo.setCurrentIndex(target if target >= 0 else 0)
+        self.tts_combo.setCurrentIndex(0 if self.tts_combo.count() else -1)
         self.tts_combo.blockSignals(False)
         self._tts_changed()
 
@@ -164,10 +161,12 @@ class TextToSpeechStepPage(StepPage):
     def _tts_changed(self, *_: object) -> None:
         candidate = self._current_output()
         if not candidate:
+            self.show_candidate_result(None)
             self._close_preview_dialog()
             self.tts_info.setText("Chưa có output TTS")
             self.preview_button.setEnabled(False)
             return
+        self.show_candidate_result(self.state.candidate_result(StepId.TTS, candidate.id))
         if self._preview_dialog and self._preview_dialog.candidate_id != candidate.id:
             self._close_preview_dialog()
         manifest_exists = Path(candidate.path).is_file()

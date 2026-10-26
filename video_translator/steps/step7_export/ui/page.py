@@ -110,15 +110,12 @@ class RenderStepPage(StepPage):
         self._show_result_without_segments(result)
 
     def _refresh_outputs(self, prefer_selected: bool = False) -> None:
-        current = self.render_combo.currentData()
         self.render_combo.blockSignals(True)
         self.render_combo.clear()
-        for candidate in self.state.render_candidates.values():
-            suffix = "  [Mới nhất]" if candidate.id == self.state.selected_render_candidate_id else ""
+        for index, candidate in enumerate(self.newest_candidates(self.state.render_candidates.values())):
+            suffix = "  [Mới nhất]" if index == 0 else ""
             self.render_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
-        target_id = self.state.selected_render_candidate_id if prefer_selected else current
-        target = self.render_combo.findData(target_id or self.state.selected_render_candidate_id)
-        self.render_combo.setCurrentIndex(target if target >= 0 else 0)
+        self.render_combo.setCurrentIndex(0 if self.render_combo.count() else -1)
         self.render_combo.blockSignals(False)
         self._render_changed()
 
@@ -131,6 +128,7 @@ class RenderStepPage(StepPage):
             self.render_info.setText("Chưa có output Step 7")
             self.show_candidate_result(None)
             return
+        self.show_candidate_result(self.state.candidate_result(StepId.RENDER, candidate.id))
         voice_volume = round(float(candidate.metadata.get("voice_volume", 1.0)) * 100)
         components = ["Hình ảnh", f"Voice mới {voice_volume}%"]
         if candidate.original_voice_used:

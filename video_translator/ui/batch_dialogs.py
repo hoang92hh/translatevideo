@@ -121,14 +121,18 @@ class BatchVideosDialog(QDialog):
                 if running and video.status == "processing" and video.current_step in STEP_VALUES:
                     step = StepId(video.current_step)
                     detail = "Step đang chạy."
+                elif video.status == "failed" and video.failed_step in STEP_VALUES:
+                    step = StepId(video.failed_step)
+                    detail = "Step lỗi gần nhất của video."
+                elif video.status == "completed":
+                    step = None
+                    detail = "Video đã hoàn thành Step 07."
                 else:
                     step = BatchProjectService.video_resume_step(self.project, video.id)
                 step_label = "Đã xong Step 07" if step is None else f"Step {STEP_ORDER.index(step) + 1:02d}"
                 if not (running and video.status == "processing"):
                     if step is None:
                         self.table.item(row, 2).setText(STATUS_LABELS["completed"])
-                    elif video.status == "completed":
-                        self.table.item(row, 2).setText("Chờ xử lý tiếp")
             except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
                 step_label = "Không rõ"
                 detail = f"Không thể xác định bước tiếp theo: {exc}"

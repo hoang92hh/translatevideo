@@ -155,19 +155,16 @@ class SpeechToTextStepPage(StepPage):
         return container
 
     def _refresh_transcripts(self, prefer_selected: bool = False) -> None:
-        current = self.transcript_combo.currentData()
         self.transcript_combo.blockSignals(True)
         self.transcript_combo.clear()
-        for candidate in self.state.transcript_candidates.values():
+        for candidate in self.newest_candidates(self.state.transcript_candidates.values()):
             suffix = (
                 "  [Input Step 3]"
                 if candidate.id == self.state.selected_transcript_candidate_id
                 else ""
             )
             self.transcript_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
-        target_id = self.state.selected_transcript_candidate_id if prefer_selected else current
-        target = self.transcript_combo.findData(target_id or self.state.selected_transcript_candidate_id)
-        self.transcript_combo.setCurrentIndex(target if target >= 0 else 0)
+        self.transcript_combo.setCurrentIndex(0 if self.transcript_combo.count() else -1)
         self.transcript_combo.blockSignals(False)
         self._transcript_changed()
 

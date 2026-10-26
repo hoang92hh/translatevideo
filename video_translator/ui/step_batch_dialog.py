@@ -27,12 +27,21 @@ from ..common.models import STEP_ORDER, StepId
 from ..project import VIDEO_PROJECT_FILE
 
 
+VISIBLE_BATCH_STEPS = (
+    StepId.EXTRACT,
+    StepId.STT,
+    StepId.TRANSLATE,
+    StepId.RENDER,
+)
+
+
 class StepBatchDialog(QDialog):
     """Select and order videos for a single-step batch."""
 
-    step1_requested = Signal(object)
-    step2_requested = Signal(object)
+    step1_to_3_requested = Signal(object)
+    rebuild_1_2_requested = Signal()
     step3_requested = Signal(object)
+    step7_requested = Signal(object)
 
     def __init__(self, project: BatchProject, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -69,9 +78,12 @@ class StepBatchDialog(QDialog):
         actions.addStretch()
         layout.addLayout(actions)
 
-        self.table = QTableWidget(0, 3 + len(STEP_ORDER))
+        self.table = QTableWidget(0, 4 + len(VISIBLE_BATCH_STEPS))
         self.table.setHorizontalHeaderLabels(
-            ["Chọn", "STT", "Video", *(f"Step {number}" for number in range(1, len(STEP_ORDER) + 1))]
+            [
+                "Chọn", "STT", "Group", "Video",
+                *(f"Step {STEP_ORDER.index(step) + 1}" for step in VISIBLE_BATCH_STEPS),
+            ]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -81,31 +93,43 @@ class StepBatchDialog(QDialog):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        for column in range(3, 3 + len(STEP_ORDER)):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        for column in range(4, 4 + len(VISIBLE_BATCH_STEPS)):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+            self.table.setColumnWidth(column, 160)
         self.table.itemSelectionChanged.connect(self._refresh_actions)
         self.table.itemChanged.connect(self._check_changed)
         layout.addWidget(self.table, 1)
 
         helper = QLabel(
             "Tích checkbox để chọn video theo thứ tự chung đã lưu trong thiết lập project. "
-            "Step 1–3 chạy tuần tự các video được tích chọn; Step 2 tạo story, "
-            "Step 3 dịch với story đang chọn. Step 4–7 chưa được kết nối."
+            "Chạy Step 1 → 3 xử lý lần lượt toàn bộ Step 1, Step 2, tạo story theo Group, "
+            "chờ 10 giây rồi dịch Step 3. Chạy lại từ 1–2 chỉ bổ sung output còn thiếu và "
+            "tạo lại toàn bộ story. Step 7 render từ output Step 6 hiện được chọn."
         )
         helper.setWordWrap(True)
         layout.addWidget(helper)
         steps = QHBoxLayout()
-        for number, _step in enumerate(STEP_ORDER, start=1):
-            button = QPushButton(f"Step {number}")
-            button.clicked.connect(lambda _checked=False, value=number: self._step_clicked(value))
-            self.step_buttons.append(button)
-            steps.addWidget(button)
+        step1_to_3_button = QPushButton("Chạy Step 1 → 3")
+        rebuild_button = QPushButton("Chạy lại từ 1–2")
+        step3_button = QPushButton("Chạy Step 3")
+        step7_button = QPushButton("Chạy Step 7")
+        step1_to_3_button.clicked.connect(self._step1_to_3_clicked)
+        rebuild_button.clicked.connect(self._rebuild_1_2_clicked)
+        step3_button.clicked.connect(lambda: self._step_clicked(3))
+        step7_button.clicked.connect(lambda: self._step_clicked(7))
+        self.step_buttons.extend((step1_to_3_button, rebuild_button, step3_button, step7_button))
+        steps.addWidget(step1_to_3_button)
+        steps.addWidget(rebuild_button)
+        steps.addStretch()
+        steps.addWidget(step3_button)
+        steps.addWidget(step7_button)
         layout.addLayout(steps)
         self.batch_progress = QProgressBar()
         self.batch_progress.setRange(0, 100)
         self.batch_progress.setValue(0)
-        self.batch_label = QLabel("Sẵn sàng chạy Step 1, 2 hoặc 3 cho các video được tích chọn.")
+        self.batch_label = QLabel("Sẵn sàng chạy chuỗi Step 1 → 3, Step 3 hoặc Step 7.")
         self.batch_label.setWordWrap(True)
         layout.addWidget(self.batch_progress)
         layout.addWidget(self.batch_label)
@@ -152,8 +176,18 @@ class StepBatchDialog(QDialog):
         )
         self.story_selector.blockSignals(True)
         self.story_selector.clear()
+        group_count = (
+            len(self.project.ordered_videos()) + self.project.story_group_size - 1
+        ) // self.project.story_group_size
+        group_by_path = {
+            str(path.resolve()): group
+            for group in range(1, group_count + 1)
+            if (path := self.project.story_path_for_group(group)) is not None
+        }
         for path in paths:
-            self.story_selector.addItem(path.stem, str(path))
+            group = group_by_path.get(str(path.resolve()))
+            label = f"[Group {group}] {path.stem}" if group is not None else path.stem
+            self.story_selector.addItem(label, str(path))
         if not paths:
             self.story_selector.addItem("Chưa có story", None)
         index = self.story_selector.findData(preferred)
@@ -297,18 +331,20 @@ class StepBatchDialog(QDialog):
             )
             self.table.setItem(row, 0, checkbox)
             self.table.setItem(row, 1, QTableWidgetItem(str(row + 1)))
+            self.table.setItem(row, 2, QTableWidgetItem(str(self.project.video_group(video_id))))
             name = QTableWidgetItem(video.name)
             name.setToolTip(video.source_path)
-            self.table.setItem(row, 2, name)
-            for column, (label, detail) in enumerate(self.step_statuses[video_id], start=3):
+            self.table.setItem(row, 3, name)
+            for column, step in enumerate(VISIBLE_BATCH_STEPS, start=4):
+                label, detail = self.step_statuses[video_id][STEP_ORDER.index(step)]
                 item = QTableWidgetItem(label)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setToolTip(detail)
                 self.table.setItem(row, column, item)
         if self.video_ids:
-            self.table.setCurrentCell(selected_row, 2)
+            self.table.setCurrentCell(selected_row, 3)
             self.table.selectRow(selected_row)
-            self.table.scrollToItem(self.table.item(selected_row, 2))
+            self.table.scrollToItem(self.table.item(selected_row, 3))
         self.table.blockSignals(False)
         self._refresh_actions()
 
@@ -331,8 +367,8 @@ class StepBatchDialog(QDialog):
         self.selection_label.setText(f"Đã chọn {count}/{len(self.video_ids)} video")
         self.select_all_button.setEnabled(not self.batch_busy and count < len(self.video_ids))
         self.clear_selection_button.setEnabled(not self.batch_busy and count > 0)
-        for button in self.step_buttons:
-            button.setEnabled(count > 0 and not self.batch_busy)
+        for index, button in enumerate(self.step_buttons):
+            button.setEnabled(not self.batch_busy and (count > 0 or index == 1))
 
     def set_batch_busy(self, busy: bool, step_number: int | None = None) -> None:
         self.batch_busy = busy
@@ -358,12 +394,16 @@ class StepBatchDialog(QDialog):
 
     def batch_finished(
         self, succeeded: int, failed: int, story_error: str = "", review_video_count: int = 0,
+        story_count: int = 0,
     ) -> None:
         self.set_batch_busy(False)
         title = f"Batch Step {self.active_step_number} hoàn tất"
         message = f"{title} · Thành công: {succeeded} · Lỗi: {failed}."
         if self.active_step_number == 2:
-            message += "\nChưa tạo được story; transcript đã xử lý vẫn được giữ." if story_error else "\nĐã lưu story và nạp vào vùng Output Step 2."
+            if story_count:
+                message += f"\nĐã tạo {story_count} story theo Group và nạp vào vùng Output Step 2."
+            if story_error:
+                message += "\nMột số Group chưa tạo được story; transcript đã xử lý vẫn được giữ."
         elif self.active_step_number == 3 and review_video_count:
             message += (
                 f"\n{review_video_count} video có cảnh báo bản dịch; mở Kiểm tra / sửa bản dịch ở Step 3 để xem. "
@@ -380,20 +420,29 @@ class StepBatchDialog(QDialog):
     def _step_clicked(self, number: int) -> None:
         if self.batch_busy or not self.checked_video_ids:
             return
-        if number in {1, 2, 3}:
-            if number in {2, 3} and not self._confirm_story_changes():
+        if number in {3, 7}:
+            if number == 3 and not self._confirm_story_changes():
                 return
-            requested = {1: self.step1_requested, 2: self.step2_requested, 3: self.step3_requested}[number]
+            requested = {
+                3: self.step3_requested,
+                7: self.step7_requested,
+            }[number]
             requested.emit([
                 video_id for video_id in self.video_ids if video_id in self.checked_video_ids
             ])
             return
-        QMessageBox.information(
-            self,
-            f"Batch Step {number}",
-            f"Đã chọn {len(self.checked_video_ids)} video cho Step {number}. "
-            "Chức năng chạy batch chưa được kết nối. Chưa có video nào được xử lý.",
-        )
+
+    def _step1_to_3_clicked(self) -> None:
+        if self.batch_busy or not self.checked_video_ids or not self._confirm_story_changes():
+            return
+        self.step1_to_3_requested.emit([
+            video_id for video_id in self.video_ids if video_id in self.checked_video_ids
+        ])
+
+    def _rebuild_1_2_clicked(self) -> None:
+        if self.batch_busy or not self._confirm_story_changes():
+            return
+        self.rebuild_1_2_requested.emit()
 
     def done(self, result: int) -> None:
         if self.batch_busy:

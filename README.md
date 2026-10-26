@@ -110,26 +110,30 @@ Popup **Videos**, **Outputs**, **Chạy batch theo step**, select box **Video đ
 hàng đợi đều dùng cùng thứ tự này. Các popup không có nút di chuyển hoặc lưu thứ tự riêng.
 Checkbox chọn chạy/chọn ghép và các thao tác nghiệp vụ khác vẫn giữ nguyên.
 Nút **Chạy batch theo step** mở popup chọn video để chạy từng bước theo thứ tự chung.
-Nút **Step 1** chạy lần lượt các video được tích chọn theo thứ tự đang hiển thị,
-dùng cấu hình Step 1 trong **Thiết lập project**. Video lỗi được ghi nhận rồi chuyển
-sang video kế tiếp; hết danh sách thì dừng. Video đã có output vẫn chạy lại nếu được
-tích chọn, và kết quả các step sau cần cập nhật. Popup hiển thị tiến độ, khóa chọn video
-và không cho đóng trong khi chạy. Batch đầy đủ hiện tại giữ nguyên; Step 4–7 trong popup chưa kết nối.
-Nút **Step 2** chạy tuần tự các video được tích chọn, dùng audio được chọn của Step 1
-và cấu hình nhận dạng trong project. Video thiếu đầu vào hoặc lỗi được ghi nhận rồi chuyển
-sang video kế tiếp. Step đã có output vẫn chạy lại nếu được chọn; kết quả các step sau cần cập nhật.
-Sau khi hết hàng đợi, tác vụ nền gom toàn bộ `source_text` nhận được theo thứ tự video,
-không gửi speaker hoặc timestamp, rồi dùng provider/model đang cấu hình ở **Thiết lập project → Step 3**
-(Google Gemini hoặc ChatGPT Web) để viết hồ sơ câu chuyện bằng tiếng Việt.
-Tên file `stories/story_<min-STT>_<max-STT>.md` lấy từ STT các video được chọn lúc bắt đầu,
-kể cả khi chọn không liên tiếp. Nếu trùng tên, tạo `_v2`, `_v3`… để giữ bản đã chỉnh sửa.
+Trong **Thiết lập project → Project & Input**, trường **Số video mỗi Group** mặc định là 10.
+Group được tính trực tiếp từ STT chung: với kích thước 10, STT 1–10 thuộc Group 1,
+11–20 thuộc Group 2. Khi đổi thứ tự hoặc kích thước Group, cột Group được tính lại;
+chỉ liên kết story của Group có thành viên thay đổi bị bỏ, còn Group không đổi tiếp tục giữ story.
+Bốn cột trạng thái Step 1, 2, 3, 7 có chiều rộng lớn hơn và có thể kéo chỉnh. Popup có bốn nút:
+**Chạy Step 1 → 3** và **Chạy lại từ 1–2** ở bên trái, **Chạy Step 3** và **Chạy Step 7** ở bên phải.
+**Chạy Step 1 → 3** chạy hết Step 1 cho các video tích chọn, sau đó hết Step 2, tạo story còn thiếu
+theo Group, chờ 10 giây bằng timer rồi mới dịch Step 3. Video lỗi được ghi nhận và các video khác
+vẫn tiếp tục. Popup khóa thao tác và không cho đóng trong toàn bộ chuỗi.
+Sau Step 2, tác vụ nền gom `source_text` theo từng Group, không gửi speaker hoặc
+timestamp, rồi dùng provider/model đang cấu hình ở **Thiết lập project → Step 3**
+(Google Gemini hoặc ChatGPT Web) để viết một hồ sơ câu chuyện tiếng Việt cho mỗi Group.
+Tên file cố định là `stories/story_group_<group>.md`. Chuỗi Step 1 → 3 không tạo lại Group
+đã có story hợp lệ. **Chạy lại từ 1–2** kiểm tra toàn project, chỉ chạy Step 1/2 cho video chưa
+có output tương ứng, sau đó chuyển toàn bộ story cũ vào `stories/archive/rebuild-<timestamp>/`
+và tạo lại story cho tất cả Group theo thứ tự hiện tại; nút này không tự chạy Step 3.
 Story ghi bối cảnh, cuộc trò chuyện, nhân vật chính/phụ, quan hệ, cách xưng hô, tên riêng,
 địa danh, sự kiện và những điểm chưa chắc chắn. Transcript có lời thoại nhưng lỗi timeline
 vẫn được dùng làm bối cảnh và ghi chú để kiểm tra trước khi dịch; video không có lời thoại
 được ghi rõ là chưa được bao phủ. Nếu AI lỗi hoặc không có lời thoại, không tạo story trống
 và không làm mất transcript đã lưu. Story mới ghi rõ STT, tên file và mã video nguồn để đối chiếu
 kể cả khi thứ tự bảng được thay đổi sau đó.
-Nút **Step 3** chạy tuần tự các video được tích chọn với story đang chọn trong vùng Output Step 2.
+Nút **Step 3** chạy tuần tự các video được tích chọn với story mới nhất được liên kết đúng Group.
+Video thuộc Group chưa có story báo lỗi riêng và batch tiếp tục video kế tiếp.
 Nếu story đang sửa, cần lưu hoặc bỏ thay đổi trước khi chạy. Nội dung story được chốt lúc bắt đầu
 batch và điền vào mỗi prompt cùng STT/tên/mã video, lượt dịch và khoảng ID segment.
 Khâu chuẩn bị dùng prompt riêng tại `reference/prompt_batch/google_gemini/translation.md`
@@ -138,7 +142,7 @@ rồi dịch và tự kiểm tra trong cùng một request. Luồng chia segment
 output dùng chung Step 3 hiện tại; cấu hình `Segments / batch` và tùy chọn dịch toàn bộ một lượt
 giữ nguyên ý nghĩa trong project. Output segment vẫn gồm `id`, `speaker_id`, `source_text`,
 `translated_text`; metadata lưu tên story và video để đối chiếu. Luồng dịch ngoài popup vẫn
-dùng `prompt_template`. Không chọn được story, story trống hoặc thiếu đầu vào Step 2 sẽ báo lỗi.
+dùng `prompt_template`. Story trống/không tồn tại hoặc thiếu đầu vào Step 2 sẽ báo lỗi cho video đó.
 **Kiểm tra / sửa bản dịch** ở Step 3 mặc định chỉ liệt kê câu còn chữ Trung Quốc và cặp câu
 dịch có nội dung liền kề giống từ 70% hoặc chứa nhau theo chuỗi từ đầy đủ. Khi so sánh, bỏ qua
 hoa/thường, dấu câu, khoảng trắng thừa và segment rỗng do gộp/bỏ qua; giữ dấu tiếng Việt và thứ tự từ.
@@ -162,7 +166,12 @@ Popup chia theo chiều dọc: bảng video và các nút Step ở trên, vùng 
 hoặc `.md` trong project. Có thể sửa nội dung và **Lưu story**; đổi story hoặc đóng khi chưa
 lưu sẽ hỏi xác nhận. Story mới được tự chọn sau khi tạo xong; trong khi batch đang chạy,
 vùng story chỉ cho đọc để tránh mất nội dung chỉnh sửa.
-Select box **Video đang xem** chọn video cần kiểm tra output. Mỗi video lưu Step đang chạy,
+Select box **Video đang xem** chọn video cần kiểm tra output. Danh sách output tại Step 1–7
+xếp mới nhất lên đầu theo `created_at` và mặc định hiển thị bản mới nhất mỗi lần nạp/làm mới,
+kể cả khi đổi video hoặc chuyển tab. Tóm tắt và đường dẫn đi theo output đang xem. Người dùng
+vẫn có thể chọn bản cũ để đối chiếu; việc hiển thị không tự đổi output đang dùng làm input
+hay vô hiệu hóa step sau. Nhãn **Input Step …** giữ nguyên theo lựa chọn đã lưu.
+Mỗi video lưu Step đang chạy,
 Step lỗi và checkpoint. Bảng Videos có hai cột riêng: **Step gợi ý / đang chạy** chỉ để
 tham khảo theo output hợp lệ, và **Step bắt đầu** cho phép người dùng chọn Step 1–7 cho
 từng video. **Chạy batch video đã chọn** chạy đúng từ lựa chọn của người dùng đến Step 7,
@@ -172,10 +181,17 @@ cho mọi video đã tích trước khi chạy. **Lưu Step bắt đầu** hoặ
 vào trường `batch_start_step` của từng video trong `project.json`; đóng khi chưa lưu sẽ hỏi
 lưu hoặc bỏ thay đổi. Thiếu đầu vào hợp lệ cho step đã chọn thì báo lỗi video đó rồi chuyển
 video kế tiếp, không tự lùi về step thấp hơn. Chỉ kiểm tra các output làm đầu vào trước step
-được chọn, không bắt buộc output cũ của bước sắp chạy lại phải còn hợp lệ. Candidate lịch sử
-ngoài pipeline hiện tại không tự được khôi phục làm đầu vào. Việc mở bảng chỉ đọc thông tin,
-không tạo workspace hay ghi manifest. Nút **Chạy batch** tự động và các nút batch theo từng
-step vẫn giữ chế độ hiện có.
+được chọn, không bắt buộc output cũ của bước sắp chạy lại phải còn hợp lệ. Với Step bắt đầu
+do người dùng chọn, batch chỉ lấy output đang được đánh dấu **Input Step …** ngay trước step
+đó; không lần ngược hoặc bắt buộc các candidate lịch sử khác còn cùng chuỗi. Sau đó pipeline
+chạy tuần tự đến Step 7. Batch không lưu cưỡng bức state của video
+đang xem trước khi đọc hàng đợi, tránh ghi đè checkpoint mới bằng state giao diện cũ. Nếu chuỗi
+input trực tiếp bị lỗi, video dừng đúng tại step người dùng yêu cầu và không tự chạy lại step thấp hơn.
+Thanh trạng thái hiển thị vị trí video và step thực tế trong lượt chạy. Thông báo cuối chỉ thống kê
+video của lượt batch hiện tại theo dạng thành công/tổng số, đồng thời liệt kê tên video và step lỗi.
+Việc mở bảng
+chỉ đọc thông tin, không tạo workspace hay ghi manifest. Nút **Chạy batch** tự động và các nút
+batch theo từng step vẫn giữ chế độ hiện có.
 
 Nút **Outputs** hiển thị một row cho mỗi video. Select box trong row chọn phiên bản
 render cần xem; checkbox chọn các phiên bản cần ghép. Các row được ghép theo thứ tự
@@ -208,6 +224,7 @@ do người dùng chọn. Để đổi thứ tự ghép, chỉnh thứ tự vide
 - `Auto` ở provider local chọn GPU khi runtime CUDA của chính provider khả dụng, nếu không chọn CPU. `CPU` và `GPU` tuân thủ đúng lựa chọn; chế độ `GPU` báo lỗi thay vì fallback CPU.
 - XTTS-v2 chỉ nằm trong danh sách dưới dạng chưa triển khai và có ghi chú chỉ phi thương mại theo Coqui Public Model License.
 - Step 5 cắt khoảng lặng thừa, tận dụng khoảng trống trước segment kế tiếp, tăng tốc trong giới hạn người dùng chọn và chèn khoảng lặng khi audio ngắn hơn timestamp gốc. Trong **Thiết lập project → Step 05**, tùy chọn **Auto Extend Video to Match TTS** có thể lập kế hoạch kéo dài cục bộ bằng `Freeze Frame`, `Slow Motion` hoặc `Hybrid`; chỉ đoạn có voice vượt khung bị biến đổi, còn các đoạn sau chỉ được dịch timestamp. Mỗi lần chạy tạo candidate riêng trong `synchronized_audio/`.
+- Timeline Step 2 là dữ liệu nhận dạng gốc và chỉ làm tham chiếu đầu vào; sửa voice/timeline tại Step 5 không ghi ngược vào manifest Step 2, Step 3 hoặc Step 4. Candidate Step 5 lưu `source_start/source_end` cùng timeline hiệu lực riêng. Voice tạo lại nằm trong thư mục `repairs/` của candidate Step 5, không ghi đè audio Step 4. Nội dung rỗng được xem là chủ động bỏ voice: interval Step 5 được thu về `start = end`, không cần audio và không tính là lỗi; Step 6 tự bỏ qua segment đó nhưng vẫn giữ ID trong manifest.
 - Với segment vẫn quá dài, popup sửa lỗi có nút **Vay thời gian lân cận** riêng. Nút này ưu tiên cân B+C; chỉ dùng A+B+C (hoặc A+B khi không có C) nếu thời gian phía sau chưa đủ. Các voice trong nhóm dùng cùng tốc độ tối đa đã cấu hình, giữ nguyên thứ tự, không chồng nhau, lệch tối đa 0,5 giây và không vay qua khoảng nghỉ lớn hơn 1 giây.
 - Segment không thể đặt vừa trong giới hạn tốc độ cùng segment liền trước/sau được đưa vào popup xử lý của Step 5. Nút **Sửa voice/speaker segment khác** mở cùng popup với toàn bộ segment và cho tìm trong nội dung bản dịch; mỗi kết quả kèm segment liền trước/sau. Checkbox, speaker và nội dung nháp được giữ qua nhiều lần tìm. Mọi row đều có thể đổi speaker, sửa bản dịch hoặc chọn để Gemini chỉnh sửa. Checkbox đồng thời quyết định chính xác các row được tạo lại voice; kết quả cập nhật speaker/nội dung/audio trực tiếp trong chuỗi candidate Step 2–5 hiện tại mà không đổi `id`, timestamp hoặc `merge_parts`. Candidate Step 5 chỉ trở thành input Step 6 sau khi hết lỗi.
 - Step 6 đọc `adjusted_start`/`play_duration`, kiểm tra lại không chồng voice và ghép các segment thành một track WAV mono 48 kHz bằng FFmpeg. Track được bù khoảng lặng tới thời lượng timeline mới do Step 5 tính (hoặc video gốc khi không kéo dài). Step này chỉ xử lý voice, không trộn background hoặc video.

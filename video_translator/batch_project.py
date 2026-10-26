@@ -79,6 +79,8 @@ class BatchProject:
     batch_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
     merge_outputs: list[dict[str, Any]] = field(default_factory=list)
     step_batch_video_order: list[str] = field(default_factory=list)
+    story_group_size: int = 10
+    story_group_files: dict[str, str] = field(default_factory=dict)
 
     @property
     def root_path(self) -> Path:
@@ -108,7 +110,30 @@ class BatchProject:
         self.step_batch_video_order = list(video_ids)
         self.step_batch_video_order = [video.id for video in self.ordered_videos()]
 
+    def video_group(self, video_id: str) -> int:
+        size = max(1, int(self.story_group_size))
+        for index, video in enumerate(self.ordered_videos()):
+            if video.id == video_id:
+                return index // size + 1
+        raise ValueError("Video không còn thuộc project.")
+
+    def story_path_for_group(self, group: int) -> Path | None:
+        value = self.story_group_files.get(str(group), "")
+        if not value:
+            return None
+        path = Path(value)
+        return path if path.is_absolute() else self.path(value)
+
+    def set_story_for_group(self, group: int, path: str | Path) -> None:
+        resolved = Path(path).resolve()
+        try:
+            value = str(resolved.relative_to(self.root_path.resolve()))
+        except ValueError:
+            value = str(resolved)
+        self.story_group_files[str(group)] = value
+
     def save(self) -> None:
+        self.story_group_size = max(1, int(self.story_group_size))
         self.step_batch_video_order = [video.id for video in self.ordered_videos()]
         self.updated_at = utc_now()
         write_json(self.manifest_path, asdict(self))
@@ -171,6 +196,7 @@ class BatchProjectService:
         source_language: str,
         target_language: str,
         batch_settings: dict[str, dict[str, Any]] | None = None,
+        story_group_size: int = 10,
     ) -> BatchProject:
         input_root = Path(input_folder).expanduser().resolve()
         available = {item.path for item in BatchProjectService.scan_input_folder(input_root)}
@@ -211,6 +237,7 @@ class BatchProjectService:
             updated_at=now,
             videos=records,
             batch_settings=dict(batch_settings or {}),
+            story_group_size=max(1, int(story_group_size)),
         )
         for record in records:
             BatchProjectService._create_video_project(project, record)
@@ -229,6 +256,8 @@ class BatchProjectService:
             raise ValueError("Project một-video cũ không còn được hỗ trợ.")
         data["root"] = str(path.parent)
         data["videos"] = [ProjectVideo(**item) for item in data.get("videos", [])]
+        data["story_group_size"] = max(1, int(data.get("story_group_size", 10)))
+        data["story_group_files"] = dict(data.get("story_group_files", {}))
         project = BatchProject(**data)
         project.path("output").mkdir(exist_ok=True)
         normalized = False

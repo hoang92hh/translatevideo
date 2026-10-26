@@ -8,7 +8,8 @@ Thư mục này nằm cùng cấp `prompt_template/`, dành riêng cho việc ch
 
 Ứng dụng đọc nguyên văn file rồi điền các biến:
 
-- `{story_name}`, `{story_content}`: tên và nội dung story đang chọn, được chốt khi bắt đầu batch.
+- `{story_group}`, `{story_name}`, `{story_content}`: Group, tên và nội dung story được liên kết
+  với video; nội dung được chốt khi bắt đầu batch.
 - `{video_id}`, `{video_order}`, `{video_name}`, `{video_filename}`: video đang dịch và STT hiện tại.
 - `{source_language}`, `{target_language}`: cặp ngôn ngữ trong project.
 - `{batch_index}`, `{batch_total}`, `{segment_count}`, `{segment_start}`, `{segment_end}`: lượt dịch và ID đích.
@@ -23,8 +24,7 @@ Chia segment vẫn tuân theo thiết lập project, gồm `Segments / batch` v�
 segment trong một lượt. Không thêm request AI phân tích riêng. Việc gửi/nhận, retry, kiểm tra ID,
 speaker, xử lý segment rỗng và lưu candidate dùng chung implementation Step 3.
 
-Story mới của Step 2 ghi STT/tên file/mã video nguồn. STT lấy từ thứ tự chung trong
-**Thiết lập project → Project & Input**, giống Videos, Outputs và Batch theo step.
-STT có thể đổi khi người dùng sắp xếp lại tại màn hình thiết lập;
-prompt yêu cầu đối chiếu danh tính video và nội dung, không tự gán tình huống khi story cũ
-chưa đủ thông tin. Không tạo JSON ánh xạ câu.
+Story mới của Step 2 ghi Group/STT/tên file/mã video nguồn. Group được tính từ STT chung và
+trường **Số video mỗi Group** trong **Thiết lập project → Project & Input**. Step 3 tự lấy story
+mới nhất đã liên kết với Group của từng video. Khi đổi thứ tự hoặc kích thước Group, liên kết cũ
+được xóa để không dùng sai bối cảnh. Không tạo JSON ánh xạ câu.

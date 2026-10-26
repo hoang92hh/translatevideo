@@ -63,6 +63,9 @@ class ProjectVideo:
     restart_step: str = ""
     last_attempt_at: str = ""
     batch_start_step: str = ""
+    selected_batch_status: str = ""
+    selected_batch_step: str = ""
+    selected_batch_error: str = ""
 
 
 @dataclass(slots=True)
@@ -424,6 +427,26 @@ class BatchProjectService:
                 item.updated_at = utc_now()
                 break
         BatchProjectService._save_input_manifest(Path(batch.input_folder).resolve(), videos)
+
+    @staticmethod
+    def update_selected_batch_status(
+        batch: BatchProject,
+        video_id: str,
+        status: str,
+        *,
+        step: str = "",
+        error: str = "",
+    ) -> None:
+        """Persist the latest result of Videos → Run selected video batch only."""
+        if status not in {"processing", "completed", "failed"}:
+            raise ValueError(f"Trạng thái batch video đã chọn không hợp lệ: {status}")
+        record = batch.video(video_id)
+        if record is None:
+            return
+        record.selected_batch_status = status
+        record.selected_batch_step = step
+        record.selected_batch_error = error
+        batch.save()
 
     @staticmethod
     def render_outputs(batch: BatchProject, video_id: str) -> list[dict[str, str]]:

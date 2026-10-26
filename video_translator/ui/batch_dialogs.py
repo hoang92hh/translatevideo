@@ -57,7 +57,9 @@ class BatchVideosDialog(QDialog):
         self.resize(1120, 600)
         layout = QVBoxLayout(self)
         helper = QLabel(
-            "Step gợi ý chỉ để tham khảo. Chọn Step bắt đầu cho từng video rồi tích các video cần chạy. "
+            "Trạng thái và Step bên trái là kết quả gần nhất của Chạy batch video đã chọn; "
+            "video chưa có lịch sử dùng mặc định Chưa tạo / Step 04 nếu chưa có output render. "
+            "Chọn Step bắt đầu cho từng video rồi tích các video cần chạy. "
             "Batch chạy đúng step đã chọn đến Step 7; thiếu đầu vào sẽ báo lỗi, không tự đổi step. "
             "Lựa chọn được lưu vào project khi bấm Lưu Step bắt đầu hoặc chạy batch."
         )
@@ -113,29 +115,36 @@ class BatchVideosDialog(QDialog):
             name = QTableWidgetItem(video.name)
             name.setData(Qt.ItemDataRole.UserRole, video.id)
             self.table.setItem(row, 1, name)
-            self.table.setItem(row, 2, QTableWidgetItem(STATUS_LABELS.get(video.status, video.status)))
-            detail = "Bước tiếp theo được xác định từ chuỗi output đang có hiệu lực."
-            try:
-                parent = self.parent()
-                running = bool(getattr(parent, "batch_running", False) or getattr(parent, "active_workers", None))
-                if running and video.status == "processing" and video.current_step in STEP_VALUES:
-                    step = StepId(video.current_step)
-                    detail = "Step đang chạy."
-                elif video.status == "failed" and video.failed_step in STEP_VALUES:
-                    step = StepId(video.failed_step)
-                    detail = "Step lỗi gần nhất của video."
-                elif video.status == "completed":
-                    step = None
-                    detail = "Video đã hoàn thành Step 07."
+            batch_status = video.selected_batch_status
+            batch_step = video.selected_batch_step
+            batch_error = video.selected_batch_error
+            if batch_status in {"processing", "failed", "completed"}:
+                status_label = STATUS_LABELS[batch_status]
+                if batch_status == "completed":
+                    step_label = "Đã xong Step 07"
+                    detail = "Kết quả gần nhất của Chạy batch video đã chọn: hoàn thành Step 07."
+                elif batch_step in STEP_VALUES:
+                    step = StepId(batch_step)
+                    step_label = f"Step {STEP_ORDER.index(step) + 1:02d}"
+                    detail = (
+                        "Step thực tế đang chạy của Chạy batch video đã chọn."
+                        if batch_status == "processing"
+                        else "Step lỗi của lần Chạy batch video đã chọn gần nhất."
+                    )
                 else:
-                    step = BatchProjectService.video_resume_step(self.project, video.id)
-                step_label = "Đã xong Step 07" if step is None else f"Step {STEP_ORDER.index(step) + 1:02d}"
-                if not (running and video.status == "processing"):
-                    if step is None:
-                        self.table.item(row, 2).setText(STATUS_LABELS["completed"])
-            except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-                step_label = "Không rõ"
-                detail = f"Không thể xác định bước tiếp theo: {exc}"
+                    step_label = "Không rõ"
+                    detail = "Lần chạy batch video đã chọn chưa lưu được step cụ thể."
+            elif video.output_count < 1:
+                status_label = STATUS_LABELS["pending"]
+                step_label = "Step 04"
+                batch_error = ""
+                detail = "Chưa có output Step 07 và chưa có lịch sử Chạy batch video đã chọn."
+            else:
+                status_label = STATUS_LABELS["completed"]
+                step_label = "Đã xong Step 07"
+                batch_error = ""
+                detail = "Đã có output Step 07; chưa có lịch sử Chạy batch video đã chọn."
+            self.table.setItem(row, 2, QTableWidgetItem(status_label))
             step_item = QTableWidgetItem(step_label)
             step_item.setToolTip(detail)
             self.table.setItem(row, 3, step_item)
@@ -151,7 +160,7 @@ class BatchVideosDialog(QDialog):
             self.start_step_selectors[video.id] = selector
             self.table.setCellWidget(row, 4, selector)
             self.table.setItem(row, 5, QTableWidgetItem(str(video.output_count)))
-            self.table.setItem(row, 6, QTableWidgetItem(video.last_error))
+            self.table.setItem(row, 6, QTableWidgetItem(batch_error))
         self.table.blockSignals(False)
         self._selection_changed()
 

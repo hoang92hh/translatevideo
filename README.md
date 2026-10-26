@@ -171,10 +171,13 @@ xếp mới nhất lên đầu theo `created_at` và mặc định hiển thị 
 kể cả khi đổi video hoặc chuyển tab. Tóm tắt và đường dẫn đi theo output đang xem. Người dùng
 vẫn có thể chọn bản cũ để đối chiếu; việc hiển thị không tự đổi output đang dùng làm input
 hay vô hiệu hóa step sau. Nhãn **Input Step …** giữ nguyên theo lựa chọn đã lưu.
-Mỗi video lưu Step đang chạy,
-Step lỗi và checkpoint. Bảng Videos có hai cột riêng: **Step gợi ý / đang chạy** chỉ để
-tham khảo theo output hợp lệ, và **Step bắt đầu** cho phép người dùng chọn Step 1–7 cho
-từng video. **Chạy batch video đã chọn** chạy đúng từ lựa chọn của người dùng đến Step 7,
+Mỗi video lưu riêng kết quả gần nhất của **Chạy batch video đã chọn** trong các trường
+`selected_batch_status`, `selected_batch_step`, `selected_batch_error`; batch theo step và
+việc chọn output không thay đổi ba trường này. Khi chưa có lịch sử batch video đã chọn,
+`output_count < 1` hiển thị **Chưa tạo · Step 04**, còn video đã có output render hiển thị
+**Hoàn thành · Đã xong Step 07**. Sau khi đã chạy, bảng hiển thị đúng step đang xử lý,
+step thực tế bị lỗi hoặc Step 07 hoàn thành của lần chạy gần nhất. **Step bắt đầu** cho phép
+người dùng chọn Step 1–7 cho từng video. **Chạy batch video đã chọn** chạy đúng từ lựa chọn của người dùng đến Step 7,
 không dùng step gợi ý để thay đổi điểm bắt đầu. Chọn Step 4 thì chạy Step 4–7; video đã xong
 Step 7 vẫn có thể chạy lại từ bước được chọn. Lựa chọn chưa thiết lập để trống, cần chọn
 cho mọi video đã tích trước khi chạy. **Lưu Step bắt đầu** hoặc nút chạy batch ghi lựa chọn

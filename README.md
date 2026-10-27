@@ -130,6 +130,10 @@ timestamp, rồi dùng provider/model đang cấu hình ở **Thiết lập proj
 (Google Gemini hoặc ChatGPT Web) để viết một hồ sơ câu chuyện tiếng Việt cho mỗi Group.
 Prompt tạo story nằm tại `reference/prompt_batch/google_gemini/story.md` hoặc
 `reference/prompt_batch/chatgpt_web/story.md` theo provider đã chọn.
+Story mới không thêm danh sách Group/video vào nội dung API trả về; story cũ được làm sạch
+khối thông tin này khi nạp hoặc dùng để dịch. Batch Step 3 với Gemini ghép phần
+`## PROMPT` của template đã chọn trong **Thiết lập project → Step 3** vào
+`{topic_content}` của `reference/prompt_batch/google_gemini/translation.md`.
 Tên file cố định là `stories/story_group_<group>.md`. Chuỗi Step 1 → 3 không tạo lại Group
 đã có story hợp lệ. **Chạy lại từ 1–2** luôn tạo candidate và file Step 1 mới rồi
 output Step 2 mới cho video đã tích, kể cả khi đã có output; nút này không tạo story

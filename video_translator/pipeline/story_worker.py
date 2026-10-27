@@ -91,23 +91,7 @@ class StoryWorker(QThread):
             ).strip()
             if not markdown:
                 raise ValueError("AI trả về nội dung story trống.")
-            coverage = [
-                f"> Group: {self.group_number}. Kích thước và thành viên Group đi theo STT đã lưu của project.",
-                f"> Phạm vi: các video có STT {', '.join(map(str, self.selected_positions))} tại lúc bắt đầu batch.",
-            ]
-            for video in self.videos:
-                coverage.append(
-                    f"> Video {video['video_order']}: {video['video_filename']} (mã video: {video['video_id']})."
-                )
-            if self.missing_positions:
-                coverage.append(
-                    f"> Chưa có lời thoại của video STT {', '.join(map(str, self.missing_positions))}; hồ sơ chưa bao phủ các video này."
-                )
-            if self.timeline_warning_positions:
-                coverage.append(
-                    f"> Đã dùng lời thoại của video STT {', '.join(map(str, self.timeline_warning_positions))} còn lỗi timeline; cần kiểm tra transcript trước khi dịch."
-                )
-            content = "\n".join(coverage) + "\n\n" + markdown + "\n"
+            content = markdown + "\n"
             folder = self.project_root / "stories"
             folder.mkdir(parents=True, exist_ok=True)
             path = self.output_path or folder / f"{stem}.md"

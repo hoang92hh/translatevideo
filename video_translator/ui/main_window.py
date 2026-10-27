@@ -34,6 +34,7 @@ from ..pipeline.worker import (
     PipelineWorker,
 )
 from ..state import ProjectState
+from ..story_content import load_story_content
 from .batch_dialogs import BatchVideosDialog, OutputManagerDialog, VideoProgressDialog
 from .step_batch_dialog import StepBatchDialog
 from .project_manager import ProjectManagerPage
@@ -345,7 +346,7 @@ class MainWindow(QMainWindow):
                     path = self.batch_project.story_path_for_group(group_number)
                     if path is None or not path.is_file():
                         continue
-                    content = path.read_text(encoding="utf-8-sig")
+                    content = load_story_content(path)
                     if not content.strip():
                         continue
                     group_stories[str(group_number)] = {

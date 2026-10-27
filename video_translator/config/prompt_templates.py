@@ -73,7 +73,11 @@ def list_prompt_templates(provider: str) -> list[PromptTemplate]:
     folder = _template_folder(provider)
     if not folder.is_dir():
         return []
-    templates = [_parse_template(provider, path) for path in folder.glob("*.md")]
+    templates = [
+        _parse_template(provider, path)
+        for path in folder.glob("*.md")
+        if path.stem != "translation_review"
+    ]
     return sorted(
         templates,
         key=lambda item: (

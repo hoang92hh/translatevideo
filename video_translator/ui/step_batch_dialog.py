@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from ..batch_project import BatchProject, ProjectVideo
 from ..common.models import STEP_ORDER, StepId
 from ..project import VIDEO_PROJECT_FILE
+from ..story_content import load_story_content
 
 
 VISIBLE_BATCH_STEPS = (
@@ -226,7 +227,7 @@ class StepBatchDialog(QDialog):
         value = self.story_selector.itemData(index)
         path = Path(value) if value else None
         try:
-            content = path.read_text(encoding="utf-8-sig") if path else ""
+            content = load_story_content(path) if path else ""
         except (OSError, UnicodeError) as exc:
             QMessageBox.warning(self, "Không thể đọc story", str(exc))
             self.story_selector.blockSignals(True)
@@ -297,7 +298,7 @@ class StepBatchDialog(QDialog):
         if choice == QMessageBox.StandardButton.Save:
             return self._save_story()
         try:
-            content = self.story_path.read_text(encoding="utf-8-sig") if self.story_path else ""
+            content = load_story_content(self.story_path) if self.story_path else ""
         except (OSError, UnicodeError) as exc:
             QMessageBox.warning(self, "Không thể nạp lại story", str(exc))
             return False

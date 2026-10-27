@@ -8,6 +8,12 @@ trong popup **Chạy batch theo step**. Các prompt này không xuất hiện tr
 - `google_gemini/translation.md`: prompt cho Gemini API.
 - `chatgpt_web/translation.md`: prompt cho ChatGPT Web, giữ contract trả file JSON tải xuống.
 
+Batch Step 3 với Google Gemini điền `{topic_content}` từ phần `## PROMPT` của template
+được chọn tại **Thiết lập project → Step 3**, rồi giữ nguyên các bước trong
+`google_gemini/translation.md`. Template này được chỉnh sửa trong **Quản lý Prompt**.
+Story mới chỉ lưu nội dung AI trả về; khi nạp story cũ, ứng dụng xóa khối thông tin
+Group/video do phiên bản trước tự thêm vào đầu file để không gửi khối đó khi dịch.
+
 Khi tạo story, ứng dụng đọc nguyên văn `story.md` của provider đã chọn và gửi transcript
 của toàn bộ video trong Group. Story được lưu tại `stories/story_group_<group>.md`.
 

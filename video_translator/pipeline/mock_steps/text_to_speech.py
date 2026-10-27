@@ -207,6 +207,8 @@ def execute(
             "model": model,
             "voice": voice,
             "speed": float(settings.get("speed", 1.0)),
+            "tts_auto_normalize": bool(settings.get("tts_auto_normalize", True)),
+            "tts_gain_db": float(settings.get("tts_gain_db", 2.0)),
             "requested_device": requested_device,
             "actual_device": actual_device,
             "reference_voice": reference,

@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 import traceback
 import time
+import wave
+from array import array
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +120,45 @@ def normalize_audio(source: Path, target: Path, speed: float = 1.0) -> None:
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "FFmpeg không thể chuẩn hóa output TTS.")
     source.unlink(missing_ok=True)
+
+
+def auto_normalize_voice(path: Path, gain_db: float) -> None:
+    """Apply the requested gain, capped by the WAV's peak headroom."""
+    if not math.isfinite(gain_db) or not -10.0 <= gain_db <= 10.0:
+        raise ValueError("Mức điều chỉnh voice phải nằm trong khoảng -10 đến +10 dB.")
+    with wave.open(str(path), "rb") as source:
+        if source.getnchannels() != 1 or source.getsampwidth() != 2:
+            raise RuntimeError(f"WAV TTS không phải PCM 16-bit mono: {path}")
+        peak = 0
+        while frames := source.readframes(65536):
+            samples = array("h")
+            samples.frombytes(frames)
+            if sys.byteorder != "little":
+                samples.byteswap()
+            peak = max(peak, max((abs(sample) for sample in samples), default=0))
+    requested_scale = 10 ** (gain_db / 20)
+    ceiling = 10 ** (-1.0 / 20)
+    safe_scale = min(requested_scale, ceiling * 32767 / peak) if peak else requested_scale
+    if abs(safe_scale - 1.0) < 1e-9:
+        return
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("Không tìm thấy FFmpeg trong PATH để điều chỉnh âm lượng TTS.")
+    temporary = path.with_name(f"{path.stem}.gain.wav")
+    command = [
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(path),
+        "-filter:a", f"volume={safe_scale:.12f}",
+        "-c:a", "pcm_s16le", str(temporary),
+    ]
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.strip() or "FFmpeg không thể điều chỉnh âm lượng TTS.")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def speaker_profile(settings: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
@@ -450,6 +492,10 @@ def handle_request(request: dict[str, Any]) -> None:
             result = run_melo(settings, segments, output, str(request.get("target_language", "")), Path(request["repo_root"]))
         else:
             raise RuntimeError(f"Provider chưa được triển khai: {provider}")
+        if bool(settings.get("tts_auto_normalize", True)):
+            gain_db = float(settings.get("tts_gain_db", 2.0))
+            for audio_file in result["files"]:
+                auto_normalize_voice(Path(audio_file), gain_db)
         emit({"type": "result", "requested_device": str(settings.get("device", "Auto")), **result})
     except Exception as exc:
         message = str(exc)

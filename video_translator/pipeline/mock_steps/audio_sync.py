@@ -20,6 +20,8 @@ def _tts_settings(metadata: dict[str, Any]) -> dict[str, Any]:
         "provider": str(metadata.get("provider", "")),
         "voice": str(metadata.get("voice", "Default")),
         "speed": float(metadata.get("speed", 1.0)),
+        "tts_auto_normalize": bool(metadata.get("tts_auto_normalize", True)),
+        "tts_gain_db": float(metadata.get("tts_gain_db", 2.0)),
         "device": str(metadata.get("requested_device", "Auto")),
         "reference_voice": str(metadata.get("reference_voice", "")),
         "voice_consent": bool(metadata.get("voice_rights_confirmed", False)),

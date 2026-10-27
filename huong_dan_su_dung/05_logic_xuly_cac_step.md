@@ -48,7 +48,7 @@
 ## Step 4 — Tạo tiếng nói TTS
 
 - **Đầu vào:** bản dịch Step 3, provider TTS, voice/reference theo speaker và các thiết lập tốc độ/thiết bị.
-- **Xử lý:** tạo **một WAV riêng cho mỗi segment còn thời lượng**; segment có `start = end` không được tạo voice. Thông tin provider, model, voice, reference và thiết bị thực tế được ghi cho từng segment. Một số provider chuẩn hóa âm thanh hoặc đổi tốc độ sau khi tổng hợp.
+- **Xử lý:** tạo **một WAV riêng cho mỗi segment còn thời lượng**; segment có `start = end` không được tạo voice. Thông tin provider, model, voice, reference và thiết bị thực tế được ghi cho từng segment. Một số provider chuẩn hóa định dạng âm thanh hoặc đổi tốc độ sau khi tổng hợp. Thiết lập project ở Step 04 có Auto Normalize bật mặc định và mức điều chỉnh voice từ −10 đến +10 dB (mặc định +2 dB). Khi bật, gain được áp dụng cho từng WAV nhưng tự giới hạn theo đỉnh âm thanh ở −1 dBFS để tránh clipping; đoạn đã lớn có thể nhận mức tăng thực tế thấp hơn. Thiết lập này cũng được dùng khi Step 05 tạo lại voice.
 - **Model/engine:** mặc định cho tiếng Việt là **VieNeu-TTS v3 Turbo**. Các lựa chọn đã triển khai khác gồm **Piper TTS** (voice model ONNX), **MeloTTS + OpenVoice V2** và **Edge TTS** online. XTTS-v2 chưa triển khai. FFmpeg có thể tham gia chuẩn hóa WAV.
 - **Đầu ra:** thư mục WAV từng segment và `manifest.json` của TTS candidate.
 - **Điểm cần xem xét:** tổng thời gian tăng theo số segment và tốc độ tổng hợp của provider. Cần kiểm tra WAV có nội dung lặp hoặc dài bất thường trước Step 5; đồng bộ thời gian không thể sửa lỗi model đã đọc lặp trong chính WAV.

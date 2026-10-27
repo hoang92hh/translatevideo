@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -109,6 +108,30 @@ class SingleVoiceTtsSettings(QWidget):
             "Mặc định tắt để giữ tốc độ. Chỉ nhận dạng lại các segment bị Fast Validation đánh dấu nghi vấn."
         )
         card.content_layout.addWidget(self.deep_validation)
+        gain_form = QFormLayout()
+        self.tts_auto_normalize = QCheckBox("Auto Normalize (chống vỡ tiếng)")
+        self.tts_auto_normalize.setChecked(True)
+        gain_control = QWidget()
+        gain_layout = QHBoxLayout(gain_control)
+        gain_layout.setContentsMargins(0, 0, 0, 0)
+        self.tts_gain_slider = QSlider(Qt.Orientation.Horizontal)
+        self.tts_gain_slider.setRange(-20, 20)
+        self.tts_gain_slider.setSingleStep(1)
+        self.tts_gain_slider.setPageStep(2)
+        self.tts_gain_slider.setValue(4)
+        self.tts_gain_label = QLabel()
+        self.tts_gain_label.setMinimumWidth(65)
+        self.tts_gain_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.tts_gain_slider.valueChanged.connect(
+            lambda value: self.tts_gain_label.setText(f"{value / 2:+.1f} dB")
+        )
+        self.tts_gain_label.setText("+2.0 dB")
+        gain_layout.addWidget(self.tts_gain_slider, 1)
+        gain_layout.addWidget(self.tts_gain_label)
+        self.tts_auto_normalize.toggled.connect(gain_control.setEnabled)
+        gain_form.addRow("Điều chỉnh âm lượng", self.tts_auto_normalize)
+        gain_form.addRow("Mức điều chỉnh voice", gain_control)
+        card.content_layout.addLayout(gain_form)
         self.provider.currentIndexChanged.connect(self.stack.setCurrentIndex)
         root.addWidget(card)
 
@@ -173,6 +196,8 @@ class SingleVoiceTtsSettings(QWidget):
             "provider": provider,
             "single_voice": True,
             "deep_validation": self.deep_validation.isChecked(),
+            "tts_auto_normalize": self.tts_auto_normalize.isChecked(),
+            "tts_gain_db": self.tts_gain_slider.value() / 2,
             "speaker_profiles": {},
             "speaker_group_profiles": {},
             "speaker_profile_assignments": {},
@@ -221,6 +246,8 @@ class SingleVoiceTtsSettings(QWidget):
 
     def set_values(self, values: dict[str, Any]) -> None:
         self.deep_validation.setChecked(bool(values.get("deep_validation", False)))
+        self.tts_auto_normalize.setChecked(bool(values.get("tts_auto_normalize", True)))
+        self.tts_gain_slider.setValue(round(float(values.get("tts_gain_db", 2.0)) * 2))
         provider = str(values.get("provider", VIENEU_PROVIDER))
         index = self.provider.findText(provider)
         self.provider.setCurrentIndex(index if index >= 0 else 0)
@@ -503,23 +530,28 @@ class ProjectSettingsDialog(QDialog):
                 existing.append(available.pop(path, InputVideo(path, record.name, status=record.status)))
             # Newly discovered files always appear after the existing project videos.
             videos = [*existing, *available.values()]
-        self.video_table.setRowCount(0)
-        for video in videos:
-            row = self.video_table.rowCount()
-            self.video_table.insertRow(row)
-            checked = QTableWidgetItem()
-            checked.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-            checked.setCheckState(
-                Qt.CheckState.Checked if selected is None or video.path in selected else Qt.CheckState.Unchecked
-            )
-            checked.setData(Qt.ItemDataRole.UserRole, video.path)
-            self.video_table.setItem(row, 0, checked)
-            self.video_table.setItem(row, 1, QTableWidgetItem(str(row + 1)))
-            self.video_table.setItem(row, 2, QTableWidgetItem(""))
-            name = QTableWidgetItem(video.name)
-            name.setToolTip(video.path)
-            self.video_table.setItem(row, 3, name)
-            self.video_table.setItem(row, 4, QTableWidgetItem(video.status))
+        signals_were_blocked = self.video_table.signalsBlocked()
+        self.video_table.blockSignals(True)
+        try:
+            self.video_table.setRowCount(0)
+            for video in videos:
+                row = self.video_table.rowCount()
+                self.video_table.insertRow(row)
+                checked = QTableWidgetItem()
+                checked.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                checked.setCheckState(
+                    Qt.CheckState.Checked if selected is None or video.path in selected else Qt.CheckState.Unchecked
+                )
+                checked.setData(Qt.ItemDataRole.UserRole, video.path)
+                self.video_table.setItem(row, 0, checked)
+                self.video_table.setItem(row, 1, QTableWidgetItem(str(row + 1)))
+                self.video_table.setItem(row, 2, QTableWidgetItem(""))
+                name = QTableWidgetItem(video.name)
+                name.setToolTip(video.path)
+                self.video_table.setItem(row, 3, name)
+                self.video_table.setItem(row, 4, QTableWidgetItem(video.status))
+        finally:
+            self.video_table.blockSignals(signals_were_blocked)
         self._refresh_video_groups()
         if self.video_table.rowCount():
             self.video_table.setCurrentCell(0, 3)
@@ -546,6 +578,8 @@ class ProjectSettingsDialog(QDialog):
             for row in range(self.video_table.rowCount()):
                 checked = self.video_table.item(row, 0)
                 group = self.video_table.item(row, 2)
+                if group is None:
+                    continue
                 if checked is not None and checked.checkState() == Qt.CheckState.Checked:
                     position += 1
                     group.setText(str((position - 1) // size + 1))

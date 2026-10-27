@@ -2,14 +2,6 @@
 
 ## PROMPT
 
-You are a professional audiovisual subtitle translator. Translate only `segments_to_translate` from `{source_language}` to `{target_language}`.
-
-Read the COMPLETE attached input before translating. Perform these 3 stages internally:
-
-**STAGE 1 — GLOBAL ANALYSIS**
-
-Apply the following topic-specific terminology and forms-of-address conventions when translating each segment. These are contextual references, not mandatory substitutions. Preserve the original meaning and use expressions appropriate to the characters' relationships, hierarchy, and dialogue context.
-
 **TOPIC: Xianxia / Xuanhuan / Chinese Cultivation Fantasy**
 
 **Personal pronouns:** Prefer "ta", "ngươi", "các ngươi", "hắn", "nàng", and "bọn họ" when contextually appropriate. Never use "tao" or "mày".

@@ -93,11 +93,16 @@ tuyệt đối cộng tên file; trạng thái `pending`, `processing`, `complet
 `video.json` giữ pipeline/candidate riêng của một video. Popup **Thiết lập project** gom
 toàn bộ cấu hình Step 1–7 vào một màn hình lớn và được mở ngay trong luồng tạo project.
 Các tab Step 1–7 dùng để kiểm tra output của từng bước và không còn nút chạy riêng. Nút
-**Videos** hiển thị hàng đợi và bắt đầu xử lý tuần tự. Video lỗi được đánh dấu `failed` rồi
+**Batch** hiển thị hàng đợi và bắt đầu xử lý tuần tự. Video lỗi được đánh dấu `failed` rồi
 bỏ qua để chạy video tiếp theo. Step 4 tạm thời dùng một cấu hình giọng đọc chung cho mọi
 speaker và video.
 
 Batch dùng trạng thái xử lý riêng và không tự đổi video đang được xem trên các tab Step.
+Nút **Batch** mở bảng chọn video và Step bắt đầu để chạy batch; nút **Videos** mở bảng
+chỉ đọc gồm STT, Group, Step lỗi cao nhất, Step hoàn thành cao nhất trong Step 1–6,
+số output tương ứng và số video Step 7 đã render còn tồn tại. Step hoàn thành cao nhất
+được lấy từ toàn bộ output đã lưu, kể cả lượt trước; thiếu output ở Step tiếp theo
+không tự được coi là lỗi.
 **Thiết lập project → Project & Input** là nơi duy nhất chỉnh thứ tự video. Bảng giữ
 checkbox chọn video và thêm cột **STT**; các nút **Di chuyển lên / Di chuyển xuống** nằm
 phía trên bảng. Khi di chuyển, dòng được chọn và checkbox đi theo video, STT cập nhật ngay.
@@ -117,15 +122,21 @@ chỉ liên kết story của Group có thành viên thay đổi bị bỏ, còn
 Bốn cột trạng thái Step 1, 2, 3, 7 có chiều rộng lớn hơn và có thể kéo chỉnh. Popup có bốn nút:
 **Chạy Step 1 → 3** và **Chạy lại từ 1–2** ở bên trái, **Chạy Step 3** và **Chạy Step 7** ở bên phải.
 **Chạy Step 1 → 3** chạy hết Step 1 cho các video tích chọn, sau đó hết Step 2, tạo story còn thiếu
-theo Group, chờ 10 giây bằng timer rồi mới dịch Step 3. Video lỗi được ghi nhận và các video khác
+từ transcript đã lưu của toàn bộ video trong các Group liên quan, chờ 10 giây bằng timer rồi mới
+dịch Step 3 cho các video tích chọn. Video lỗi được ghi nhận và các video khác
 vẫn tiếp tục. Popup khóa thao tác và không cho đóng trong toàn bộ chuỗi.
 Sau Step 2, tác vụ nền gom `source_text` theo từng Group, không gửi speaker hoặc
 timestamp, rồi dùng provider/model đang cấu hình ở **Thiết lập project → Step 3**
 (Google Gemini hoặc ChatGPT Web) để viết một hồ sơ câu chuyện tiếng Việt cho mỗi Group.
+Prompt tạo story nằm tại `reference/prompt_batch/google_gemini/story.md` hoặc
+`reference/prompt_batch/chatgpt_web/story.md` theo provider đã chọn.
 Tên file cố định là `stories/story_group_<group>.md`. Chuỗi Step 1 → 3 không tạo lại Group
-đã có story hợp lệ. **Chạy lại từ 1–2** kiểm tra toàn project, chỉ chạy Step 1/2 cho video chưa
-có output tương ứng, sau đó chuyển toàn bộ story cũ vào `stories/archive/rebuild-<timestamp>/`
-và tạo lại story cho tất cả Group theo thứ tự hiện tại; nút này không tự chạy Step 3.
+đã có story hợp lệ. **Chạy lại từ 1–2** luôn tạo candidate và file Step 1 mới rồi
+output Step 2 mới cho video đã tích, kể cả khi đã có output; nút này không tạo story
+hoặc chạy Step 3.
+Vùng Story có bộ chọn Group để xem, checkbox đánh dấu các Group cần tạo lại và nút
+**Chạy lại**. Tác vụ này gom segment từ transcript đã lưu của toàn bộ video trong từng
+Group đã đánh dấu. Story đang dùng chỉ được thay sau khi story mới tạo thành công.
 Story ghi bối cảnh, cuộc trò chuyện, nhân vật chính/phụ, quan hệ, cách xưng hô, tên riêng,
 địa danh, sự kiện và những điểm chưa chắc chắn. Transcript có lời thoại nhưng lỗi timeline
 vẫn được dùng làm bối cảnh và ghi chú để kiểm tra trước khi dịch; video không có lời thoại
@@ -162,8 +173,8 @@ Checkbox **Chọn** dùng để chọn/bỏ chọn từng video; các nút **Ch�
 nằm phía trên bảng. Lựa chọn đi theo video khi đổi thứ tự và chỉ giữ trong lần mở popup.
 Các nút Step chỉ bật khi có video được tích chọn.
 Popup chia theo chiều dọc: bảng video và các nút Step ở trên, vùng **Output Step 2 — Story**
-ở dưới; kéo thanh phân cách để đổi chiều cao. Combobox liệt kê các file `stories/story_*.txt`
-hoặc `.md` trong project. Có thể sửa nội dung và **Lưu story**; đổi story hoặc đóng khi chưa
+ở dưới; kéo thanh phân cách để đổi chiều cao. Combobox liệt kê các Group và các file story
+khác trong project. Có thể sửa nội dung và **Lưu story**; đổi story hoặc đóng khi chưa
 lưu sẽ hỏi xác nhận. Story mới được tự chọn sau khi tạo xong; trong khi batch đang chạy,
 vùng story chỉ cho đọc để tránh mất nội dung chỉnh sửa.
 Select box **Video đang xem** chọn video cần kiểm tra output. Danh sách output tại Step 1–7
@@ -182,8 +193,14 @@ không dùng step gợi ý để thay đổi điểm bắt đầu. Chọn Step 4
 Step 7 vẫn có thể chạy lại từ bước được chọn. Lựa chọn chưa thiết lập để trống, cần chọn
 cho mọi video đã tích trước khi chạy. **Lưu Step bắt đầu** hoặc nút chạy batch ghi lựa chọn
 vào trường `batch_start_step` của từng video trong `project.json`; đóng khi chưa lưu sẽ hỏi
-lưu hoặc bỏ thay đổi. Thiếu đầu vào hợp lệ cho step đã chọn thì báo lỗi video đó rồi chuyển
-video kế tiếp, không tự lùi về step thấp hơn. Chỉ kiểm tra các output làm đầu vào trước step
+lưu hoặc bỏ thay đổi.
+Trong popup **Batch**, **Chọn tất cả** và **Bỏ chọn tất cả** nằm phía trên bên trái;
+select box **Step chung** phía trên bên phải chọn Step 1–7. Chỉ khi bấm **Set Step**
+ngay bên phải select box, Step đó mới được áp dụng cho các video đang tích.
+Vẫn có thể chỉnh Step riêng từng dòng. **Lưu Step bắt đầu** lưu cả Step và trạng thái
+checkbox cuối cùng; nút chạy batch cũng tự lưu hai lựa chọn này trước khi chạy.
+Thiếu đầu vào hợp lệ cho step đã chọn thì báo lỗi video đó rồi chuyển video kế tiếp,
+không tự lùi về step thấp hơn. Chỉ kiểm tra các output làm đầu vào trước step
 được chọn, không bắt buộc output cũ của bước sắp chạy lại phải còn hợp lệ. Với Step bắt đầu
 do người dùng chọn, batch chỉ lấy output đang được đánh dấu **Input Step …** ngay trước step
 đó; không lần ngược hoặc bắt buộc các candidate lịch sử khác còn cùng chuỗi. Sau đó pipeline

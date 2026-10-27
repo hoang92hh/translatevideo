@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QHBoxLayout,
@@ -33,13 +34,15 @@ VISIBLE_BATCH_STEPS = (
     StepId.TRANSLATE,
     StepId.RENDER,
 )
+GROUP_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class StepBatchDialog(QDialog):
     """Select and order videos for a single-step batch."""
 
     step1_to_3_requested = Signal(object)
-    rebuild_1_2_requested = Signal()
+    rebuild_1_2_requested = Signal(object)
+    regenerate_stories_requested = Signal(object)
     step3_requested = Signal(object)
     step7_requested = Signal(object)
 
@@ -48,6 +51,7 @@ class StepBatchDialog(QDialog):
         self.project = project
         self.video_ids = [video.id for video in project.ordered_videos()]
         self.checked_video_ids: set[str] = set()
+        self.checked_story_groups: set[int] = set()
         self.step_buttons: list[QPushButton] = []
         self.batch_busy = False
         self.active_step_number = 1
@@ -104,9 +108,9 @@ class StepBatchDialog(QDialog):
 
         helper = QLabel(
             "Tích checkbox để chọn video theo thứ tự chung đã lưu trong thiết lập project. "
-            "Chạy Step 1 → 3 xử lý lần lượt toàn bộ Step 1, Step 2, tạo story theo Group, "
-            "chờ 10 giây rồi dịch Step 3. Chạy lại từ 1–2 chỉ bổ sung output còn thiếu và "
-            "tạo lại toàn bộ story. Step 7 render từ output Step 6 hiện được chọn."
+            "Chạy Step 1 → 3 xử lý video đã tích, tạo story theo toàn bộ Group khi cần, "
+            "chờ 10 giây rồi dịch Step 3. Chạy lại từ 1–2 tạo output Step 1 và 2 mới "
+            "cho video đã tích, không tạo story. Step 7 render từ output Step 6 hiện được chọn."
         )
         helper.setWordWrap(True)
         layout.addWidget(helper)
@@ -139,8 +143,16 @@ class StepBatchDialog(QDialog):
         story_layout.addWidget(QLabel("Output Step 2 — Story"))
         story_actions = QHBoxLayout()
         self.story_selector = QComboBox()
-        self.story_selector.setMinimumContentsLength(24)
-        story_actions.addWidget(self.story_selector, 1)
+        self.story_selector.setMinimumContentsLength(18)
+        self.story_selector.setMaximumWidth(330)
+        story_actions.addWidget(self.story_selector)
+        self.story_group_checkbox = QCheckBox("Group cần sửa")
+        self.story_group_checkbox.toggled.connect(self._story_group_toggled)
+        story_actions.addWidget(self.story_group_checkbox)
+        self.regenerate_story_button = QPushButton("Chạy lại")
+        self.regenerate_story_button.clicked.connect(self._regenerate_story_clicked)
+        story_actions.addWidget(self.regenerate_story_button)
+        story_actions.addStretch()
         self.save_story_button = QPushButton("Lưu story")
         self.save_story_button.setObjectName("primaryButton")
         self.save_story_button.clicked.connect(self._save_story)
@@ -179,17 +191,23 @@ class StepBatchDialog(QDialog):
         group_count = (
             len(self.project.ordered_videos()) + self.project.story_group_size - 1
         ) // self.project.story_group_size
-        group_by_path = {
-            str(path.resolve()): group
-            for group in range(1, group_count + 1)
-            if (path := self.project.story_path_for_group(group)) is not None
-        }
+        linked_paths: set[str] = set()
+        for group in range(1, group_count + 1):
+            path = self.project.story_path_for_group(group)
+            if path is None or not path.is_file():
+                path = None
+            if path is not None:
+                linked_paths.add(str(path.resolve()))
+            self.story_selector.addItem(
+                f"[Group {group}] {path.stem if path else 'Chưa có story'}",
+                str(path) if path else None,
+            )
+            self.story_selector.setItemData(self.story_selector.count() - 1, group, GROUP_ROLE)
         for path in paths:
-            group = group_by_path.get(str(path.resolve()))
-            label = f"[Group {group}] {path.stem}" if group is not None else path.stem
-            self.story_selector.addItem(label, str(path))
-        if not paths:
-            self.story_selector.addItem("Chưa có story", None)
+            if str(path.resolve()) not in linked_paths:
+                self.story_selector.addItem(path.stem, str(path))
+        if not self.story_selector.count():
+            self.story_selector.addItem("Chưa có Group", None)
         index = self.story_selector.findData(preferred)
         index = max(0, index)
         self.story_selector.setCurrentIndex(index)
@@ -217,6 +235,11 @@ class StepBatchDialog(QDialog):
             return
         self.story_path = path
         self.story_index = index
+        group = self.story_selector.itemData(index, GROUP_ROLE)
+        self.story_group_checkbox.blockSignals(True)
+        self.story_group_checkbox.setChecked(group in self.checked_story_groups)
+        self.story_group_checkbox.blockSignals(False)
+        self.story_group_checkbox.setEnabled(group is not None and not self.batch_busy)
         self.story_editor.setPlainText(content)
         self.story_editor.document().setModified(False)
         self.story_editor.setReadOnly(self.batch_busy or path is None)
@@ -225,11 +248,27 @@ class StepBatchDialog(QDialog):
     def _refresh_story_actions(self) -> None:
         dirty = self.story_editor.document().isModified()
         self.save_story_button.setEnabled(self.story_path is not None and dirty and not self.batch_busy)
+        self.regenerate_story_button.setEnabled(bool(self.checked_story_groups) and not self.batch_busy)
         self.story_status.setText(
             "Có thay đổi chưa lưu" if dirty
             else str(self.story_path) if self.story_path
-            else "Chọn video rồi chạy Step 2 để tạo file story bằng AI."
+            else "Chọn Group để xem hoặc tạo story từ transcript đã lưu."
         )
+
+    def _story_group_toggled(self, checked: bool) -> None:
+        group = self.story_selector.currentData(GROUP_ROLE)
+        if group is None:
+            return
+        if checked:
+            self.checked_story_groups.add(int(group))
+        else:
+            self.checked_story_groups.discard(int(group))
+        self._refresh_story_actions()
+
+    def _regenerate_story_clicked(self) -> None:
+        if self.batch_busy or not self.checked_story_groups or not self._confirm_story_changes():
+            return
+        self.regenerate_stories_requested.emit(sorted(self.checked_story_groups))
 
     def _save_story(self) -> bool:
         if self.story_path is None:
@@ -367,8 +406,8 @@ class StepBatchDialog(QDialog):
         self.selection_label.setText(f"Đã chọn {count}/{len(self.video_ids)} video")
         self.select_all_button.setEnabled(not self.batch_busy and count < len(self.video_ids))
         self.clear_selection_button.setEnabled(not self.batch_busy and count > 0)
-        for index, button in enumerate(self.step_buttons):
-            button.setEnabled(not self.batch_busy and (count > 0 or index == 1))
+        for button in self.step_buttons:
+            button.setEnabled(not self.batch_busy and count > 0)
 
     def set_batch_busy(self, busy: bool, step_number: int | None = None) -> None:
         self.batch_busy = busy
@@ -376,6 +415,9 @@ class StepBatchDialog(QDialog):
             self.active_step_number = step_number
         self.table.setEnabled(not busy)
         self.story_selector.setEnabled(not busy)
+        self.story_group_checkbox.setEnabled(
+            not busy and self.story_selector.currentData(GROUP_ROLE) is not None
+        )
         self.story_editor.setReadOnly(busy or self.story_path is None)
         self._refresh_story_actions()
         if busy:
@@ -417,6 +459,17 @@ class StepBatchDialog(QDialog):
         else:
             QMessageBox.information(self, title, message)
 
+    def story_regeneration_finished(self, created: int, total: int, error: str) -> None:
+        self.set_batch_busy(False)
+        message = f"Đã tạo lại story cho {created}/{total} Group."
+        self.update_batch_progress(100, message)
+        if error:
+            box = QMessageBox(QMessageBox.Icon.Warning, "Tạo lại story", message, parent=self)
+            box.setDetailedText(error)
+            box.exec()
+        else:
+            QMessageBox.information(self, "Tạo lại story", message)
+
     def _step_clicked(self, number: int) -> None:
         if self.batch_busy or not self.checked_video_ids:
             return
@@ -440,9 +493,11 @@ class StepBatchDialog(QDialog):
         ])
 
     def _rebuild_1_2_clicked(self) -> None:
-        if self.batch_busy or not self._confirm_story_changes():
+        if self.batch_busy or not self.checked_video_ids or not self._confirm_story_changes():
             return
-        self.rebuild_1_2_requested.emit()
+        self.rebuild_1_2_requested.emit([
+            video_id for video_id in self.video_ids if video_id in self.checked_video_ids
+        ])
 
     def done(self, result: int) -> None:
         if self.batch_busy:

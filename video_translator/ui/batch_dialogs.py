@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..batch_project import BatchProject, BatchProjectService
+from ..batch_project import BatchProject, BatchProjectService, ProjectVideo
 from ..common.models import STEP_ORDER, StepId
 from ..common.services.ffmpeg_service import FFmpegService
 
@@ -39,6 +39,114 @@ STATUS_LABELS = {
     "failed": "Thất bại",
 }
 STEP_VALUES = [step.value for step in STEP_ORDER]
+STEP_CANDIDATE_FIELDS = (
+    "audio_candidates", "transcript_candidates", "translation_candidates",
+    "tts_candidates", "sync_candidates", "build_audio_candidates", "render_candidates",
+)
+
+
+class VideoProgressDialog(QDialog):
+    """Read-only summary of recorded errors and completed outputs."""
+
+    def __init__(self, project: BatchProject, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.project = project
+        self.setWindowTitle("Trạng thái output của video")
+        self.resize(1050, 580)
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels([
+            "STT", "Group", "Video", "Step lỗi\ncao nhất", "SL output\nStep lỗi",
+            "Step hoàn thành\ncao nhất (1–6)", "SL output\nStep hoàn thành",
+            "SL video\nStep 7",
+        ])
+        header = self.table.horizontalHeader()
+        header.setMinimumHeight(44)
+        for column in (0, 1, 3, 4, 5, 6, 7):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSortingEnabled(False)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+        close_button = QPushButton("Đóng")
+        close_button.clicked.connect(self.accept)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        actions.addWidget(close_button)
+        layout.addLayout(actions)
+        self.refresh()
+
+    def _progress(self, video: ProjectVideo) -> tuple[str, str, str, str, str]:
+        render_count = len(BatchProjectService.render_outputs(self.project, video.id))
+        try:
+            saved = BatchProjectService.read_video(self.project, video.id)
+        except (OSError, ValueError, TypeError):
+            return "Không rõ", "—", "Không rõ", "—", str(render_count)
+        if saved is None:
+            counts = [0] * len(STEP_ORDER)
+            pipeline = {}
+            candidates_by_step = [[] for _ in STEP_ORDER]
+        else:
+            candidates_by_step = [getattr(saved, field, []) for field in STEP_CANDIDATE_FIELDS]
+            counts = [len(items) for items in candidates_by_step]
+            pipeline = saved.pipeline if isinstance(saved.pipeline, dict) else {}
+
+        errors = set()
+        if video.status == "failed" and video.failed_step in STEP_VALUES:
+            errors.add(STEP_VALUES.index(video.failed_step))
+        for index, step in enumerate(STEP_ORDER[:6]):
+            stored = pipeline.get(step.value)
+            metadata = stored.get("metadata", {}) if isinstance(stored, dict) else {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if step == StepId.STT and metadata.get("timeline_error_count", 0):
+                errors.add(index)
+            if step == StepId.SYNC:
+                latest = max(
+                    candidates_by_step[index],
+                    key=lambda item: str(item.get("created_at", "")),
+                    default={},
+                )
+                if latest.get("error_count", 0) or metadata.get("error_count", 0):
+                    errors.add(index)
+
+        error_index = max(errors) if errors else None
+        completed = []
+        for index, items in enumerate(candidates_by_step[:6]):
+            if not items:
+                continue
+            if index == 4 and not any(not item.get("error_count", 0) for item in items):
+                continue
+            if index == 1 and index in errors and len(items) == 1:
+                continue
+            completed.append(index)
+        completed_index = max(completed) if completed else None
+        error_step = f"Step {error_index + 1:02d}" if error_index is not None else "—"
+        error_outputs = str(counts[error_index]) if error_index is not None else "—"
+        completed_step = (
+            f"Step {completed_index + 1:02d}"
+            if completed_index is not None else "—"
+        )
+        completed_outputs = str(counts[completed_index]) if completed_index is not None else "—"
+        return error_step, error_outputs, completed_step, completed_outputs, str(render_count)
+
+    def refresh(self) -> None:
+        self.table.setRowCount(0)
+        for number, video in enumerate(self.project.ordered_videos(), start=1):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            name = QTableWidgetItem(video.name)
+            name.setToolTip(video.source_path)
+            values = (
+                str(number), str(self.project.video_group(video.id)), name,
+                *self._progress(video),
+            )
+            for column, value in enumerate(values):
+                self.table.setItem(
+                    row, column,
+                    value if isinstance(value, QTableWidgetItem) else QTableWidgetItem(value),
+                )
 
 
 class BatchVideosDialog(QDialog):
@@ -59,12 +167,33 @@ class BatchVideosDialog(QDialog):
         helper = QLabel(
             "Trạng thái và Step bên trái là kết quả gần nhất của Chạy batch video đã chọn; "
             "video chưa có lịch sử dùng mặc định Chưa tạo / Step 04 nếu chưa có output render. "
-            "Chọn Step bắt đầu cho từng video rồi tích các video cần chạy. "
+            "Tích các video, chọn Step chung rồi bấm Set Step, hoặc chọn Step riêng từng dòng. "
             "Batch chạy đúng step đã chọn đến Step 7; thiếu đầu vào sẽ báo lỗi, không tự đổi step. "
-            "Lựa chọn được lưu vào project khi bấm Lưu Step bắt đầu hoặc chạy batch."
+            "Step và checkbox được lưu vào project khi bấm Lưu Step bắt đầu hoặc chạy batch."
         )
         helper.setWordWrap(True)
         layout.addWidget(helper)
+        selection_actions = QHBoxLayout()
+        self.select_all_button = QPushButton("Chọn tất cả")
+        self.select_all_button.clicked.connect(lambda _checked=False: self._set_all_checked(True))
+        selection_actions.addWidget(self.select_all_button)
+        self.clear_selection_button = QPushButton("Bỏ chọn tất cả")
+        self.clear_selection_button.clicked.connect(lambda _checked=False: self._set_all_checked(False))
+        selection_actions.addWidget(self.clear_selection_button)
+        selection_actions.addStretch()
+        selection_actions.addWidget(QLabel("Step chung:"))
+        self.common_step_selector = QComboBox()
+        self.common_step_selector.addItem("Chọn Step…", "")
+        for number, step_id in enumerate(STEP_ORDER, start=1):
+            self.common_step_selector.addItem(f"Step {number:02d}", step_id.value)
+        self.common_step_selector.currentIndexChanged.connect(
+            lambda _index: self._selection_changed()
+        )
+        selection_actions.addWidget(self.common_step_selector)
+        self.apply_step_button = QPushButton("Set Step")
+        self.apply_step_button.clicked.connect(lambda _checked=False: self._apply_common_step())
+        selection_actions.addWidget(self.apply_step_button)
+        layout.addLayout(selection_actions)
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
             ["Chọn", "Video", "Trạng thái", "Step gợi ý / đang chạy", "Step bắt đầu", "Số output", "Lỗi gần nhất"]
@@ -109,7 +238,9 @@ class BatchVideosDialog(QDialog):
             self.table.insertRow(row)
             checked = QTableWidgetItem()
             checked.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-            checked.setCheckState(Qt.CheckState.Unchecked)
+            checked.setCheckState(
+                Qt.CheckState.Checked if video.batch_selected else Qt.CheckState.Unchecked
+            )
             checked.setData(Qt.ItemDataRole.UserRole, video.id)
             self.table.setItem(row, 0, checked)
             name = QTableWidgetItem(video.name)
@@ -172,12 +303,36 @@ class BatchVideosDialog(QDialog):
             and self.table.item(row, 0).checkState() == Qt.CheckState.Checked
         ]
 
+    def _set_all_checked(self, checked: bool) -> None:
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None:
+                item.setCheckState(state)
+        self.table.blockSignals(False)
+        self._selection_changed()
+
+    def _apply_common_step(self) -> None:
+        step = str(self.common_step_selector.currentData() or "")
+        if step in STEP_VALUES and not self._pipeline_busy():
+            for video_id in self._selected_video_ids():
+                selector = self.start_step_selectors[video_id]
+                selector.setCurrentIndex(selector.findData(step))
+        self._selection_changed()
+
     def _selection_changed(self, _item: QTableWidgetItem | None = None) -> None:
         selected = self._selected_video_ids()
         missing = sum(self.start_steps[video_id] not in STEP_VALUES for video_id in selected)
         busy = self._pipeline_busy()
         self.run_button.setEnabled(bool(selected) and not missing and not busy)
-        self.save_steps_button.setEnabled(self._steps_dirty() and not busy)
+        self.save_steps_button.setEnabled(self._choices_dirty() and not busy)
+        self.common_step_selector.setEnabled(bool(selected) and not busy)
+        self.apply_step_button.setEnabled(
+            bool(selected) and self.common_step_selector.currentData() in STEP_VALUES and not busy
+        )
+        self.select_all_button.setEnabled(bool(self.project.videos) and not busy)
+        self.clear_selection_button.setEnabled(bool(selected) and not busy)
         self.selection_info.setText(
             f"{missing} video đã chọn chưa có Step bắt đầu" if missing else f"Đã chọn {len(selected)} video"
         )
@@ -193,18 +348,29 @@ class BatchVideosDialog(QDialog):
     def _steps_dirty(self) -> bool:
         return any(video.batch_start_step != self.start_steps[video.id] for video in self.project.videos)
 
+    def _choices_dirty(self) -> bool:
+        selected = set(self._selected_video_ids())
+        return self._steps_dirty() or any(
+            video.batch_selected != (video.id in selected) for video in self.project.videos
+        )
+
     def _save_start_steps(self) -> bool:
         if self._pipeline_busy():
             QMessageBox.information(self, "Pipeline đang chạy", "Hãy chờ tác vụ hiện tại hoàn tất trước khi lưu lựa chọn.")
             return False
-        previous = {video.id: video.batch_start_step for video in self.project.videos}
+        previous = {
+            video.id: (video.batch_start_step, video.batch_selected)
+            for video in self.project.videos
+        }
+        selected = set(self._selected_video_ids())
         for video in self.project.videos:
             video.batch_start_step = self.start_steps[video.id]
+            video.batch_selected = video.id in selected
         try:
             self.project.save()
         except OSError as exc:
             for video in self.project.videos:
-                video.batch_start_step = previous[video.id]
+                video.batch_start_step, video.batch_selected = previous[video.id]
             QMessageBox.warning(self, "Không thể lưu Step bắt đầu", str(exc))
             return False
         self._selection_changed()
@@ -217,7 +383,7 @@ class BatchVideosDialog(QDialog):
         if any(self.start_steps[video_id] not in STEP_VALUES for video_id in selected):
             QMessageBox.information(self, "Chưa chọn Step bắt đầu", "Hãy chọn Step bắt đầu cho tất cả video đã tích.")
             return
-        if self._steps_dirty() and not self._save_start_steps():
+        if self._choices_dirty() and not self._save_start_steps():
             return
         self.run_requested.emit({video_id: self.start_steps[video_id] for video_id in selected})
 
@@ -231,9 +397,9 @@ class BatchVideosDialog(QDialog):
                 self.video_requested.emit(str(item.data(Qt.ItemDataRole.UserRole)))
 
     def done(self, result: int) -> None:
-        if self._steps_dirty():
+        if self._choices_dirty():
             choice = QMessageBox.question(
-                self, "Step bắt đầu chưa lưu", "Bạn có muốn lưu các Step bắt đầu đã thay đổi?",
+                self, "Lựa chọn chưa lưu", "Bạn có muốn lưu Step bắt đầu và các video đã chọn?",
                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Save,
             )

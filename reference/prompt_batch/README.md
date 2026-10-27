@@ -1,12 +1,17 @@
-# Prompt dịch batch Step 3 theo story
+# Prompt cho batch theo step
 
-Thư mục này nằm cùng cấp `prompt_template/`, dành riêng cho việc chuẩn bị prompt của nút
-**Step 3** trong popup **Chạy batch theo step**. Không xuất hiện trong danh sách prompt dịch thường.
+Thư mục này nằm cùng cấp `prompt_template/`, chứa prompt tạo story và dịch Step 3
+trong popup **Chạy batch theo step**. Các prompt này không xuất hiện trong danh sách prompt dịch thường.
 
+- `google_gemini/story.md`: prompt tạo story bằng Gemini API.
+- `chatgpt_web/story.md`: prompt tạo story bằng ChatGPT Web.
 - `google_gemini/translation.md`: prompt cho Gemini API.
 - `chatgpt_web/translation.md`: prompt cho ChatGPT Web, giữ contract trả file JSON tải xuống.
 
-Ứng dụng đọc nguyên văn file rồi điền các biến:
+Khi tạo story, ứng dụng đọc nguyên văn `story.md` của provider đã chọn và gửi transcript
+của toàn bộ video trong Group. Story được lưu tại `stories/story_group_<group>.md`.
+
+Khi dịch Step 3, ứng dụng đọc nguyên văn `translation.md` rồi điền các biến:
 
 - `{story_group}`, `{story_name}`, `{story_content}`: Group, tên và nội dung story được liên kết
   với video; nội dung được chốt khi bắt đầu batch.

@@ -63,6 +63,7 @@ class ProjectVideo:
     restart_step: str = ""
     last_attempt_at: str = ""
     batch_start_step: str = ""
+    batch_selected: bool = False
     selected_batch_status: str = ""
     selected_batch_step: str = ""
     selected_batch_error: str = ""

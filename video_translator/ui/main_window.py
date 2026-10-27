@@ -34,7 +34,7 @@ from ..pipeline.worker import (
     PipelineWorker,
 )
 from ..state import ProjectState
-from .batch_dialogs import BatchVideosDialog, OutputManagerDialog
+from .batch_dialogs import BatchVideosDialog, OutputManagerDialog, VideoProgressDialog
 from .step_batch_dialog import StepBatchDialog
 from .project_manager import ProjectManagerPage
 from .prompt_manager_dialog import PromptManagerDialog
@@ -121,13 +121,13 @@ class MainWindow(QMainWindow):
         prompt_manager_button = QPushButton("Quản lý Prompt")
         prompt_manager_button.clicked.connect(self._open_prompt_manager)
         videos_button = QPushButton("Videos")
-        videos_button.clicked.connect(self._show_batch_videos)
+        videos_button.clicked.connect(self._show_video_progress)
         outputs_button = QPushButton("Outputs")
         outputs_button.clicked.connect(self._show_outputs)
-        self.batch_button = QPushButton("Chạy batch")
+        self.batch_button = QPushButton("Batch")
         self.batch_button.setObjectName("primaryButton")
         self.batch_button.setEnabled(False)
-        self.batch_button.clicked.connect(self._start_batch)
+        self.batch_button.clicked.connect(self._show_batch_videos)
         self.step_batch_button = QPushButton("Chạy batch theo step")
         self.step_batch_button.setEnabled(False)
         self.step_batch_button.clicked.connect(self._show_step_batch)
@@ -285,6 +285,12 @@ class MainWindow(QMainWindow):
         dialog.run_requested.connect(run_selected)
         dialog.exec()
 
+    def _show_video_progress(self) -> None:
+        if not self.batch_project:
+            QMessageBox.information(self, "Chưa có project", "Vui lòng tạo hoặc mở project trước.")
+            return
+        VideoProgressDialog(self.batch_project, self).exec()
+
     def _show_step_batch(self) -> None:
         if self.batch_project:
             dialog = StepBatchDialog(self.batch_project, self)
@@ -292,7 +298,10 @@ class MainWindow(QMainWindow):
                 lambda video_ids: self._start_step_1_to_3(dialog, video_ids)
             )
             dialog.rebuild_1_2_requested.connect(
-                lambda: self._rebuild_step_1_2_stories(dialog)
+                lambda video_ids: self._rerun_step_1_2(dialog, video_ids)
+            )
+            dialog.regenerate_stories_requested.connect(
+                lambda groups: self._regenerate_group_stories(dialog, groups)
             )
             dialog.step3_requested.connect(lambda video_ids: self._start_step_batch(dialog, video_ids, StepId.TRANSLATE))
             dialog.step7_requested.connect(lambda video_ids: self._start_step_batch(dialog, video_ids, StepId.RENDER))
@@ -301,7 +310,11 @@ class MainWindow(QMainWindow):
     def _start_step_batch(
         self, dialog: StepBatchDialog, video_ids: list[str], step: StepId, *,
         story_video_ids: list[str] | None = None,
-        force_rebuild_stories: bool = False,
+        create_stories: bool = True,
+        story_groups: list[int] | None = None,
+        regenerate_stories: bool = False,
+        force_new_output: bool = False,
+        succeeded_video_ids: list[str] | None = None,
         completion: object | None = None,
     ) -> bool:
         if not self.batch_project or (not video_ids and not story_video_ids):
@@ -310,13 +323,15 @@ class MainWindow(QMainWindow):
             QMessageBox.information(dialog, "Pipeline đang chạy", "Hãy chờ tác vụ hiện tại hoàn tất.")
             return False
         number = STEP_ORDER.index(step) + 1
-        settings = dict(self.batch_project.batch_settings.get(step.value, {}))
-        if not settings:
+        settings = dict(self.batch_project.batch_settings.get(step.value, {})) if video_ids else {}
+        if video_ids and not settings:
             QMessageBox.information(dialog, f"Thiếu thiết lập Step {number}", f"Hãy hoàn tất Step {number} trong Thiết lập project trước khi chạy.")
             return False
+        if step == StepId.EXTRACT and force_new_output:
+            settings["force_new_output"] = True
         story_settings = dict(self.batch_project.batch_settings.get(StepId.TRANSLATE.value, {}))
         try:
-            if step == StepId.STT:
+            if step == StepId.STT and create_stories:
                 if not story_settings:
                     raise ValueError("Hãy chọn Gemini hoặc ChatGPT và cấu hình AI tại Thiết lập project → Step 3 để tạo story.")
                 validate_story_settings(story_settings)
@@ -340,8 +355,9 @@ class MainWindow(QMainWindow):
                         "story_content": content,
                     }
                 settings["batch_group_stories"] = group_stories
-            for page in self.pages.values():
-                page.prepare_run()
+            if video_ids:
+                for page in self.pages.values():
+                    page.prepare_run()
         except Exception as exc:
             QMessageBox.warning(dialog, "Không thể chuẩn bị batch", str(exc))
             return False
@@ -350,7 +366,9 @@ class MainWindow(QMainWindow):
             step=step, story_settings=story_settings,
             video_positions={video_id: index + 1 for index, video_id in enumerate(dialog.video_ids)},
             story_video_ids=story_video_ids,
-            force_rebuild_stories=force_rebuild_stories,
+            create_stories=create_stories,
+            story_groups=story_groups,
+            regenerate_stories=regenerate_stories,
         )
         self.batch_running = True
         self.batch_status_message = f"Đang chuẩn bị batch Step {number}"
@@ -379,6 +397,8 @@ class MainWindow(QMainWindow):
             story_error = runner.story_error
             review_video_count = runner.review_video_count
             story_count = len(runner.story_paths)
+            if succeeded_video_ids is not None:
+                succeeded_video_ids[:] = runner.successful_video_ids
             runner.deleteLater()
             if callable(completion):
                 completion(succeeded, failed, story_error, review_video_count, story_count)
@@ -456,66 +476,58 @@ class MainWindow(QMainWindow):
             dialog, video_ids, StepId.EXTRACT, completion=finish_step1,
         )
 
-    def _rebuild_step_1_2_stories(self, dialog: StepBatchDialog) -> None:
-        if not self.batch_project:
+    def _rerun_step_1_2(self, dialog: StepBatchDialog, video_ids: list[str]) -> None:
+        if not self.batch_project or not video_ids:
             return
-        all_video_ids = [video.id for video in self.batch_project.ordered_videos()]
+        ready: list[str] = []
 
-        def missing_outputs(step: StepId) -> list[str]:
-            missing: list[str] = []
-            for video_id in all_video_ids:
-                try:
-                    project = BatchProjectService.read_video(self.batch_project, video_id)
-                    if project is None:
-                        missing.append(video_id)
-                        continue
-                    state = ProjectState()
-                    state.bind_project(project, restore_candidates=False)
-                    if step == StepId.EXTRACT:
-                        valid = state.valid_default_audio_input() is not None
-                    else:
-                        valid = state.candidate_result(
-                            StepId.STT, state.selected_transcript_candidate_id,
-                        ) is not None
-                    if not valid:
-                        missing.append(video_id)
-                except (OSError, ValueError, TypeError, KeyError, AttributeError):
-                    missing.append(video_id)
-            return missing
-
-        def finish_rebuild(
-            succeeded: int, failed: int, story_error: str,
-            review_count: int, story_count: int,
-        ) -> None:
-            dialog.batch_finished(succeeded, failed, story_error, review_count, story_count)
-
-        def run_missing_step2() -> None:
-            missing_step2 = missing_outputs(StepId.STT)
-            started = self._start_step_batch(
-                dialog, missing_step2, StepId.STT,
-                story_video_ids=all_video_ids,
-                force_rebuild_stories=True,
-                completion=finish_rebuild,
-            )
-            if not started:
-                dialog.set_batch_busy(False)
-
-        missing_step1 = missing_outputs(StepId.EXTRACT)
-        if not missing_step1:
-            run_missing_step2()
-            return
-
-        def finish_missing_step1(
-            _succeeded: int, _failed: int, _story_error: str,
+        def finish_step1(
+            _succeeded: int, failed: int, _story_error: str,
             _review_count: int, _story_count: int,
         ) -> None:
-            run_missing_step2()
+            if not ready:
+                dialog.batch_finished(0, failed)
+                return
+
+            def finish_step2(
+                succeeded: int, failed_step2: int, _story_error2: str,
+                _review_count2: int, _story_count2: int,
+            ) -> None:
+                dialog.batch_finished(succeeded, failed + failed_step2)
+
+            started_step2 = self._start_step_batch(
+                dialog, ready, StepId.STT, create_stories=False, completion=finish_step2,
+            )
+            if not started_step2:
+                dialog.set_batch_busy(False)
 
         started = self._start_step_batch(
-            dialog, missing_step1, StepId.EXTRACT, completion=finish_missing_step1,
+            dialog, video_ids, StepId.EXTRACT, force_new_output=True,
+            succeeded_video_ids=ready, completion=finish_step1,
         )
         if not started:
             dialog.set_batch_busy(False)
+
+    def _regenerate_group_stories(self, dialog: StepBatchDialog, groups: list[int]) -> None:
+        if not self.batch_project or not groups:
+            return
+        selected = set(groups)
+        story_video_ids = [
+            video.id for video in self.batch_project.ordered_videos()
+            if self.batch_project.video_group(video.id) in selected
+        ]
+
+        def finished(
+            _succeeded: int, _failed: int, story_error: str,
+            _review_count: int, story_count: int,
+        ) -> None:
+            dialog.story_regeneration_finished(story_count, len(groups), story_error)
+
+        self._start_step_batch(
+            dialog, [], StepId.STT, story_video_ids=story_video_ids,
+            story_groups=sorted(selected), regenerate_stories=True,
+            completion=finished,
+        )
 
     def _show_outputs(self) -> None:
         if not self.batch_project:
@@ -598,16 +610,6 @@ class MainWindow(QMainWindow):
         selected_id = added_videos[0].id if added_videos else str(self.video_selector.currentData() or "")
         self._refresh_video_selector(selected_id)
         self._refresh_header()
-
-    def _start_batch(self) -> None:
-        if not self.batch_project:
-            return
-        video_ids = [
-            video.id
-            for video in self.batch_project.ordered_videos()
-            if video.selected and video.output_count < 1
-        ]
-        self._start_batch_queue(video_ids)
 
     def _start_selected_batch(self, start_steps: dict[str, StepId]) -> None:
         self._start_batch_queue(list(start_steps), start_steps=start_steps)
@@ -1570,21 +1572,10 @@ class MainWindow(QMainWindow):
         self.step_batch_button.setEnabled(
             bool(self.batch_project) and not self.batch_running and not self.active_workers
         )
-        available = bool(
-            self.batch_project
-            and any(
-                video.selected and video.output_count < 1
-                for video in self.batch_project.videos
-            )
-        )
         self.batch_button.setEnabled(
-            available and not self.batch_running and not self.active_workers
+            bool(self.batch_project) and not self.batch_running and not self.active_workers
         )
-        self.batch_button.setToolTip(
-            "Tạo output lần đầu cho các video chưa có output."
-            if available
-            else "Tất cả video đã có output; dùng Videos để chạy lại video được chọn."
-        )
+        self.batch_button.setToolTip("Mở danh sách video để chọn Step bắt đầu và chạy batch.")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.active_workers or self.batch_running:

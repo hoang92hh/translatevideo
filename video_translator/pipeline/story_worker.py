@@ -5,6 +5,7 @@ from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
+from ..config.batch_prompts import PROMPT_BATCH_ROOT
 from ..config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ..config.prompt_templates import PROMPT_TEMPLATE_ROOT
 from ..config.web_translation import CHATGPT_WEB_PROVIDER_NAME, project_url_error
@@ -27,7 +28,7 @@ def validate_story_settings(settings: dict[str, Any]) -> Path:
         error = project_url_error(provider, str(settings.get("project_url", "")))
         if error:
             raise ValueError(error)
-    path = PROMPT_TEMPLATE_ROOT / folder / "story" / "story.md"
+    path = PROMPT_BATCH_ROOT / folder / "story.md"
     if not path.is_file():
         raise FileNotFoundError(f"Không tìm thấy prompt tạo story: {path}")
     return path
@@ -58,6 +59,7 @@ class StoryWorker(QThread):
         settings: dict[str, Any], videos: list[dict[str, Any]],
         selected_positions: list[int], missing_positions: list[int],
         timeline_warning_positions: list[int], group_number: int,
+        output_path: Path | None = None,
     ) -> None:
         super().__init__()
         self.project_root = project_root
@@ -68,11 +70,12 @@ class StoryWorker(QThread):
         self.missing_positions = list(missing_positions)
         self.timeline_warning_positions = list(timeline_warning_positions)
         self.group_number = group_number
+        self.output_path = output_path
 
     def run(self) -> None:
         try:
             if not self.videos:
-                raise ValueError("Không có lời thoại từ lần chạy Step 2 này để tạo story.")
+                raise ValueError("Không có lời thoại đã lưu trong Group để tạo story.")
             prompt_path = validate_story_settings(self.settings)
             prompt = prompt_path.read_text(encoding="utf-8")
             stem = f"story_group_{self.group_number}"
@@ -107,7 +110,7 @@ class StoryWorker(QThread):
             content = "\n".join(coverage) + "\n\n" + markdown + "\n"
             folder = self.project_root / "stories"
             folder.mkdir(parents=True, exist_ok=True)
-            path = folder / f"{stem}.md"
+            path = self.output_path or folder / f"{stem}.md"
             with path.open("x", encoding="utf-8") as stream:
                 try:
                     stream.write(content)
@@ -115,7 +118,7 @@ class StoryWorker(QThread):
                     stream.close()
                     path.unlink(missing_ok=True)
                     raise
-            self.progress_changed.emit(100, f"Đã lưu {path.name}")
+            self.progress_changed.emit(100, f"Đã tạo story cho Group {self.group_number}")
             self.succeeded.emit(str(path))
         except Exception as exc:
             self.failed.emit(error_payload(exc))

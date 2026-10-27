@@ -34,12 +34,19 @@ def execute(
         raise RuntimeError(f"{provider} hiện chưa được triển khai.")
 
     stem = Path(state.input_video).stem or "input"
-    source_path = state.workspace_path("extracted", f"{stem}_source_audio.wav")
+    force_new_output = bool(settings.get("force_new_output", False))
+    output_token = uuid4().hex[:10] if force_new_output else ""
+    source_name = (
+        f"{stem}_source_audio_{output_token}.wav" if force_new_output
+        else f"{stem}_source_audio.wav"
+    )
+    source_path = state.workspace_path("extracted", source_name)
     channels = 1 if settings.get("channels", "Stereo") == "Mono" else 2
     requested_rate = _sample_rate(str(settings.get("sample_rate", "44.1 kHz")))
     existing = state.candidate("original-mix")
     reuse_original = (
-        provider == MDX_PROVIDER
+        not force_new_output
+        and provider == MDX_PROVIDER
         and existing is not None
         and Path(existing.stem_path("original")).is_file()
         and int(existing.metadata.get("sample_rate", 0)) == requested_rate
@@ -76,8 +83,11 @@ def execute(
         file_size = audio.file_size
         ffmpeg_path = audio.ffmpeg_path
     original = AudioCandidate(
-        id="original-mix",
-        label="Original Mix",
+        id=f"original-{output_token}" if force_new_output else "original-mix",
+        label=(
+            f"Original Mix · {datetime.now().strftime('%d/%m %H:%M:%S')} · {output_token[:4]}"
+            if force_new_output else "Original Mix"
+        ),
         provider="FFmpeg",
         model_family="Original",
         model_name="PCM WAV",

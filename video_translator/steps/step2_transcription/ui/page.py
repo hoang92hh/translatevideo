@@ -32,6 +32,7 @@ class SpeechToTextStepPage(StepPage):
                 FieldSpec("model", "Model", "choice", "medium", ("small", "medium", "large-v3")),
                 DEVICE_FIELD,
                 FieldSpec("vad", "Voice activity detection", "bool", True),
+                FieldSpec("segment_recovery", "Segment recovery (tìm lời thoại bị bỏ sót)", "bool", False),
                 FieldSpec("diarization", "Speaker diarization", "bool", False),
                 FieldSpec(
                     "merge_adjacent_segments",

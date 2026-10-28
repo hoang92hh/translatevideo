@@ -91,11 +91,13 @@ class SpeechToTextService:
         vad_filter: bool,
         diarization: bool = False,
         merge_adjacent_segments: bool = False,
+        segment_recovery: bool = False,
     ) -> None:
         self.model_name = model_name
         self.device = device
         self.language = language
         self.vad_filter = vad_filter
+        self.segment_recovery = segment_recovery
         self.diarization = diarization
         self.merge_adjacent_segments = merge_adjacent_segments
 
@@ -126,6 +128,7 @@ class SpeechToTextService:
             "requested_device": self.device,
             "language": self.language,
             "vad_filter": self.vad_filter,
+            "segment_recovery": self.segment_recovery,
         }
         stt_progress = (
             (lambda value, message: progress(round(value * 0.58), message))

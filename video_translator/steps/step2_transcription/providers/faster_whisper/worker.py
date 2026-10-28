@@ -761,12 +761,16 @@ def run(request: dict[str, Any]) -> None:
                     "before_start": item["start"], "before_end": item["end"],
                     "after_start": item["start"], "after_end": item["end"],
                     "action": "unverified",
-                    "reason": "vad_disabled" if not bool(request.get("vad_filter", True)) else "duration_unavailable",
+                    "reason": (
+                        "segment_recovery_disabled" if not bool(request.get("segment_recovery", False))
+                        else "vad_disabled" if not bool(request.get("vad_filter", True))
+                        else "duration_unavailable"
+                    ),
                 }
                 for index, item in enumerate(segments)
             ],
         }
-        if bool(request.get("vad_filter", True)) and duration:
+        if bool(request.get("segment_recovery", False)) and bool(request.get("vad_filter", True)) and duration:
             progress(90, "Đang kiểm tra các vùng có khả năng thiếu lời thoại…")
             sampling_rate = int(model.feature_extractor.sampling_rate)
             audio = decode_audio(str(request["input_audio"]), sampling_rate=sampling_rate)

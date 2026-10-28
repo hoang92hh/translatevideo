@@ -41,6 +41,7 @@ def execute(
         device=requested_device,
         language=LANGUAGE_CODES.get(state.source_language),
         vad_filter=bool(settings.get("vad", True)),
+        segment_recovery=bool(settings.get("segment_recovery", False)),
         diarization=bool(settings.get("diarization", False)),
         merge_adjacent_segments=bool(settings.get("merge_adjacent_segments", False)),
     )
@@ -76,6 +77,7 @@ def execute(
         "compute_type": transcription.compute_type,
         "device_selection_reason": transcription.device_selection_reason,
         "vad_filter": bool(settings.get("vad", True)),
+        "segment_recovery": bool(settings.get("segment_recovery", False)),
         "diarization": bool(settings.get("diarization", False)),
         "merge_adjacent_segments": bool(settings.get("merge_adjacent_segments", False)),
         "diarization_model": transcription.diarization_model,
@@ -142,6 +144,7 @@ def execute(
         "device_selection_reason": transcription.device_selection_reason,
         "duration_seconds": transcription.duration_seconds,
         "asr_recovery": transcription.asr_recovery or {"enabled": False},
+        "segment_recovery": bool(settings.get("segment_recovery", False)),
         "timeline_issues": timeline_issues,
         "timeline_error_count": len(timeline_issues),
         "diarization": bool(settings.get("diarization", False)),

@@ -19,14 +19,16 @@
 
 ## Step 2 — Nhận dạng lời nói và speaker
 
-- **Đầu vào:** audio được chọn từ Step 1; ngôn ngữ nguồn, model, CPU/GPU, VAD và tùy chọn speaker diarization.
-- **Xử lý:** Faster-Whisper nhận dạng lời nói, xuất câu cùng timestamp từng từ. VAD mặc định bật. Khi bật VAD, worker còn rà các vùng nghi bị bỏ sót và thử nhận dạng phục hồi. Nếu bật diarization, hệ thống gán speaker theo vùng tiếng nói, làm mượt các lần đổi speaker; có tùy chọn gộp những đoạn liền kề.
+- **Đầu vào:** audio được chọn từ Step 1; ngôn ngữ nguồn, model, CPU/GPU, VAD, Segment recovery và tùy chọn speaker diarization.
+- **Xử lý:** Faster-Whisper nhận dạng lời nói, xuất câu cùng timestamp từng từ. VAD mặc định bật. Segment recovery mặc định tắt; khi bật cùng VAD và có thời lượng audio, worker rà các vùng nghi bị bỏ sót và thử nhận dạng phục hồi. Tắt Segment recovery không tắt VAD của lượt nhận dạng chính. Nếu bật diarization, hệ thống gán speaker theo vùng tiếng nói, làm mượt các lần đổi speaker; có tùy chọn gộp những đoạn liền kề.
 - **Model/engine:** **Faster-Whisper** (mặc định `medium`; UI có `small`, `medium`, `large-v3`). Diarization là tùy chọn, dùng model local **`pyannote-speaker-diarization-community-1`**. FFmpeg/decoder hỗ trợ đọc audio. Thiết bị thực tế có thể là CPU hoặc GPU theo cấu hình và khả năng runtime.
 - **Đầu ra:** `transcript.json` với ID, `start`, `end`, `speaker_id`, câu gốc, `merge_parts` và metadata về ASR/recovery/diarization.
 - **Điểm cần xem xét:** đây là điểm kiểm soát chất lượng quan trọng nhất trước các bước sau. Cần phát hiện lời nói chưa được ghi, câu rất ngắn nhưng chiếm khoảng thời gian bất thường, timestamp lệch và gán speaker sai. Model lớn hoặc diarization tăng thời gian xử lý; chạy lại trên CPU cũng có thể chậm hơn đáng kể.
 - **Nguồn code:** [pipeline Step 2](../video_translator/pipeline/mock_steps/speech_to_text.py), [worker Faster-Whisper](../video_translator/steps/step2_transcription/providers/faster_whisper/worker.py), [cấu hình diarization](../video_translator/config/diarization.py).
 
 ### Khi segment phục hồi đè lên timeline của segment chính
+
+Các bước dưới đây chỉ chạy khi bật **Segment recovery** và **VAD** trong thiết lập Step 2. Project cũ chưa lưu tùy chọn Segment recovery sẽ mặc định tắt cho lần chạy tiếp theo. Transcript ghi lựa chọn này ở `segment_recovery` và trạng thái chạy thực tế ở `asr_recovery.enabled`.
 
 1. **Tìm vùng nghi thiếu:** khi bật VAD, hệ thống lấy khoảng thời gian của từng từ đã nhận dạng (mở rộng mỗi đầu 0,15 giây; nếu không có mốc từ thì dùng cả segment) làm vùng đã phủ. Các khoảng bị VAD loại hoặc khoảng có tiếng nói nhưng chưa được phủ, dài ít nhất **1 giây** và có hoạt động âm thanh, trở thành vùng ứng viên. Hệ thống mở thêm ngữ cảnh **0,75 giây** mỗi bên và nhận dạng lại bằng Faster-Whisper, không dùng VAD cho lượt phục hồi.
 2. **Giới hạn vào vùng cần phục hồi:** kết quả nhận dạng lại phải giao với vùng ứng viên ít nhất **25% thời lượng** của chính kết quả đó. `start/end` được **cắt về ranh giới vùng ứng viên**; code vẫn giữ thêm `alignment_start/end` là phạm vi gốc của các từ liên quan để kiểm tra về sau. Đây là cắt timestamp của ứng viên, **không** sửa segment chính.
@@ -37,6 +39,8 @@
 **Hệ quả cần lưu ý:** nếu timestamp của segment chính sai và bao trùm vùng thực sự có câu bị thiếu, câu phục hồi có thể bị loại vì “đè timeline”, dù nghe audio gốc có lời. Trường hợp đó cần sửa/đánh giá lại segment chính và mốc thời gian nguồn; chỉ nới ngưỡng lọc trùng có nguy cơ tạo câu lặp. Chi tiết triển khai ở [lọc phục hồi trong worker](../video_translator/steps/step2_transcription/providers/faster_whisper/worker.py) và [kiểm tra overlap sau xử lý](../video_translator/steps/step2_transcription/service.py).
 
 ## Step 3 — Dịch văn bản
+
+Để chỉnh output bằng bảng tính, chọn một candidate ở Step 3 và xuất CSV. Sửa các cột `ID, Start, End, Speaker, Translation, Source`; cột `STT` không dùng khi nhập. Hàng thêm mới có thể để trống `ID` để ứng dụng cấp ID duy nhất và để trống `Source` nếu chỉ cần sinh voice. Nhập lại CSV sẽ tạo `translated_segments.json` trong một candidate mới, giữ candidate nguồn. Output mới được chọn làm input Step 4; chạy lại Step 4 → 7 để tạo voice và video. Với hàng mới chỉ có từ Step 3, sửa voice ở Step 5 không yêu cầu ID phải có trong transcript Step 2.
 
 - **Đầu vào:** các segment của transcript Step 2, cặp ngôn ngữ, provider/model, prompt và kích thước batch.
 - **Xử lý:** gửi toàn bộ segment của file trong một batch hoặc chia batch theo cấu hình; kèm ngữ cảnh trước/sau và các bản dịch trước đó. Kết quả được kiểm tra ID rồi gắn bản dịch vào segment. Segment có bản dịch rỗng được đặt `start = end` để các bước sau bỏ qua. Với Gemini, thông tin request/response/error được lưu trong thư mục diagnostics.

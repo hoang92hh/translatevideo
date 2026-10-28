@@ -1,15 +1,18 @@
+import json
+import csv
 import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from video_translator.errors import UserFacingError
-from video_translator.common.models import StepId, StepResult, Segment
+from video_translator.common.models import StepId, StepResult, StepStatus, Segment
 from video_translator.config.gemini import GEMINI_PROVIDER_NAME
 from video_translator.config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from video_translator.steps.step3_translation.quality import assess_manual_segments
+from video_translator.steps.step3_translation.csv_exchange import export_segments
 from video_translator.ui.specs import StepSpec
 from video_translator.ui.translation_editor_dialog import TranslationEditorDialog
 from video_translator.ui.steps.base import StepPage
@@ -66,6 +69,9 @@ class TranslationStepPage(StepPage):
             self.editor_button.setDisabled(busy)
         if hasattr(self, "manual_check_button"):
             self.manual_check_button.setDisabled(busy)
+        if hasattr(self, "export_csv_button"):
+            self.export_csv_button.setDisabled(busy)
+            self.import_csv_button.setDisabled(busy)
         if not busy and hasattr(self, "translation_combo"):
             self._refresh_translations(prefer_selected=True)
 
@@ -103,6 +109,15 @@ class TranslationStepPage(StepPage):
         self.editor_button.clicked.connect(self._open_translation_editor)
         self.manual_check_button = QPushButton("Kiểm tra / sửa bản dịch")
         self.manual_check_button.clicked.connect(lambda: self._open_translation_editor(manual_check=True))
+        self.export_csv_button = QPushButton("Xuất CSV")
+        self.export_csv_button.clicked.connect(self._export_csv)
+        self.import_csv_button = QPushButton("Nhập CSV thành output mới")
+        self.import_csv_button.clicked.connect(self._import_csv)
+        csv_actions = QHBoxLayout()
+        csv_actions.addWidget(self.export_csv_button)
+        csv_actions.addWidget(self.import_csv_button)
+        csv_actions.addStretch()
+        layout.addLayout(csv_actions)
         use_button = QPushButton("Dùng làm input Step 4")
         use_button.clicked.connect(self._select_for_step_four)
         open_file = QPushButton("Mở file")
@@ -145,6 +160,8 @@ class TranslationStepPage(StepPage):
             self.translation_info.setText("Chưa có bản dịch")
             self.editor_button.setEnabled(False)
             self.manual_check_button.setEnabled(False)
+            self.export_csv_button.setEnabled(False)
+            self.import_csv_button.setEnabled(False)
             return
         self.show_candidate_result(self.state.candidate_result(StepId.TRANSLATE, candidate.id))
         output_exists = Path(candidate.path).is_file()
@@ -175,6 +192,8 @@ class TranslationStepPage(StepPage):
         self.manual_check_button.setEnabled(
             supported and output_exists and not getattr(self, "_processing", False)
         )
+        self.export_csv_button.setEnabled(output_exists and not getattr(self, "_processing", False))
+        self.import_csv_button.setEnabled(output_exists and not getattr(self, "_processing", False))
         count = 0
         if supported and output_exists:
             rows, _ = TranslationEditorDialog._read_segments(candidate.path)
@@ -185,6 +204,58 @@ class TranslationStepPage(StepPage):
 
     def _current_translation(self):
         return self.state.translation_candidate(str(self.translation_combo.currentData() or ""))
+
+    def _export_csv(self) -> None:
+        candidate = self._current_translation()
+        if not candidate:
+            return
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "Xuất segment Step 3 ra CSV",
+            str(Path(candidate.path).parent.parent / f"{candidate.id}.csv"), "CSV (*.csv)",
+        )
+        if not destination:
+            return
+        try:
+            payload = json.loads(Path(candidate.path).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("Output Step 3 không phải JSON object hợp lệ.")
+            rows = payload.get("segments")
+            if not isinstance(rows, list):
+                raise ValueError("Output Step 3 không có danh sách segment hợp lệ.")
+            export_segments(rows, Path(destination))
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError, csv.Error) as exc:
+            QMessageBox.warning(self, "Không thể xuất CSV", str(exc))
+            return
+        QMessageBox.information(
+            self, "Đã xuất CSV",
+            "Có thể thêm hàng với ID và Source để trống. Giữ nguyên ID của các hàng cũ."
+            f"\n\n{destination}",
+        )
+
+    def _import_csv(self) -> None:
+        candidate = self._current_translation()
+        if not candidate:
+            return
+        if any(status == StepStatus.RUNNING for status in self.state.statuses.values()):
+            QMessageBox.information(self, "Pipeline đang chạy", "Hãy chờ step hiện tại hoàn thành rồi nhập CSV.")
+            return
+        source, _ = QFileDialog.getOpenFileName(
+            self, "Nhập CSV thành output Step 3 mới", "", "CSV (*.csv)",
+        )
+        if not source:
+            return
+        try:
+            imported = self.state.import_translation_csv(candidate.id, source)
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError, csv.Error) as exc:
+            QMessageBox.warning(self, "Không thể nhập CSV", str(exc))
+            return
+        self._refresh_translations(prefer_selected=True)
+        QMessageBox.information(
+            self, "Đã tạo output Step 3 mới",
+            f"Đã tạo {imported.segment_count} segment và chọn làm input Step 4. "
+            "Có thể chạy lại Step 4 → 7.\n\n"
+            f"{imported.path}",
+        )
 
     def _select_for_step_four(self) -> None:
         candidate = self._current_translation()

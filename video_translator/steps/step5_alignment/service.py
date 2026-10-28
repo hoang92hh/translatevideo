@@ -883,7 +883,11 @@ def repair_sync_segments(
         if (
             segment_id not in tts_segments
             or segment_id not in translation_segments
-            or (transcript_segments and segment_id not in transcript_segments)
+            or (
+                transcript_segments
+                and segment_id not in transcript_segments
+                and translation_segments.get(segment_id, {}).get("origin") != "step3_csv_import"
+            )
         )
     ]
     if missing:

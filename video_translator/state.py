@@ -6,6 +6,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, Signal
 
@@ -26,6 +27,7 @@ from .common.models import (
 )
 from .project import VideoProject
 from .steps.step2_transcription.service import assess_transcript_timeline
+from .steps.step3_translation.csv_exchange import import_segments
 
 
 class ProjectState(QObject):
@@ -774,6 +776,79 @@ class ProjectState(QObject):
         self.project_changed.emit()
         self.save_project()
         return True
+
+    def import_translation_csv(self, source_candidate_id: str, csv_path: str) -> TranslationCandidate:
+        source_candidate = self.translation_candidate(source_candidate_id)
+        if not self.project or not source_candidate or not Path(source_candidate.path).is_file():
+            raise ValueError("Không tìm thấy output Step 3 nguồn để nhập CSV.")
+        source_payload = json.loads(Path(source_candidate.path).read_text(encoding="utf-8"))
+        if not isinstance(source_payload, dict):
+            raise ValueError("Output Step 3 nguồn không phải JSON object hợp lệ.")
+        original_rows = source_payload.get("segments")
+        if not isinstance(original_rows, list):
+            raise ValueError("Output Step 3 nguồn không có danh sách segment hợp lệ.")
+        transcript_id = str(source_payload.get("source_transcript_candidate_id", ""))
+        if transcript_id and transcript_id != self.selected_transcript_candidate_id:
+            raise ValueError("Hãy chọn transcript Step 2 của output nguồn trước khi nhập CSV.")
+        rows = import_segments(Path(csv_path), original_rows)
+
+        now = datetime.now(timezone.utc)
+        candidate_id = f"translation-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        folder = Path(self.workspace_path("translations", candidate_id))
+        output_path = folder / "translated_segments.json"
+        profile_path = folder / "dialogue_profile.json"
+        source_profile_path = Path(str(source_payload.get("dialogue_profile_path") or ""))
+        has_profile = source_profile_path.is_file()
+        payload = {
+            **source_payload,
+            "candidate_id": candidate_id,
+            "created_at": now.isoformat(timespec="seconds"),
+            "source_translation_candidate_id": source_candidate_id,
+            "imported_from_csv": Path(csv_path).name,
+            "dialogue_profile_path": str(profile_path) if has_profile else "",
+            "skipped_translation_ids": [row["id"] for row in rows if not row["translated_text"]],
+            "segments": rows,
+        }
+        workflow = payload.get("workflow")
+        if isinstance(workflow, dict):
+            payload["workflow"] = {key: value for key, value in workflow.items() if key != "review_issues"}
+        folder.mkdir(parents=True, exist_ok=False)
+        try:
+            if has_profile:
+                profile_payload = json.loads(source_profile_path.read_text(encoding="utf-8"))
+                profile_payload["candidate_id"] = candidate_id
+                profile_payload["created_at"] = payload["created_at"]
+                profile_path.write_text(json.dumps(profile_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            profile_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise
+
+        summary = f"Đã nhập CSV · {len(rows)} segment · từ {source_candidate.label}"
+        metadata = {
+            **source_candidate.metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "translation_candidate_id": candidate_id,
+        }
+        candidate = TranslationCandidate(
+            id=candidate_id,
+            label=f"CSV · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
+            created_at=payload["created_at"],
+            path=str(output_path),
+            segment_count=len(rows),
+            summary=summary,
+            metadata=metadata,
+        )
+        self.translation_candidates[candidate_id] = candidate
+        if not self.select_translation_candidate(candidate_id):
+            self.translation_candidates.pop(candidate_id, None)
+            profile_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise ValueError("Không thể nạp output JSON vừa tạo từ CSV.")
+        return candidate
 
     def save_translation_candidate_edits(
         self,

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_MODEL_IDS, GEMINI_PROVIDER_NAME, gemini_model_note
 from ...config.prompt_templates import (
     DEFAULT_PROMPT_TEMPLATE_ID,
+    GEMINI_LEGACY_TEMPLATE_IDS,
     list_prompt_templates,
 )
 from ...config.translation import PROPER_NAME_MODE_AUTO, PROPER_NAME_MODES
@@ -367,6 +368,8 @@ class TranslationProviderSelector(QWidget):
             provider,
             DEFAULT_PROMPT_TEMPLATE_ID,
         )
+        if provider == GEMINI_PROVIDER_NAME:
+            selected = GEMINI_LEGACY_TEMPLATE_IDS.get(selected, selected)
         self.prompt_template.blockSignals(True)
         self.prompt_template.clear()
         try:

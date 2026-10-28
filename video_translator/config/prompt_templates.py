@@ -12,6 +12,11 @@ from .web_translation import CHATGPT_WEB_PROVIDER_NAME, CLAUDE_WEB_PROVIDER_NAME
 
 PROMPT_TEMPLATE_ROOT = Path(os.environ.get("TRANSLANGUAGE_DISTRIBUTION_ROOT", Path(__file__).resolve().parents[2])) / "reference" / "prompt_template"
 DEFAULT_PROMPT_TEMPLATE_ID = "standard"
+GEMINI_DEFAULT_PROMPT_TEMPLATE_ID = "Tu_tien"
+GEMINI_LEGACY_TEMPLATE_IDS = {
+    "standard": GEMINI_DEFAULT_PROMPT_TEMPLATE_ID,
+    "cotrang-chiensu": "Cotrang_chiensu",
+}
 PROMPT_SECTION = "PROMPT"
 PROMPT_TEMPLATE_VARIABLES = (
     "source_language",
@@ -54,6 +59,11 @@ def _template_folder(provider: str) -> Path:
 
 def _parse_template(provider: str, path: Path) -> PromptTemplate:
     text = path.read_text(encoding="utf-8")
+    if provider == GEMINI_PROVIDER_NAME:
+        prompt = text.strip()
+        if not prompt:
+            raise ValueError(f"Prompt template {path.name} trống.")
+        return PromptTemplate(provider, path.stem, path.stem, prompt, path)
     name_match = re.search(r"^#\s+(.+?)\s*$", text, re.MULTILINE)
     name = name_match.group(1).strip() if name_match else path.stem
     headings = list(re.finditer(r"^##\s+([A-Z_]+)\s*$", text, re.MULTILINE))
@@ -81,7 +91,10 @@ def list_prompt_templates(provider: str) -> list[PromptTemplate]:
     return sorted(
         templates,
         key=lambda item: (
-            item.template_id != DEFAULT_PROMPT_TEMPLATE_ID,
+            item.template_id != (
+                GEMINI_DEFAULT_PROMPT_TEMPLATE_ID
+                if provider == GEMINI_PROVIDER_NAME else DEFAULT_PROMPT_TEMPLATE_ID
+            ),
             item.name.casefold(),
         ),
     )
@@ -92,12 +105,24 @@ def load_prompt_template(
     template_id: str = DEFAULT_PROMPT_TEMPLATE_ID,
 ) -> PromptTemplate:
     normalized = Path(template_id.strip() or DEFAULT_PROMPT_TEMPLATE_ID).stem
+    if provider == GEMINI_PROVIDER_NAME:
+        normalized = GEMINI_LEGACY_TEMPLATE_IDS.get(normalized, normalized)
     path = _template_folder(provider) / f"{normalized}.md"
     if not path.is_file():
         raise ValueError(
             f"Không tìm thấy prompt template '{normalized}' của {provider}."
         )
     return _parse_template(provider, path)
+
+
+def strip_prompt_marker(prompt: str) -> str:
+    """Remove standalone PROMPT headings from content sent to Gemini."""
+    return re.sub(
+        r"^[ \t]*##[ \t]*PROMPT[ \t]*(?:\r?\n|$)",
+        "",
+        prompt,
+        flags=re.IGNORECASE | re.MULTILINE,
+    ).strip()
 
 
 def render_prompt_template(
@@ -107,7 +132,7 @@ def render_prompt_template(
     **values: str,
 ) -> str:
     template = load_prompt_template(provider, template_id)
-    prompt = template.prompt
+    prompt = strip_prompt_marker(template.prompt) if provider == GEMINI_PROVIDER_NAME else template.prompt
     for name, value in values.items():
         prompt = prompt.replace("{" + name + "}", value)
     return prompt
@@ -148,22 +173,34 @@ def save_prompt_template(
         raise ValueError("Nội dung prompt không được để trống.")
     folder = _template_folder(provider)
     folder.mkdir(parents=True, exist_ok=True)
-    normalized_id = Path(template_id).stem if template_id else _safe_template_id(clean_name)
+    if provider == GEMINI_PROVIDER_NAME and not template_id and not re.fullmatch(r"[\w-]+", clean_name):
+        raise ValueError("Tên prompt Gemini phải là tên file hợp lệ, không gồm .md.")
+    normalized_id = (
+        Path(template_id).stem if template_id else
+        clean_name if provider == GEMINI_PROVIDER_NAME else _safe_template_id(clean_name)
+    )
     if not template_id:
         base = normalized_id
         suffix = 2
-        while (folder / f"{normalized_id}.md").exists():
+        while (folder / f"{normalized_id}.md").exists() or (
+            provider == GEMINI_PROVIDER_NAME and normalized_id in GEMINI_LEGACY_TEMPLATE_IDS
+        ):
             normalized_id = f"{base}-{suffix}"
             suffix += 1
     path = folder / f"{normalized_id}.md"
-    content = [f"# {clean_name}", "", f"## {PROMPT_SECTION}", "", clean_prompt]
-    path.write_text("\n".join(content).rstrip() + "\n", encoding="utf-8")
+    if provider == GEMINI_PROVIDER_NAME:
+        path.write_text(clean_prompt.rstrip() + "\n", encoding="utf-8")
+    else:
+        content = [f"# {clean_name}", "", f"## {PROMPT_SECTION}", "", clean_prompt]
+        path.write_text("\n".join(content).rstrip() + "\n", encoding="utf-8")
     return _parse_template(provider, path)
 
 
 def delete_prompt_template(provider: str, template_id: str) -> None:
     normalized = Path(template_id).stem
-    if normalized == DEFAULT_PROMPT_TEMPLATE_ID:
+    if normalized == DEFAULT_PROMPT_TEMPLATE_ID or (
+        provider == GEMINI_PROVIDER_NAME and normalized == GEMINI_DEFAULT_PROMPT_TEMPLATE_ID
+    ):
         raise ValueError("Prompt tiêu chuẩn không thể bị xóa.")
     path = _template_folder(provider) / f"{normalized}.md"
     if not path.is_file():

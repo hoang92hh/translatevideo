@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from ..config.gemini import GEMINI_PROVIDER_NAME
 from ..config.prompt_templates import (
     DEFAULT_PROMPT_TEMPLATE_ID,
+    GEMINI_DEFAULT_PROMPT_TEMPLATE_ID,
     PromptTemplate,
     delete_prompt_template,
     list_prompt_templates,
@@ -83,7 +84,8 @@ class PromptManagerDialog(QDialog):
         editor_layout = QVBoxLayout(editor)
         editor_layout.setContentsMargins(12, 0, 0, 0)
         name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("Tên prompt"))
+        self.name_label = QLabel("Tên prompt")
+        name_row.addWidget(self.name_label)
         self.name = QLineEdit()
         name_row.addWidget(self.name, 1)
         editor_layout.addLayout(name_row)
@@ -112,6 +114,7 @@ class PromptManagerDialog(QDialog):
 
     def _reload_templates(self, _provider: str = "", select_id: str = "") -> None:
         provider = self.provider.currentText()
+        self.name_label.setText("Tên file (không gồm .md)" if provider == GEMINI_PROVIDER_NAME else "Tên prompt")
         self.template_list.clear()
         try:
             templates = list_prompt_templates(provider)
@@ -140,15 +143,21 @@ class PromptManagerDialog(QDialog):
             return
         self._current_template_id = template.template_id
         self.name.setText(template.name)
+        self.name.setReadOnly(template.provider == GEMINI_PROVIDER_NAME)
         self.prompt_editor.setPlainText(template.prompt)
         self.delete_button.setEnabled(
             template.template_id != DEFAULT_PROMPT_TEMPLATE_ID
+            and not (
+                template.provider == GEMINI_PROVIDER_NAME
+                and template.template_id == GEMINI_DEFAULT_PROMPT_TEMPLATE_ID
+            )
         )
 
     def _new_template(self) -> None:
         self.template_list.clearSelection()
         self._current_template_id = ""
         self.name.clear()
+        self.name.setReadOnly(False)
         self.prompt_editor.clear()
         self.delete_button.setEnabled(False)
         self.name.setFocus()

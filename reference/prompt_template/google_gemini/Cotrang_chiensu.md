@@ -1,5 +1,3 @@
-# Cotrang_chiensu
-
 ## PROMPT
 
 TOPIC: Historical Chinese Drama / Feudal Warfare / Imperial Politics

@@ -46,6 +46,11 @@ class SourceVerifiedTranslationItem(BaseModel):
     translated_text: str
 
 
+class BatchTranslationOutput(BaseModel):
+    Noi_dung: str = Field(min_length=1)
+    segment_list: list[SourceVerifiedTranslationItem]
+
+
 class SpeakerGuidance(BaseModel):
     speaker_id: str
     character_name: str = ""
@@ -154,6 +159,7 @@ class GoogleTranslationService:
         segments: list[Segment],
         batch_index: int = 1,
         batch_total: int = 1,
+        previous_segment_summary: str = "",
     ) -> tuple[str, str, str]:
         first_id = segments[0].id
         last_id = segments[-1].id
@@ -177,6 +183,7 @@ class GoogleTranslationService:
             segment_count=str(len(segments)),
             batch_index=str(batch_index),
             batch_total=str(batch_total),
+            previous_segment_summary=previous_segment_summary,
         )
         return prompt, input_filename, output_filename
 
@@ -556,6 +563,7 @@ class GoogleTranslationService:
         batch_index: int = 1,
         batch_total: int = 1,
         validation_feedback: str = "",
+        previous_segment_summary: str = "",
     ) -> TranslationResponse:
         content = {
             "dialogue_profile": dialogue_profile,
@@ -566,27 +574,34 @@ class GoogleTranslationService:
             "context_after": [self._segment_payload(segment) for segment in context_after],
             "previous_translations": previous_translations,
         }
+        is_step_batch = (
+            self.batch_prompt_context is not None
+            and self.batch_prompt_context.get("batch_prompt_mode", "step") == "step"
+        )
+        if is_step_batch and previous_segment_summary:
+            content["Boi_canh_doan_truoc"] = previous_segment_summary
         prompt, input_filename, output_filename = self._stage_prompt(
             "TRANSLATION",
             segments,
             batch_index,
             batch_total,
+            previous_segment_summary,
         )
-        prompt += (
-            "\n\nFor every translated item, copy id and source_text exactly from the "
-            "corresponding segments_to_translate item in the attached JSON. "
-            "Return only objects with id, speaker_id, source_text, and translated_text. "
-            "Keep id and source_text exactly unchanged. For speaker_id, choose the correct "
-            "speaker from the speaker IDs present in the request, correcting diarization errors "
-            "when the dialogue context clearly shows that another speaker is speaking. Never invent "
-            "a new speaker ID or renumber IDs. Combine consecutive fragments only if each preceding "
-            "original end_seconds EXACTLY equals the next start_seconds; any gap or overlap forbids "
-            "combining. Semantic continuity is also required. Put one "
-            "complete translated utterance at the first ID, with empty translated_text at the "
-            "absorbed IDs. Never merge response objects or source_text fields. Every empty "
-            "translation is skipped by the tool; do not return extra fields."
-
-        )
+        if not is_step_batch:
+            prompt += (
+                "\n\nFor every translated item, copy id and source_text exactly from the "
+                "corresponding segments_to_translate item in the attached JSON. "
+                "Return only objects with id, speaker_id, source_text, and translated_text. "
+                "Keep id and source_text exactly unchanged. For speaker_id, choose the correct "
+                "speaker from the speaker IDs present in the request, correcting diarization errors "
+                "when the dialogue context clearly shows that another speaker is speaking. Never invent "
+                "a new speaker ID or renumber IDs. Combine consecutive fragments only if each preceding "
+                "original end_seconds EXACTLY equals the next start_seconds; any gap or overlap forbids "
+                "combining. Semantic continuity is also required. Put one "
+                "complete translated utterance at the first ID, with empty translated_text at the "
+                "absorbed IDs. Never merge response objects or source_text fields. Every empty "
+                "translation is skipped by the tool; do not return extra fields."
+            )
         if validation_feedback:
             prompt += (
                 "\n\nRETRY FEEDBACK: The previous response failed validation:\n"
@@ -602,7 +617,7 @@ class GoogleTranslationService:
         parsed, credential_source = self._generate_structured(
             content,
             prompt,
-            list[SourceVerifiedTranslationItem],
+            BatchTranslationOutput if is_step_batch else list[SourceVerifiedTranslationItem],
             0.2,
             input_filename,
             output_filename,
@@ -611,6 +626,25 @@ class GoogleTranslationService:
             batch_index=batch_index,
             batch_total=batch_total,
         )
+        segment_summary = ""
+        if is_step_batch:
+            try:
+                output = BatchTranslationOutput.model_validate(parsed)
+                segment_summary = output.Noi_dung.strip()
+                if not segment_summary:
+                    raise ValueError("Noi_dung trống.")
+                parsed = output.segment_list
+            except (ValidationError, TypeError, ValueError) as exc:
+                self._record_diagnostic_error(
+                    diagnostic_dir, "validate_response", "Thiếu Noi_dung hoặc segment_list.",
+                    reason=str(exc),
+                )
+                raise UserFacingError(
+                    "Gemini trả về sai cấu trúc batch",
+                    f"Batch {batch_index}/{batch_total}: cần object có Noi_dung và segment_list.",
+                    "Kiểm tra response.json trong thư mục chẩn đoán.",
+                    str(exc),
+                ) from exc
         if not isinstance(parsed, list):
             self._record_diagnostic_error(
                 diagnostic_dir, "validate_response", "Phản hồi không phải JSON array.",
@@ -728,7 +762,7 @@ class GoogleTranslationService:
                 "Mở request.json, response.json và error.json để đối chiếu.",
                 json.dumps(issues, ensure_ascii=False, indent=2),
             )
-        return TranslationResponse(result, credential_source, corrected_speakers)
+        return TranslationResponse(result, credential_source, corrected_speakers, segment_summary)
 
     def review_translation(
         self,

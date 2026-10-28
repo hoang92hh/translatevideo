@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from .gemini import GEMINI_PROVIDER_NAME
-from .prompt_templates import PROMPT_TEMPLATE_ROOT, PromptTemplate, load_prompt_template, render_prompt_template
+from .prompt_templates import PROMPT_TEMPLATE_ROOT, PromptTemplate, render_prompt_template
 from .web_translation import CHATGPT_WEB_PROVIDER_NAME
 
 
@@ -45,11 +45,10 @@ def prepare_translation_prompt(
     mode = str(batch_context.get("batch_prompt_mode", "step"))
     template = load_batch_prompt(provider, mode)
     if provider == GEMINI_PROVIDER_NAME and mode == "step":
-        topic = load_prompt_template(provider, template_id).prompt
-        variables["topic_content"] = re.sub(
-            r"\{([a-z_]+)\}",
-            lambda match: variables.get(match.group(1), match.group(0)),
-            topic,
+        previous_summary = str(variables.get("previous_segment_summary", "")).strip()
+        variables["previous_segment_context"] = (
+            "## Diễn biến phân đoạn trước đó\n" + previous_summary + "\n\n"
+            if previous_summary else ""
         )
     # Substitute once: braces in user-edited stories must stay literal.
     return re.sub(

@@ -282,6 +282,10 @@ def execute(
     )
     segments = previous_segments(state, StepId.TRANSLATE)
     is_gemini = provider == GEMINI_PROVIDER_NAME
+    is_gemini_step_batch = (
+        is_gemini and batch_context is not None
+        and batch_context.get("batch_prompt_mode", "step") == "step"
+    )
     uses_empty_groups = provider in {GEMINI_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME}
     original_segments = deepcopy(segments) if uses_empty_groups else []
     all_project_segments = bool(settings.get("all_project_segments", True))
@@ -384,6 +388,7 @@ def execute(
         "configured_batch_size": configured_batch_size,
         "all_project_segments": all_project_segments,
         "translation_strategy": translation_strategy,
+        **({"batch_summaries": response.batch_summaries} if is_gemini_step_batch else {}),
         "skipped_translation_ids": skipped_translation_ids,
         "context_consistency": False,
         "dialogue_profile_path": str(profile_path),

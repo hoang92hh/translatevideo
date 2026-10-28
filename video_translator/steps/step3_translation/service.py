@@ -24,6 +24,7 @@ class TranslationWorkflowResult:
     translation_batch_count: int
     review_batch_count: int
     review_issues: list[dict[str, object]]
+    batch_summaries: list[dict[str, object]]
 
 
 class TranslationWorkflow:
@@ -206,6 +207,8 @@ class TranslationWorkflow:
         credential_source = ""
 
         translated: dict[int, str] = {}
+        previous_segment_summary = ""
+        batch_summaries: list[dict[str, object]] = []
         review_issues: list[dict[str, object]] = []
         is_gemini = getattr(self.provider, "provider_name", "") == GEMINI_PROVIDER_NAME
         supports_speaker_corrections = getattr(self.provider, "provider_name", "") in {
@@ -247,6 +250,7 @@ class TranslationWorkflow:
                         response_file=True,
                         batch_index=index,
                         batch_total=len(batches),
+                        **({"previous_segment_summary": previous_segment_summary} if is_gemini else {}),
                         **retry_options,
                     )
                     batch_result = self._validate_translations(response.translations, batch, "dịch")
@@ -280,6 +284,9 @@ class TranslationWorkflow:
                 assert last_error is not None
                 raise last_error
             translated.update(batch_result)
+            if is_gemini and getattr(self.provider, "batch_prompt_context", None) is not None:
+                previous_segment_summary = response.segment_summary
+                batch_summaries.append({"batch_index": index, "Noi_dung": previous_segment_summary})
             # Gemini automatic assessment/review is temporarily disabled.
             # if is_gemini:
             #     review_issues.extend(self._target_language_issues(
@@ -306,6 +313,7 @@ class TranslationWorkflow:
             translation_batch_count=len(batches),
             review_batch_count=0,
             review_issues=review_issues,
+            batch_summaries=batch_summaries,
         )
 
 

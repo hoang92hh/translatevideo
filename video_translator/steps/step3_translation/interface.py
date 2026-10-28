@@ -13,6 +13,7 @@ class TranslationResponse:
     translations: dict[int, str]
     credential_source: str = ""
     corrected_speakers: dict[int, str] = field(default_factory=dict)
+    segment_summary: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,7 @@ class TranslationProvider(Protocol):
         response_file: bool = False,
         batch_index: int = 1,
         batch_total: int = 1,
+        previous_segment_summary: str = "",
     ) -> TranslationResponse: ...
 
     def review_translation(

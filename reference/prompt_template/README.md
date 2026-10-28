@@ -33,8 +33,9 @@ Mỗi project chỉ lưu provider và mã template đã chọn. Popup **Quản l
 ## Prompt batch theo step
 
 Prompt tạo story và prompt dịch Step 3 trong popup batch được quản lý tại `../prompt_batch/`.
-Riêng batch Step 3 của Google Gemini chèn nội dung template được chọn tại
-**Thiết lập project → Step 3** vào biến `{topic_content}` của prompt dịch batch.
+Riêng batch Step 3 của Google Gemini dùng quy tắc cố định trong
+`../prompt_batch/google_gemini/translation.md`; template được chọn vẫn dùng cho
+luồng dịch ngoài popup batch.
 Tác vụ tạo story dùng `../prompt_batch/google_gemini/story.md` hoặc
 `../prompt_batch/chatgpt_web/story.md` theo provider đã chọn. Prompt phân tích video
 `google_gemini/story/video_analysis.md` và `chatgpt_web/story/video_analysis.md` vẫn nằm

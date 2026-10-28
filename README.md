@@ -131,9 +131,8 @@ timestamp, rồi dùng provider/model đang cấu hình ở **Thiết lập proj
 Prompt tạo story nằm tại `reference/prompt_batch/google_gemini/story.md` hoặc
 `reference/prompt_batch/chatgpt_web/story.md` theo provider đã chọn.
 Story mới không thêm danh sách Group/video vào nội dung API trả về; story cũ được làm sạch
-khối thông tin này khi nạp hoặc dùng để dịch. Batch Step 3 với Gemini ghép phần
-`## PROMPT` của template đã chọn trong **Thiết lập project → Step 3** vào
-`{topic_content}` của `reference/prompt_batch/google_gemini/translation.md`.
+khối thông tin này khi nạp hoặc dùng để dịch. Batch Step 3 với Gemini dùng trực tiếp
+quy tắc Tiên hiệp trong `reference/prompt_batch/google_gemini/translation.md`.
 Tên file cố định là `stories/story_group_<group>.md`. Chuỗi Step 1 → 3 không tạo lại Group
 đã có story hợp lệ. **Chạy lại từ 1–2** luôn tạo candidate và file Step 1 mới rồi
 output Step 2 mới cho video đã tích, kể cả khi đã có output; nút này không tạo story
@@ -158,6 +157,9 @@ output dùng chung Step 3 hiện tại; cấu hình `Segments / batch` và tùy 
 giữ nguyên ý nghĩa trong project. Output segment vẫn gồm `id`, `speaker_id`, `source_text`,
 `translated_text`; metadata lưu tên story và video để đối chiếu. Luồng dịch ngoài popup vẫn
 dùng `prompt_template`. Story trống/không tồn tại hoặc thiếu đầu vào Step 2 sẽ báo lỗi cho video đó.
+Riêng Gemini trong popup trả object gồm `Noi_dung` và `segment_list`; ứng dụng lưu
+tóm tắt đã xác thực và gửi vào batch kế tiếp. Batch đầu không có diễn biến trước.
+ChatGPT Web tiếp tục dùng định dạng mảng segment hiện tại.
 **Kiểm tra / sửa bản dịch** ở Step 3 mặc định chỉ liệt kê câu còn chữ Trung Quốc và cặp câu
 dịch có nội dung liền kề giống từ 70% hoặc chứa nhau theo chuỗi từ đầy đủ. Khi so sánh, bỏ qua
 hoa/thường, dấu câu, khoảng trắng thừa và segment rỗng do gộp/bỏ qua; giữ dấu tiếng Việt và thứ tự từ.

@@ -41,6 +41,7 @@ class _PersistentTtsWorker:
         self,
         request: dict[str, object],
         progress: ProgressCallback | None,
+        kind: str = "synthesize",
     ) -> tuple[dict[str, object] | None, dict[str, object] | None, str]:
         with self._lock:
             if self._closed or self._close_requested.is_set():
@@ -53,7 +54,7 @@ class _PersistentTtsWorker:
             process = self._ensure_process_locked()
             stderr_start = len(self._stderr_chunks)
             request_id = uuid4().hex
-            payload = {**request, "type": "synthesize", "request_id": request_id}
+            payload = {**request, "type": kind, "request_id": request_id}
             try:
                 assert process.stdin is not None and process.stdout is not None
                 process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -197,7 +198,10 @@ def _persistent_worker(
         if worker and worker.signature == signature:
             return worker
         previous = _PERSISTENT_WORKERS.pop(session_key, None)
-        worker = _PersistentTtsWorker(command, environment, signature)
+        worker = _PersistentTtsWorker(
+            command, environment, signature,
+            idle_timeout=86_400.0 if session_key.startswith("step-batch:") else 180.0,
+        )
         _PERSISTENT_WORKERS[session_key] = worker
     if previous:
         previous.request_close()
@@ -279,6 +283,30 @@ class TextToSpeechService:
             "Provider này cần môi trường Python riêng để không xung đột dependency của các bước khác.",
             f"Chạy {setup_script}, hoặc đặt {environment_name} tới Python của runtime đã cài.",
         )
+
+    def preload(self, session_key: str, target_language: str) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "utf-8"
+        environment["PYTHONPATH"] = os.pathsep.join(
+            value for value in (str(self._repo_root()), environment.get("PYTHONPATH", "")) if value
+        )
+        command = [str(self._python_executable()), "-m", "video_translator.steps.step4_tts.worker"]
+        signature = json.dumps(
+            {"command": command, "provider": self.provider, "settings": self.settings},
+            ensure_ascii=False, sort_keys=True, default=str,
+        )
+        worker = _persistent_worker(session_key, command, environment, signature)
+        result, error, stderr = worker.execute(
+            {"provider": self.provider, "settings": self.settings,
+             "target_language": target_language, "repo_root": str(self._repo_root())},
+            None, kind="preload",
+        )
+        if error or result is None:
+            raise TextToSpeechError(
+                "Không thể nạp model Step 4",
+                str((error or {}).get("message", "Worker không trả về kết quả.")),
+                "Kiểm tra provider và model đã cấu hình.", stderr,
+            )
 
     def synthesize(
         self,

@@ -46,7 +46,13 @@ class TranscriptTimelineDialog(QDialog):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         for row, segment in enumerate(segments):
-            values = (segment.id, segment.speaker_id, segment.start, segment.end, segment.source_text, "")
+            missing_timeline = segment.start == 0.0 and segment.end == 0.0
+            values = (
+                segment.id, segment.speaker_id,
+                "" if missing_timeline else segment.start,
+                "" if missing_timeline else segment.end,
+                segment.source_text, "",
+            )
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value))
                 if column == 4:
@@ -78,9 +84,11 @@ class TranscriptTimelineDialog(QDialog):
         updates = {}
         for row, segment in enumerate(self.segments):
             try:
+                start_text = self.table.item(row, 2).text().strip()
+                end_text = self.table.item(row, 3).text().strip()
                 updates[segment.id] = {
-                    "start": float(self.table.item(row, 2).text()),
-                    "end": float(self.table.item(row, 3).text()),
+                    "start": float(start_text) if start_text else 0.0,
+                    "end": float(end_text) if end_text else 0.0,
                 }
             except ValueError:
                 QMessageBox.warning(self, "Thời gian không hợp lệ", f"ID {segment.id}: nhập Start/End bằng số giây.")

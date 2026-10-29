@@ -12,6 +12,7 @@ from typing import Callable
 
 from ...config.diarization import configured_model_path, missing_model_files
 from ...errors import UserFacingError
+from .batch_session import run_batch_worker
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -25,6 +26,44 @@ class SpeechToTextError(UserFacingError):
     pass
 
 
+def preload_batch_models(session_key: str, settings: dict[str, object]) -> None:
+    if not settings:
+        return
+    request: dict[str, object] = {
+        "type": "preload",
+        "batch_session": True,
+        "model_name": str(settings.get("model", "medium")),
+        "model_cache_dir": str(SpeechToTextService.model_cache_dir()),
+        "requested_device": str(settings.get("device", "Auto")),
+    }
+    result, error, stderr, _ = run_batch_worker(session_key, "stt", request)
+    if error and request["requested_device"] == "Auto" and error.get("fallback_to_cpu"):
+        request["requested_device"] = "CPU"
+        request["original_request"] = "Auto"
+        result, error, stderr, _ = run_batch_worker(session_key, "stt", request)
+    if error or result is None:
+        raise SpeechToTextError(
+            "Không thể nạp model Step 2", str((error or {}).get("message", "Worker không trả về kết quả.")),
+            "Kiểm tra model và thiết bị đã cấu hình.", stderr,
+        )
+    if bool(settings.get("diarization", False)):
+        model_path = configured_model_path().resolve()
+        device = "GPU" if "GPU" in str(result.get("actual_device", "")) else "CPU"
+        diar_request: dict[str, object] = {
+            "type": "preload", "batch_session": True,
+            "model_path": str(model_path), "device": device,
+        }
+        diar_result, diar_error, stderr, _ = run_batch_worker(session_key, "diarization", diar_request)
+        if diar_error and device == "GPU" and settings.get("device") == "Auto":
+            diar_request["device"] = "CPU"
+            diar_result, diar_error, stderr, _ = run_batch_worker(session_key, "diarization", diar_request)
+        if diar_error or diar_result is None:
+            raise SpeechToTextError(
+                "Không thể nạp model diarization", str((diar_error or {}).get("message", "Worker không trả về kết quả.")),
+                "Kiểm tra model local và thiết bị đã cấu hình.", stderr,
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class TranscriptSegment:
     start: float
@@ -35,6 +74,7 @@ class TranscriptSegment:
 
 
 TIMELINE_ISSUE_LABELS = {
+    "missing_timeline": "Chưa có Start/End",
     "invalid_interval": "Start/End không hợp lệ",
     "non_increasing_start": "Start trùng hoặc sai thứ tự",
     "overlap": "Chồng thời gian",
@@ -45,16 +85,20 @@ def assess_transcript_timeline(segments) -> list[dict[str, object]]:
     """Collect editable timing errors without changing any transcript content."""
     flags: dict[int, set[str]] = {}
     valid = []
+    previous_valid = None
     for index, item in enumerate(segments, start=1):
         segment_id = getattr(item, "id", index)
-        if (not math.isfinite(item.start) or not math.isfinite(item.end)
+        if item.start == 0.0 and item.end == 0.0:
+            flags.setdefault(segment_id, set()).add("missing_timeline")
+        elif (not math.isfinite(item.start) or not math.isfinite(item.end)
                 or item.start < 0 or item.end <= item.start):
             flags.setdefault(segment_id, set()).add("invalid_interval")
         else:
             valid.append((segment_id, item))
-        if index > 1 and item.start <= segments[index - 2].start:
-            for affected in (segment_id, getattr(segments[index - 2], "id", index - 1)):
-                flags.setdefault(affected, set()).add("non_increasing_start")
+            if previous_valid and item.start <= previous_valid[1].start:
+                for affected in (segment_id, previous_valid[0]):
+                    flags.setdefault(affected, set()).add("non_increasing_start")
+            previous_valid = (segment_id, item)
     active = []
     for segment_id, item in sorted(valid, key=lambda pair: pair[1].start):
         active = [(previous_id, previous) for previous_id, previous in active if previous.end > item.start]
@@ -92,6 +136,7 @@ class SpeechToTextService:
         diarization: bool = False,
         merge_adjacent_segments: bool = False,
         segment_recovery: bool = False,
+        batch_session: str = "",
     ) -> None:
         self.model_name = model_name
         self.device = device
@@ -100,6 +145,7 @@ class SpeechToTextService:
         self.segment_recovery = segment_recovery
         self.diarization = diarization
         self.merge_adjacent_segments = merge_adjacent_segments
+        self.batch_session = batch_session
 
     @staticmethod
     def model_cache_dir() -> Path:
@@ -769,36 +815,41 @@ class SpeechToTextService:
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         completed: dict[str, object] | None = None
         worker_error: dict[str, object] | None = None
-        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
-            process = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=stderr_file,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=environment,
-                creationflags=creation_flags,
+        if self.batch_session:
+            completed, worker_error, stderr, return_code = run_batch_worker(
+                self.batch_session, "diarization", {**request, "batch_session": True}, progress,
             )
-            assert process.stdin is not None
-            assert process.stdout is not None
-            process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
-            process.stdin.close()
-            for raw_line in process.stdout:
-                try:
-                    event = json.loads(raw_line.strip())
-                except json.JSONDecodeError:
-                    continue
-                if event.get("type") == "progress" and progress:
-                    progress(int(event.get("value", 0)), str(event.get("message", "")))
-                elif event.get("type") == "result":
-                    completed = event
-                elif event.get("type") == "error":
-                    worker_error = event
-            return_code = process.wait()
-            stderr_file.seek(0)
-            stderr = stderr_file.read().strip()
+        else:
+            with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=stderr_file,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=environment,
+                    creationflags=creation_flags,
+                )
+                assert process.stdin is not None
+                assert process.stdout is not None
+                process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+                process.stdin.close()
+                for raw_line in process.stdout:
+                    try:
+                        event = json.loads(raw_line.strip())
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("type") == "progress" and progress:
+                        progress(int(event.get("value", 0)), str(event.get("message", "")))
+                    elif event.get("type") == "result":
+                        completed = event
+                    elif event.get("type") == "error":
+                        worker_error = event
+                return_code = process.wait()
+                stderr_file.seek(0)
+                stderr = stderr_file.read().strip()
         if worker_error or return_code != 0 or completed is None:
             detail = str((worker_error or {}).get("technical_detail", ""))
             if stderr:
@@ -824,42 +875,47 @@ class SpeechToTextService:
         result: dict[str, object] | None = None
         worker_error: dict[str, object] | None = None
 
-        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
-            process = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=stderr_file,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=environment,
-                creationflags=creation_flags,
+        if self.batch_session:
+            result, worker_error, stderr, return_code = run_batch_worker(
+                self.batch_session, "stt", {**request, "batch_session": True}, progress,
             )
-            assert process.stdin is not None
-            assert process.stdout is not None
-            process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
-            process.stdin.close()
+        else:
+            with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=stderr_file,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=environment,
+                    creationflags=creation_flags,
+                )
+                assert process.stdin is not None
+                assert process.stdout is not None
+                process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+                process.stdin.close()
 
-            for raw_line in process.stdout:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                event_type = event.get("type")
-                if event_type == "progress" and progress:
-                    progress(int(event.get("value", 0)), str(event.get("message", "")))
-                elif event_type == "result":
-                    result = event
-                elif event_type == "error":
-                    worker_error = event
+                for raw_line in process.stdout:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    event_type = event.get("type")
+                    if event_type == "progress" and progress:
+                        progress(int(event.get("value", 0)), str(event.get("message", "")))
+                    elif event_type == "result":
+                        result = event
+                    elif event_type == "error":
+                        worker_error = event
 
-            return_code = process.wait()
-            stderr_file.seek(0)
-            stderr = stderr_file.read().strip()
+                return_code = process.wait()
+                stderr_file.seek(0)
+                stderr = stderr_file.read().strip()
 
         if worker_error:
             if self.device == "Auto" and bool(worker_error.get("fallback_to_cpu", False)):

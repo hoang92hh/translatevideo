@@ -28,6 +28,8 @@ MELO_LANGUAGE_CODES = provider_value("melo", "LANGUAGE_CODES")
 _CURRENT_REQUEST_ID = ""
 _VIENEU_MODELS: dict[str, Any] = {}
 _PIPER_VOICES: dict[str, Any] = {}
+_MELO_MODELS: dict[tuple[str, str], Any] = {}
+_MELO_CONVERTERS: dict[str, Any] = {}
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -388,7 +390,11 @@ def run_melo(settings: dict[str, Any], segments: list[dict[str, Any]], output: P
     device, actual = select_torch_device(requested)
     from melo.api import TTS
 
-    model = TTS(language=language, device=device)
+    model_key = (language, device)
+    model = _MELO_MODELS.get(model_key)
+    if model is None:
+        model = TTS(language=language, device=device)
+        _MELO_MODELS[model_key] = model
     speakers = model.hps.data.spk2id
     speed = float(settings.get("speed", 1.0))
     profiles = [speaker_profile(settings, item) for item in segments]
@@ -400,8 +406,11 @@ def run_melo(settings: dict[str, Any], segments: list[dict[str, Any]], output: P
 
         checkpoint_root = Path(os.environ.get("TRANSLANGUAGE_OPENVOICE_CHECKPOINTS", repo_root / ".runtimes" / "melo" / "checkpoints_v2"))
         converter_dir = checkpoint_root / "converter"
-        converter = ToneColorConverter(str(converter_dir / "config.json"), device=device)
-        converter.load_ckpt(str(converter_dir / "checkpoint.pth"))
+        converter = _MELO_CONVERTERS.get(device)
+        if converter is None:
+            converter = ToneColorConverter(str(converter_dir / "config.json"), device=device)
+            converter.load_ckpt(str(converter_dir / "checkpoint.pth"))
+            _MELO_CONVERTERS[device] = converter
     target_cache: dict[str, Any] = {}
     source_cache: dict[str, Any] = {}
     files: list[str] = []
@@ -471,8 +480,73 @@ def run_melo(settings: dict[str, Any], segments: list[dict[str, Any]], output: P
     }
 
 
+def preload_models(request: dict[str, Any]) -> None:
+    provider = str(request["provider"])
+    settings = dict(request.get("settings", {}))
+    if provider == VIENEU_PROVIDER:
+        requested = str(settings.get("device", "Auto"))
+        if requested == "CPU":
+            backend = "onnx"
+        else:
+            try:
+                import torch
+                has_cuda = bool(torch.cuda.is_available())
+            except ImportError:
+                has_cuda = False
+            if requested == "GPU" and not has_cuda:
+                raise RuntimeError("Đã chọn GPU nhưng CUDA không khả dụng cho VieNeu-TTS.")
+            backend = "pytorch" if has_cuda else "onnx"
+        if backend not in _VIENEU_MODELS:
+            from vieneu import Vieneu
+            _VIENEU_MODELS[backend] = Vieneu(backend=backend)
+    elif provider == PIPER_PROVIDER:
+        from piper import PiperVoice
+        profiles = [settings.get("shared_speaker_profile", {})]
+        profiles.extend((settings.get("speaker_profiles") or {}).values())
+        profiles.extend((settings.get("speaker_group_profiles") or {}).values())
+        profiles.append(settings)
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            raw = str(profile.get("model_path") or profile.get("voice") or "").strip()
+            if not raw or not raw.lower().endswith(".onnx"):
+                continue
+            path = str(Path(raw).expanduser().resolve())
+            if path not in _PIPER_VOICES:
+                _PIPER_VOICES[path] = PiperVoice.load(path, config_path=f"{path}.json")
+    elif provider == MELO_OPENVOICE_PROVIDER:
+        language = MELO_LANGUAGE_CODES.get(str(request.get("target_language", "")))
+        if not language:
+            raise RuntimeError("Ngôn ngữ đích không được MeloTTS hỗ trợ.")
+        device, _ = select_torch_device(str(settings.get("device", "Auto")))
+        from melo.api import TTS
+        key = (language, device)
+        if key not in _MELO_MODELS:
+            _MELO_MODELS[key] = TTS(language=language, device=device)
+        profiles = [settings.get("shared_speaker_profile", {})]
+        profiles.extend((settings.get("speaker_profiles") or {}).values())
+        profiles.extend((settings.get("speaker_group_profiles") or {}).values())
+        if settings.get("reference_voice") or any(
+            isinstance(profile, dict) and profile.get("reference_voice") for profile in profiles
+        ):
+            from openvoice.api import ToneColorConverter
+            root = Path(str(request["repo_root"]))
+            checkpoint_root = Path(os.environ.get(
+                "TRANSLANGUAGE_OPENVOICE_CHECKPOINTS", root / ".runtimes" / "melo" / "checkpoints_v2",
+            ))
+            converter_dir = checkpoint_root / "converter"
+            if device not in _MELO_CONVERTERS:
+                converter = ToneColorConverter(str(converter_dir / "config.json"), device=device)
+                converter.load_ckpt(str(converter_dir / "checkpoint.pth"))
+                _MELO_CONVERTERS[device] = converter
+    emit({"type": "result", "model": provider})
+
+
 def handle_request(request: dict[str, Any]) -> None:
     try:
+        if request.get("type") == "preload":
+            preload_models(request)
+            return
         provider = str(request["provider"])
         settings = dict(request.get("settings", {}))
         segments = list(request.get("segments", []))

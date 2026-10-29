@@ -1,20 +1,25 @@
+import csv
+import json
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from video_translator.common.models import StepId
+from video_translator.common.models import StepId, StepStatus
 from video_translator.errors import UserFacingError
+from video_translator.steps.step2_transcription.csv_exchange import export_segments
 from video_translator.ui.transcript_timeline_dialog import TranscriptTimelineDialog
 from video_translator.ui.components import Card
 from video_translator.ui.specs import DEVICE_FIELD, FieldSpec, ProviderSpec, StepSpec
@@ -48,7 +53,49 @@ class SpeechToTextStepPage(StepPage):
     def __init__(self, state) -> None:
         self._chain_running = False
         self._processing = False
+        self._old_text_cache: dict[str, tuple[int, int, dict[int, str]]] = {}
         super().__init__(state)
+
+    def _build_result_column(self) -> QVBoxLayout:
+        column = super()._build_result_column()
+        self.table.setHorizontalHeaderLabels(
+            ["ID", "Speaker", "Start", "End", "Source", "Text Old", "Audio"]
+        )
+        return column
+
+    def _show_result(self, result) -> None:
+        super()._show_result(result)
+        old_text_by_id: dict[int, str] = {}
+        path = result.artifacts.get("transcript", "")
+        if path:
+            try:
+                transcript_path = Path(path)
+                stamp = transcript_path.stat()
+                cached = self._old_text_cache.get(path)
+                if cached and cached[:2] == (stamp.st_mtime_ns, stamp.st_size):
+                    old_text_by_id = cached[2]
+                else:
+                    payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+                    old_text_by_id = {
+                        int(row["id"]): str(row["text_old"])
+                        for row in payload.get("segments", [])
+                        if isinstance(row, dict) and "id" in row and "text_old" in row
+                    }
+                    self._old_text_cache[path] = (stamp.st_mtime_ns, stamp.st_size, old_text_by_id)
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                pass
+        self._updating_table = True
+        try:
+            for index, segment in enumerate(result.segments):
+                item = QTableWidgetItem(old_text_by_id.get(segment.id, ""))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(index, 5, item)
+        finally:
+            self._updating_table = False
+
+    def _table_cell_changed(self, row: int, column: int) -> None:
+        if column != 5:
+            super()._table_cell_changed(row, column)
 
     def _build_header(self) -> QHBoxLayout:
         header = super()._build_header()
@@ -114,6 +161,11 @@ class SpeechToTextStepPage(StepPage):
         self._refresh_rerun_button()
         if hasattr(self, "timeline_button"):
             self.timeline_button.setDisabled(busy)
+        if hasattr(self, "import_button"):
+            self.import_button.setDisabled(busy)
+        if hasattr(self, "export_csv_button"):
+            self.export_csv_button.setDisabled(busy)
+            self.import_csv_button.setDisabled(busy)
         if not busy and hasattr(self, "transcript_combo"):
             self._refresh_transcripts(prefer_selected=True)
 
@@ -134,6 +186,19 @@ class SpeechToTextStepPage(StepPage):
         self.transcript_info.setObjectName("muted")
         self.transcript_info.setWordWrap(True)
         layout.addWidget(self.transcript_info)
+
+        self.import_button = QPushButton("Nhập TXT/SRT thành output mới")
+        self.import_button.clicked.connect(self._import_text_file)
+        self.export_csv_button = QPushButton("Xuất CSV")
+        self.export_csv_button.clicked.connect(self._export_csv)
+        self.import_csv_button = QPushButton("Nhập CSV thành output mới")
+        self.import_csv_button.clicked.connect(self._import_csv)
+        import_actions = QHBoxLayout()
+        import_actions.addWidget(self.import_button)
+        import_actions.addWidget(self.export_csv_button)
+        import_actions.addWidget(self.import_csv_button)
+        import_actions.addStretch()
+        layout.addLayout(import_actions)
 
         actions = QHBoxLayout()
         self.timeline_button = QPushButton("Kiểm tra / sửa timeline")
@@ -174,6 +239,9 @@ class SpeechToTextStepPage(StepPage):
         if not candidate:
             self.transcript_info.setText("Chưa có transcript")
             self.timeline_button.setEnabled(False)
+            self.import_button.setEnabled(self.state.can_run(StepId.STT) and not self._processing)
+            self.export_csv_button.setEnabled(False)
+            self.import_csv_button.setEnabled(False)
             self.show_candidate_result(None)
             return
         status = "Sẵn sàng" if Path(candidate.path).is_file() else "File không tồn tại"
@@ -189,7 +257,81 @@ class SpeechToTextStepPage(StepPage):
         count = int(result.metadata.get("timeline_error_count", 0)) if result else 0
         self.timeline_button.setText(f"Kiểm tra / sửa timeline ({count})")
         self.timeline_button.setEnabled(result is not None and not self._processing)
+        self.import_button.setEnabled(self.state.can_run(StepId.STT) and not self._processing)
+        self.export_csv_button.setEnabled(Path(candidate.path).is_file() and not self._processing)
+        self.import_csv_button.setEnabled(Path(candidate.path).is_file() and not self._processing)
         self.show_candidate_result(result)
+
+    def _export_csv(self) -> None:
+        candidate = self._current_transcript()
+        if not candidate:
+            return
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "Xuất segment Step 2 ra CSV",
+            str(Path(candidate.path).parent.parent / f"{candidate.id}.csv"), "CSV (*.csv)",
+        )
+        if not destination:
+            return
+        try:
+            payload = json.loads(Path(candidate.path).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
+                raise ValueError("Output Step 2 không có danh sách segment hợp lệ.")
+            export_segments(payload["segments"], Path(destination))
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError, csv.Error) as exc:
+            QMessageBox.warning(self, "Không thể xuất CSV", str(exc))
+            return
+        QMessageBox.information(self, "Đã xuất CSV", f"Đã xuất {destination}")
+
+    def _import_csv(self) -> None:
+        candidate = self._current_transcript()
+        if not candidate:
+            return
+        if any(status == StepStatus.RUNNING for status in self.state.statuses.values()):
+            QMessageBox.information(self, "Pipeline đang chạy", "Hãy chờ step hiện tại hoàn thành rồi nhập CSV.")
+            return
+        source, _ = QFileDialog.getOpenFileName(
+            self, "Nhập CSV thành output Step 2 mới", "", "CSV (*.csv)",
+        )
+        if not source:
+            return
+        try:
+            imported = self.state.import_transcript_csv(candidate.id, source)
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError, csv.Error) as exc:
+            QMessageBox.warning(self, "Không thể nhập CSV", str(exc))
+            return
+        self._refresh_transcripts(prefer_selected=True)
+        QMessageBox.information(
+            self, "Đã tạo output Step 2 mới",
+            f"Đã nhập {imported.segment_count} segment và chọn làm input Step 3. "
+            "Nếu còn lỗi timeline, hãy mở Kiểm tra / sửa timeline.\n\n"
+            f"{imported.path}",
+        )
+
+    def _import_text_file(self) -> None:
+        if any(status == StepStatus.RUNNING for status in self.state.statuses.values()):
+            QMessageBox.information(self, "Pipeline đang chạy", "Hãy chờ step hiện tại hoàn thành rồi nhập file.")
+            return
+        source, _ = QFileDialog.getOpenFileName(
+            self, "Nhập text vào Step 2", "", "Text và phụ đề (*.txt *.srt)",
+        )
+        if not source:
+            return
+        candidate = self._current_transcript()
+        try:
+            imported = self.state.import_transcript_text(source, candidate.id if candidate else "")
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError) as exc:
+            QMessageBox.warning(self, "Nhập transcript thất bại", f"File: {source}\n\n{exc}")
+            return
+        self._refresh_transcripts(prefer_selected=True)
+        status = (
+            "Transcript còn lỗi timeline; mở Kiểm tra / sửa timeline trước khi chạy Step 3."
+            if self.state.statuses[StepId.STT] == StepStatus.ERROR
+            else "Output mới đã được chọn làm input Step 3."
+        )
+        QMessageBox.information(
+            self, "Đã nhập transcript",
+            f"Đã tạo {imported.segment_count} segment. {status}\n\n{imported.path}",
+        )
 
     def _open_timeline_editor(self) -> None:
         candidate = self._current_transcript()

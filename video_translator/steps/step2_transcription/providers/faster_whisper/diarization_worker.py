@@ -50,6 +50,9 @@ def _turns(annotation: object) -> list[dict[str, object]]:
     return ordered
 
 
+_BATCH_PIPELINES: dict[tuple[str, str], Any] = {}
+
+
 def run(request: dict[str, Any]) -> None:
     model_path = Path(str(request["model_path"])).resolve()
     if not (model_path / "config.yaml").is_file():
@@ -63,12 +66,21 @@ def run(request: dict[str, Any]) -> None:
     import torch
     from pyannote.audio import Pipeline
 
-    pipeline = Pipeline.from_pretrained(str(model_path))
     requested_device = str(request.get("device", "CPU"))
+    pipeline_key = (str(model_path), requested_device)
+    pipeline = _BATCH_PIPELINES.get(pipeline_key)
+    if pipeline is None:
+        pipeline = Pipeline.from_pretrained(str(model_path))
     actual_device = "CPU"
     if requested_device == "GPU" and torch.cuda.is_available():
-        pipeline.to(torch.device("cuda"))
+        if pipeline_key not in _BATCH_PIPELINES:
+            pipeline.to(torch.device("cuda"))
         actual_device = "NVIDIA GPU (CUDA)"
+    if request.get("batch_session"):
+        _BATCH_PIPELINES[pipeline_key] = pipeline
+    if request.get("type") == "preload":
+        emit({"type": "result", "model": str(model_path), "actual_device": actual_device})
+        return
 
     input_audio = Path(str(request["input_audio"]))
     progress(15, "Đang đọc audio vào bộ nhớ…")
@@ -99,21 +111,14 @@ def run(request: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    line = sys.stdin.readline()
-    if not line:
-        emit({"type": "error", "message": "Worker không nhận được dữ liệu đầu vào."})
-        return 1
-    try:
-        run(json.loads(line))
-    except Exception as exc:
-        emit(
-            {
-                "type": "error",
-                "message": str(exc) or exc.__class__.__name__,
-                "technical_detail": repr(exc),
-            }
-        )
-        return 1
+    for line in sys.stdin:
+        request = json.loads(line)
+        if request.get("type") == "shutdown":
+            break
+        try:
+            run(request)
+        except Exception as exc:
+            emit({"type": "error", "message": str(exc) or exc.__class__.__name__, "technical_detail": repr(exc)})
     return 0
 
 

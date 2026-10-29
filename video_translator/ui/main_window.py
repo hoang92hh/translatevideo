@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QThread, QTimer
 from PySide6.QtGui import QCloseEvent
@@ -25,6 +26,10 @@ from ..batch_project import BatchProject, BatchProjectService
 from ..common.models import STEP_ORDER, StepId, StepStatus
 from ..pipeline import MockPipeline
 from ..pipeline.step_batch_runner import StepBatchRunner
+from ..pipeline.txt_repair_batch_runner import TxtRepairBatchRunner
+from ..pipeline.batch_model_preloader import BatchModelPreloader
+from ..steps.step2_transcription.batch_session import release_batch_session
+from ..steps.step4_tts.service import release_tts_session
 from ..pipeline.story_worker import VideoAnalysisWorker, validate_story_settings
 from ..steps.step3_translation.quality import assess_manual_segments
 from ..pipeline.worker import (
@@ -295,18 +300,52 @@ class MainWindow(QMainWindow):
     def _show_step_batch(self) -> None:
         if self.batch_project:
             dialog = StepBatchDialog(self.batch_project, self)
+            dialog.model_session_key = f"step-batch:{uuid4().hex}"
             dialog.step1_to_3_requested.connect(
                 lambda video_ids: self._start_step_1_to_3(dialog, video_ids)
             )
             dialog.rebuild_1_2_requested.connect(
                 lambda video_ids: self._rerun_step_1_2(dialog, video_ids)
             )
+            dialog.step2_5_requested.connect(
+                lambda video_ids: self._start_txt_repair_batch(dialog, video_ids)
+            )
             dialog.regenerate_stories_requested.connect(
                 lambda groups: self._regenerate_group_stories(dialog, groups)
             )
             dialog.step3_requested.connect(lambda video_ids: self._start_step_batch(dialog, video_ids, StepId.TRANSLATE))
-            dialog.step7_requested.connect(lambda video_ids: self._start_step_batch(dialog, video_ids, StepId.RENDER))
-            dialog.exec()
+            dialog.step4_5_requested.connect(
+                lambda video_ids: self._start_step_pair(dialog, video_ids, StepId.TTS, StepId.SYNC)
+            )
+            dialog.step6_7_requested.connect(
+                lambda video_ids: self._start_step_pair(dialog, video_ids, StepId.BUILD_AUDIO, StepId.RENDER)
+            )
+            preloader = BatchModelPreloader(
+                dialog.model_session_key,
+                self.batch_project.batch_settings.get(StepId.STT.value, {}),
+                self.batch_project.batch_settings.get(StepId.TTS.value, {}),
+                self.batch_project.target_language,
+            )
+            dialog.set_batch_busy(True, 2)
+            dialog.update_batch_progress(0, "Đang nạp model cho popup…")
+            preloader.progress_changed.connect(lambda message: dialog.update_batch_progress(0, message))
+
+            def models_loaded(errors: list[str]) -> None:
+                dialog.set_batch_busy(False)
+                if errors:
+                    dialog.update_batch_progress(0, "Không thể nạp một số model; xem chi tiết và kiểm tra cấu hình.")
+                    QMessageBox.warning(dialog, "Nạp model batch", "\n".join(errors))
+                else:
+                    dialog.update_batch_progress(0, "Model đã sẵn sàng; chọn video và lệnh batch.")
+
+            preloader.loaded.connect(models_loaded)
+            preloader.start()
+            try:
+                dialog.exec()
+            finally:
+                preloader.wait()
+                release_batch_session(dialog.model_session_key)
+                release_tts_session(dialog.model_session_key)
 
     def _start_step_batch(
         self, dialog: StepBatchDialog, video_ids: list[str], step: StepId, *,
@@ -328,6 +367,8 @@ class MainWindow(QMainWindow):
         if video_ids and not settings:
             QMessageBox.information(dialog, f"Thiếu thiết lập Step {number}", f"Hãy hoàn tất Step {number} trong Thiết lập project trước khi chạy.")
             return False
+        if step in {StepId.STT, StepId.TTS} and video_ids:
+            settings["_batch_model_session"] = dialog.model_session_key
         if step == StepId.EXTRACT and force_new_output:
             settings["force_new_output"] = True
         story_settings = dict(self.batch_project.batch_settings.get(StepId.TRANSLATE.value, {}))
@@ -411,6 +452,73 @@ class MainWindow(QMainWindow):
         runner.finished.connect(finished)
         runner.start()
         return True
+
+    def _start_txt_repair_batch(self, dialog: StepBatchDialog, video_ids: list[str]) -> None:
+        if not self.batch_project or not video_ids:
+            return
+        if self.batch_running or self.active_workers:
+            QMessageBox.information(dialog, "Pipeline đang chạy", "Hãy chờ tác vụ hiện tại hoàn tất.")
+            return
+        try:
+            for page in self.pages.values():
+                page.prepare_run()
+        except Exception as exc:
+            QMessageBox.warning(dialog, "Không thể chuẩn bị Step 2.5", str(exc))
+            return
+        runner = TxtRepairBatchRunner(self.batch_project, video_ids, self)
+        self.batch_running = True
+        self.batch_status_message = "Đang chạy batch Step 2.5"
+        dialog.set_batch_busy(True, 2.5)
+        self._refresh_header()
+        runner.worker_started.connect(self.active_workers.add)
+        runner.worker_finished.connect(self.active_workers.discard)
+        runner.video_changed.connect(dialog.refresh_video_status)
+        runner.video_changed.connect(lambda _video_id: self._refresh_header())
+        runner.progress_changed.connect(dialog.update_batch_progress)
+
+        def finished(succeeded: int, failed: int) -> None:
+            self.batch_running = False
+            self.batch_status_message = (
+                f"Batch Step 2.5 hoàn tất · Thành công: {succeeded} · Lỗi: {failed}"
+            )
+            try:
+                if self.state.project and self.state.project.video_id in video_ids:
+                    self._reload_viewed_video(self.state.project.video_id)
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Không thể nạp lại video đang xem", str(exc))
+            self._refresh_header()
+            details = runner.errors + runner.summaries
+            runner.deleteLater()
+            dialog.step2_5_finished(succeeded, failed, details)
+
+        runner.finished.connect(finished)
+        runner.start()
+
+    def _start_step_pair(
+        self, dialog: StepBatchDialog, video_ids: list[str], first: StepId, second: StepId,
+    ) -> None:
+        ready: list[str] = []
+
+        def finish_first(
+            _succeeded: int, failed_first: int, _story_error: str,
+            _review_count: int, _story_count: int,
+        ) -> None:
+            if not ready:
+                dialog.batch_finished(0, failed_first)
+                return
+
+            def finish_second(
+                succeeded: int, failed_second: int, _story_error2: str,
+                _review_count2: int, _story_count2: int,
+            ) -> None:
+                dialog.batch_finished(succeeded, failed_first + failed_second)
+
+            if not self._start_step_batch(dialog, ready, second, completion=finish_second):
+                dialog.set_batch_busy(False)
+
+        self._start_step_batch(
+            dialog, video_ids, first, succeeded_video_ids=ready, completion=finish_first,
+        )
 
     def _start_step_1_to_3(self, dialog: StepBatchDialog, video_ids: list[str]) -> None:
         if not self.batch_project or not video_ids:

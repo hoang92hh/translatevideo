@@ -44,6 +44,7 @@ def execute(
         segment_recovery=bool(settings.get("segment_recovery", False)),
         diarization=bool(settings.get("diarization", False)),
         merge_adjacent_segments=bool(settings.get("merge_adjacent_segments", False)),
+        batch_session=str(settings.get("_batch_model_session", "")),
     )
     transcription = service.transcribe(input_audio, progress)
     segments = [

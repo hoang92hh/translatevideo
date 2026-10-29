@@ -19,6 +19,8 @@
 
 ## Step 2 — Nhận dạng lời nói và speaker
 
+Ngoài nhận dạng audio, Step 2 có một nút nhập file `.txt` hoặc `.srt` để tạo transcript candidate mới. TXT đọc từng dòng không trắng và thay text theo thứ tự các segment của transcript đang chọn; số dòng phải khớp, ID/Start/End/Speaker giữ nguyên. SRT đọc riêng từng mục phụ đề, dùng timestamp và text trong file để tạo segment mới với ID liên tiếp và `SPEAKER_UNKNOWN`; các mục không được chồng thời gian. Khi nhập thất bại, ứng dụng báo file và nguyên nhân; output cũ không bị thay đổi. Khi thành công, output mới được chọn làm input Step 3.
+
 - **Đầu vào:** audio được chọn từ Step 1; ngôn ngữ nguồn, model, CPU/GPU, VAD, Segment recovery và tùy chọn speaker diarization.
 - **Xử lý:** Faster-Whisper nhận dạng lời nói, xuất câu cùng timestamp từng từ. VAD mặc định bật. Segment recovery mặc định tắt; khi bật cùng VAD và có thời lượng audio, worker rà các vùng nghi bị bỏ sót và thử nhận dạng phục hồi. Tắt Segment recovery không tắt VAD của lượt nhận dạng chính. Nếu bật diarization, hệ thống gán speaker theo vùng tiếng nói, làm mượt các lần đổi speaker; có tùy chọn gộp những đoạn liền kề.
 - **Model/engine:** **Faster-Whisper** (mặc định `medium`; UI có `small`, `medium`, `large-v3`). Diarization là tùy chọn, dùng model local **`pyannote-speaker-diarization-community-1`**. FFmpeg/decoder hỗ trợ đọc audio. Thiết bị thực tế có thể là CPU hoặc GPU theo cấu hình và khả năng runtime.

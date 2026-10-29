@@ -38,8 +38,8 @@ class StepBatchRunner(QObject):
         regenerate_stories: bool = False,
     ) -> None:
         super().__init__(parent)
-        if step not in {StepId.EXTRACT, StepId.STT, StepId.TRANSLATE, StepId.RENDER}:
-            raise ValueError("Runner hiện chỉ hỗ trợ Step 1, Step 2, Step 3 và Step 7.")
+        if step not in {StepId.EXTRACT, StepId.STT, StepId.TRANSLATE, StepId.TTS, StepId.SYNC, StepId.BUILD_AUDIO, StepId.RENDER}:
+            raise ValueError("Runner không hỗ trợ step đã chọn.")
         self.step = step
         self.step_number = STEP_ORDER.index(step) + 1
         self.project = project
@@ -186,6 +186,11 @@ class StepBatchRunner(QObject):
                     self.result.segments, self.state.target_language,
                 ):
                     self.review_video_count += 1
+                if self.step == StepId.SYNC and self.state.statuses[self.step] != StepStatus.DONE:
+                    error = (
+                        f"Step 5 đã lưu output nhưng còn {int(self.result.metadata.get('error_count', 0))} "
+                        "segment đồng bộ lỗi cần sửa."
+                    )
                 if self.step == StepId.STT:
                     video_id = self.video_ids[self.position - 1]
                     texts = [segment.source_text.strip() for segment in self.result.segments if segment.source_text.strip()]

@@ -27,6 +27,8 @@ from .common.models import (
 )
 from .project import VideoProject
 from .steps.step2_transcription.service import assess_transcript_timeline
+from .steps.step2_transcription.import_text import read_srt, read_txt
+from .steps.step2_transcription.csv_exchange import import_segments as import_transcript_csv_segments
 from .steps.step3_translation.csv_exchange import import_segments
 
 
@@ -516,6 +518,176 @@ class ProjectState(QObject):
         self.project_changed.emit()
         self.save_project()
         return True
+
+    def import_transcript_text(self, file_path: str, source_candidate_id: str = "") -> TranscriptCandidate:
+        if not self.project or not self.can_run(StepId.STT):
+            raise ValueError("Cần có audio Step 1 hợp lệ trước khi nhập transcript vào Step 2.")
+        source = Path(file_path)
+        extension = source.suffix.lower()
+        if extension not in {".txt", ".srt"}:
+            raise ValueError("Chỉ hỗ trợ file .txt hoặc .srt.")
+        if not source.is_file():
+            raise ValueError(f"Không tìm thấy file: {source}")
+
+        if extension == ".txt":
+            original = self.transcript_candidate(source_candidate_id)
+            if not original or not Path(original.path).is_file():
+                raise ValueError("Nhập TXT cần một output transcript Step 2 đang được chọn.")
+            payload = json.loads(Path(original.path).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
+                raise ValueError("Output transcript nguồn không có danh sách segment hợp lệ.")
+            original_input = str(original.metadata.get("input_candidate_id", ""))
+            if original_input and original_input != self.selected_audio_candidate_id:
+                raise ValueError("Hãy chọn lại audio Step 1 tương ứng với transcript nguồn trước khi nhập TXT.")
+            original_stem = str(original.metadata.get("input_stem", ""))
+            if original_stem and original_stem != self.selected_audio_stem:
+                raise ValueError("Hãy chọn lại đúng Voice hoặc Original Mix của transcript nguồn trước khi nhập TXT.")
+            rows = read_txt(source, payload["segments"])
+            base_metadata = dict(original.metadata)
+            source_transcript_id = original.id
+        else:
+            rows = read_srt(source)
+            payload = {
+                "version": 3,
+                "input_audio": self.audio_input_path(),
+                "source_language": self.source_language,
+                "language": self.source_language,
+                "language_probability": None,
+                "model": "SRT import",
+                "requested_device": "",
+                "actual_device": "",
+                "compute_type": "",
+                "device_selection_reason": "",
+                "vad_filter": False,
+                "segment_recovery": False,
+                "diarization": False,
+                "merge_adjacent_segments": False,
+                "diarization_turns": [],
+                "duration_seconds": max(row["end"] for row in rows),
+                "asr_recovery": {"enabled": False},
+            }
+            base_metadata = {}
+            source_transcript_id = ""
+
+        now = datetime.now(timezone.utc)
+        candidate_id = f"stt-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        folder = Path(self.workspace_path("transcripts", candidate_id))
+        output_path = folder / "transcript.json"
+        issues = assess_transcript_timeline([
+            Segment(
+                id=int(row["id"]), start=float(row["start"]), end=float(row["end"]),
+                source_text=str(row["text"]),
+            )
+            for row in rows
+        ])
+        payload.update({
+            "candidate_id": candidate_id,
+            "created_at": now.isoformat(timespec="seconds"),
+            "imported_from_file": source.name,
+            "import_format": extension[1:],
+            "source_transcript_candidate_id": source_transcript_id,
+            "timeline_issues": issues,
+            "timeline_error_count": len(issues),
+            "segments": rows,
+        })
+        folder.mkdir(parents=True, exist_ok=False)
+        temporary = output_path.with_suffix(".json.part")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(output_path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise
+
+        summary = f"Đã nhập {extension.upper()} · {len(rows)} segment"
+        metadata = {
+            **base_metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "input_candidate_id": self.selected_audio_candidate_id,
+            "input_stem": self.selected_audio_stem,
+            "transcript_candidate_id": candidate_id,
+            "recommended_transcript_candidate_id": candidate_id,
+        }
+        candidate = TranscriptCandidate(
+            id=candidate_id,
+            label=f"{extension[1:].upper()} · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
+            created_at=payload["created_at"], path=str(output_path),
+            segment_count=len(rows), summary=summary, metadata=metadata,
+        )
+        self.transcript_candidates[candidate_id] = candidate
+        if not self.select_transcript_candidate(candidate_id):
+            self.transcript_candidates.pop(candidate_id, None)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise ValueError("Không thể nạp output transcript vừa tạo.")
+        return candidate
+
+    def import_transcript_csv(self, source_candidate_id: str, csv_path: str) -> TranscriptCandidate:
+        source_candidate = self.transcript_candidate(source_candidate_id)
+        if not self.project or not source_candidate or not Path(source_candidate.path).is_file():
+            raise ValueError("Không tìm thấy output Step 2 nguồn để nhập CSV.")
+        source_payload = json.loads(Path(source_candidate.path).read_text(encoding="utf-8"))
+        if not isinstance(source_payload, dict):
+            raise ValueError("Output Step 2 nguồn không phải JSON object hợp lệ.")
+        original_rows = source_payload.get("segments")
+        if not isinstance(original_rows, list):
+            raise ValueError("Output Step 2 nguồn không có danh sách segment hợp lệ.")
+        rows = import_transcript_csv_segments(Path(csv_path), original_rows)
+        issues = assess_transcript_timeline([
+            Segment(
+                id=int(row["id"]), start=float(row["start"]), end=float(row["end"]),
+                source_text=str(row["text"]),
+            )
+            for row in rows
+        ])
+
+        now = datetime.now(timezone.utc)
+        candidate_id = f"stt-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        folder = Path(self.workspace_path("transcripts", candidate_id))
+        output_path = folder / "transcript.json"
+        payload = {
+            **source_payload,
+            "candidate_id": candidate_id,
+            "created_at": now.isoformat(timespec="seconds"),
+            "source_transcript_candidate_id": source_candidate_id,
+            "imported_from_csv": Path(csv_path).name,
+            "timeline_issues": issues,
+            "timeline_error_count": len(issues),
+            "segments": rows,
+        }
+        folder.mkdir(parents=True, exist_ok=False)
+        temporary = output_path.with_suffix(".json.part")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(output_path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise
+
+        summary = f"Đã nhập CSV · {len(rows)} segment · {len(issues)} lỗi timeline"
+        metadata = {
+            **source_candidate.metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "transcript_candidate_id": candidate_id,
+            "recommended_transcript_candidate_id": candidate_id,
+        }
+        candidate = TranscriptCandidate(
+            id=candidate_id,
+            label=f"CSV · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
+            created_at=payload["created_at"], path=str(output_path),
+            segment_count=len(rows), summary=summary, metadata=metadata,
+        )
+        self.transcript_candidates[candidate_id] = candidate
+        if not self.select_transcript_candidate(candidate_id):
+            self.transcript_candidates.pop(candidate_id, None)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise ValueError("Không thể nạp output transcript vừa tạo từ CSV.")
+        return candidate
 
     def save_transcript_candidate_edits(self, candidate_id: str, updates: dict) -> int:
         candidate = self.transcript_candidate(candidate_id)

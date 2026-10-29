@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...common.models import STEP_ORDER, StepResult, StepStatus
+from ...common.models import STEP_ORDER, StepId, StepResult, StepStatus
 from ...state import ProjectState
 from ..components import Card
 from ..specs import StepSpec
@@ -242,11 +242,14 @@ class StepPage(QWidget):
         self._updating_table = True
         self.table.setRowCount(len(result.segments))
         for row, segment in enumerate(result.segments):
+            missing_timeline = (
+                result.step == StepId.STT and segment.start == 0.0 and segment.end == 0.0
+            )
             values = (
                 str(segment.id),
                 segment.speaker_id,
-                f"{segment.start:.2f}",
-                f"{segment.end:.2f}",
+                "" if missing_timeline else f"{segment.start:.2f}",
+                "" if missing_timeline else f"{segment.end:.2f}",
                 segment.source_text,
                 segment.translated_text,
                 segment.synced_audio_file or segment.audio_file,

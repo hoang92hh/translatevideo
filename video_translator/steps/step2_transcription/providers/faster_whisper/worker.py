@@ -691,6 +691,9 @@ def classify_error(exc: Exception, requested: str, attempted_device: str) -> dic
     }
 
 
+_BATCH_MODELS: dict[tuple[str, str, str], Any] = {}
+
+
 def run(request: dict[str, Any]) -> None:
     requested = str(request.get("original_request", request.get("requested_device", "Auto")))
     worker_request = str(request.get("requested_device", "Auto"))
@@ -710,13 +713,21 @@ def run(request: dict[str, Any]) -> None:
         progress(5, device_selection_reason)
         model_name = str(request.get("model_name", "medium"))
         progress(8, f"Đang tải model {model_name} trên {actual_device}…")
-        model = WhisperModel(
-            model_name,
-            device=device,
-            compute_type="default",
-            download_root=str(request["model_cache_dir"]),
-        )
+        model_key = (model_name, device, str(request["model_cache_dir"]))
+        model = _BATCH_MODELS.get(model_key)
+        if model is None:
+            model = WhisperModel(
+                model_name,
+                device=device,
+                compute_type="default",
+                download_root=str(request["model_cache_dir"]),
+            )
+            if request.get("batch_session"):
+                _BATCH_MODELS[model_key] = model
         compute_type = str(model.model.compute_type)
+        if request.get("type") == "preload":
+            emit({"type": "result", "actual_device": actual_device, "compute_type": compute_type})
+            return
         progress(15, "Đang phân tích audio và nhận dạng lời nói…")
         segment_stream, info = model.transcribe(
             str(request["input_audio"]),
@@ -854,20 +865,11 @@ def run(request: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    line = sys.stdin.readline()
-    if not line:
-        emit(
-            {
-                "type": "error",
-                "title": "Worker Faster Whisper thiếu dữ liệu đầu vào",
-                "message": "Không nhận được yêu cầu nhận dạng từ ứng dụng.",
-                "suggestion": "Đóng và mở lại ứng dụng rồi thử lại.",
-                "technical_detail": "stdin was empty",
-                "fallback_to_cpu": False,
-            }
-        )
-        return 1
-    run(json.loads(line))
+    for line in sys.stdin:
+        request = json.loads(line)
+        if request.get("type") == "shutdown":
+            break
+        run(request)
     return 0
 
 

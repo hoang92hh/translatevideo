@@ -27,6 +27,8 @@ def execute(
     settings: dict[str, Any],
     progress: Callable[[int, str], None] | None = None,
 ) -> StepResult:
+    settings = dict(settings)
+    batch_session_key = str(settings.pop("_batch_model_session", ""))
     provider = str(settings.get("provider", VIENEU_PROVIDER))
     if provider == VIENEU_PROVIDER and state.target_language != "Vietnamese":
         raise UserFacingError(
@@ -166,6 +168,7 @@ def execute(
                 segment_folder,
                 state.target_language,
                 progress,
+                session_key=batch_session_key,
             )
             for segment, audio_file, segment_result in zip(
                 active_segments, synthesis.files, synthesis.segments, strict=True

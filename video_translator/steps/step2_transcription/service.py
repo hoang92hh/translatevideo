@@ -88,6 +88,10 @@ def assess_transcript_timeline(segments) -> list[dict[str, object]]:
     previous_valid = None
     for index, item in enumerate(segments, start=1):
         segment_id = getattr(item, "id", index)
+        if (not getattr(item, "source_text", "").strip()
+                and math.isfinite(item.start) and item.start >= 0
+                and item.end == item.start):
+            continue
         if item.start == 0.0 and item.end == 0.0:
             flags.setdefault(segment_id, set()).add("missing_timeline")
         elif (not math.isfinite(item.start) or not math.isfinite(item.end)

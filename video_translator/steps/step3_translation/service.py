@@ -194,19 +194,22 @@ class TranslationWorkflow:
         progress: ProgressCallback | None = None,
         target_language: str = "",
     ) -> TranslationWorkflowResult:
-        if not segments:
+        active_segments = [segment for segment in segments if segment.source_text.strip()]
+        if not active_segments:
             raise UserFacingError(
                 "Transcript trống",
                 "Step 3 không nhận được segment nào để dịch.",
                 "Chọn lại output hợp lệ của Step 2.",
             )
 
-        batches = self._batches(segments, self.batch_size)
+        batches = self._batches(active_segments, self.batch_size)
         resolved_name_policy = dict(proper_name_policy or {})
         dialogue_profile: dict[str, object] = {}
         credential_source = ""
 
-        translated: dict[int, str] = {}
+        translated: dict[int, str] = {
+            segment.id: "" for segment in segments if not segment.source_text.strip()
+        }
         previous_segment_summary = ""
         batch_summaries: list[dict[str, object]] = []
         review_issues: list[dict[str, object]] = []
@@ -217,8 +220,8 @@ class TranslationWorkflow:
         for index, batch in enumerate(batches, start=1):
             start = (index - 1) * self.batch_size
             end = start + len(batch)
-            before = segments[max(0, start - CONTEXT_SEGMENT_COUNT) : start]
-            after = segments[end : end + CONTEXT_SEGMENT_COUNT]
+            before = active_segments[max(0, start - CONTEXT_SEGMENT_COUNT) : start]
+            after = active_segments[end : end + CONTEXT_SEGMENT_COUNT]
             recent_ids = {segment.id for segment in before}
             recent_translations = {
                 segment_id: text

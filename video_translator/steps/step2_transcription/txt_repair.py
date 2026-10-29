@@ -58,18 +58,59 @@ def _match_timelines(
         and segment.start >= 0 and segment.end > segment.start
         for segment, text in zip(segments, source_texts, strict=True)
     ]
-    # Matching blocks recursively split the two sequences around full-line matches.
-    exact = SequenceMatcher(
-        None,
-        [text if valid else None for text, valid in zip(source_texts, valid_source, strict=True)],
-        target_texts,
-        autojunk=False,
-    ).get_matching_blocks()
-    anchors = [
-        (block.a + offset, block.b + offset)
-        for block in exact for offset in range(block.size)
-        if valid_source[block.a + offset] and target_texts[block.b + offset]
-    ]
+    # Consider every full-line match. Keep the most anchors in order, then
+    # prefer the chain with the greatest total ASR speaking duration.
+    exact_index: dict[str, list[int]] = defaultdict(list)
+    for line_index, text in enumerate(target_texts):
+        if text:
+            exact_index[text].append(line_index)
+    size = len(lines)
+    tree = [0] * (size + 1)
+    scores: list[tuple[int, float, int]] = [(0, 0.0, 0)]
+    links: list[tuple[int, int, int]] = [(-1, -1, -1)]
+
+    def better_exact(left: int, right: int) -> int:
+        return left if scores[left] >= scores[right] else right
+
+    def query_exact(position: int) -> int:
+        best = 0
+        while position > 0:
+            best = better_exact(best, tree[position])
+            position -= position & -position
+        return best
+
+    def update_exact(position: int, state: int) -> None:
+        while position <= size:
+            tree[position] = better_exact(state, tree[position])
+            position += position & -position
+
+    for source_index, segment in enumerate(segments):
+        if not valid_source[source_index]:
+            continue
+        pending: list[tuple[int, int]] = []
+        for line_index in exact_index.get(source_texts[source_index], []):
+            prior = query_exact(line_index)
+            previous = scores[prior]
+            position_gap = abs(
+                source_index / max(1, len(segments) - 1)
+                - line_index / max(1, size - 1)
+            )
+            scores.append((
+                previous[0] + 1,
+                previous[1] + segment.end - segment.start,
+                previous[2] - round(position_gap * 1000),
+            ))
+            links.append((prior, source_index, line_index))
+            pending.append((line_index + 1, len(scores) - 1))
+        for position, state in pending:
+            update_exact(position, state)
+    anchors: list[tuple[int, int]] = []
+    chosen = query_exact(size)
+    while chosen:
+        prior, source_index, line_index = links[chosen]
+        anchors.append((source_index, line_index))
+        chosen = prior
+    anchors.reverse()
     mapped: dict[int, int] = {source_index: line_index for source_index, line_index in anchors}
     methods: dict[int, str] = {source_index: "exact" for source_index, _ in anchors}
     boundaries = [(-1, -1), *anchors, (len(segments), len(lines))]
@@ -150,6 +191,72 @@ def _match_timelines(
             methods[source_index] = "partial"
             chosen = prior
 
+    # Use the already numbered matches as boundaries for the remaining TXT
+    # lines. A short ASR phrase must be considered even when it is not exact.
+    ordered_matches = [(-1, -1), *sorted(mapped.items()), (len(segments), len(lines))]
+    gaps = [
+        (source_before, line_before, source_after, line_after)
+        for (source_before, line_before), (source_after, line_after)
+        in zip(ordered_matches, ordered_matches[1:])
+    ]
+    while gaps:
+        source_before, line_before, source_after, line_after = gaps.pop()
+        available_sources = [
+            index for index in range(source_before + 1, source_after)
+            if valid_source[index] and index not in mapped
+        ]
+        available_lines = list(range(line_before + 1, line_after))
+        if not available_sources or not available_lines:
+            continue
+        reserve_order = len(available_sources) >= len(available_lines)
+        best: tuple[tuple[float, ...], int, int] | None = None
+        for line_position, line_index in enumerate(available_lines):
+            target = target_texts[line_index]
+            if not target:
+                continue
+            neighbors = [
+                target_texts[neighbor] for neighbor in (line_index - 1, line_index + 1)
+                if 0 <= neighbor < len(target_texts) and target_texts[neighbor] != target
+            ]
+            for source_position, source_index in enumerate(available_sources):
+                if reserve_order and (
+                    source_position < line_position
+                    or len(available_sources) - source_position - 1
+                    < len(available_lines) - line_position - 1
+                ):
+                    continue
+                source = source_texts[source_index]
+                if any(
+                    SequenceMatcher(None, source, neighbor, autojunk=False)
+                    .find_longest_match(0, len(source), 0, len(neighbor)).size
+                    / len(source) > 0.70
+                    for neighbor in neighbors
+                ):
+                    continue
+                common = SequenceMatcher(
+                    None, source, target, autojunk=False
+                ).find_longest_match(0, len(source), 0, len(target)).size
+                similarity = common / len(source)
+                rate_band, rate_distance = _reading_rate_score(
+                    segments[source_index], len(target)
+                )
+                score = (
+                    float(similarity >= 0.30),
+                    similarity if similarity >= 0.30 else 0.0,
+                    float(-rate_band),
+                    -rate_distance,
+                    float(segments[source_index].id),
+                )
+                if best is None or score > best[0]:
+                    best = (score, source_index, line_index)
+        if best is None:
+            continue
+        _, source_index, line_index = best
+        mapped[source_index] = line_index
+        methods[source_index] = "neighbor" if best[0][0] else "timing"
+        gaps.append((source_before, line_before, source_index, line_index))
+        gaps.append((source_index, line_index, source_after, line_after))
+
     assignments: list[dict[str, object]] = []
     for source_index, line_index in sorted(mapped.items()):
         source, target = source_texts[source_index], target_texts[line_index]
@@ -163,6 +270,88 @@ def _match_timelines(
             "similarity": round(common / len(source), 3),
         })
     return mapped, assignments
+
+
+def _duplicate_threshold(length: int) -> float:
+    if length <= 5:
+        return 0.6
+    if length < 15:
+        return 0.5
+    return 0.4
+
+
+def _same_asr_phrase(first: str, second: str) -> bool:
+    if not first or not second:
+        return False
+    common = SequenceMatcher(None, first, second, autojunk=False).find_longest_match(
+        0, len(first), 0, len(second)
+    ).size
+    return (common / len(first) >= _duplicate_threshold(len(first))
+            and common / len(second) >= _duplicate_threshold(len(second)))
+
+
+def _reading_rate_score(segment: Segment, character_count: int) -> tuple[int, float]:
+    seconds_per_character = (segment.end - segment.start) / max(1, character_count)
+    in_reference_range = 0.18 <= seconds_per_character <= 0.30
+    return (0 if in_reference_range else 1, abs(seconds_per_character - 0.22))
+
+
+def _remove_duplicate_pairs(
+    segments: list[Segment], lines: list[str], mapped: dict[int, int],
+) -> tuple[dict[int, int], set[int], dict[int, tuple[float, float]]]:
+    """Resolve adjacent ASR repetitions in disjoint pairs after TXT mapping."""
+    source_texts = [_normalized(segment.source_text) for segment in segments]
+    removed: set[int] = set()
+    combined_times: dict[int, tuple[float, float]] = {}
+    index = 0
+    while index + 1 < len(segments):
+        first, second = index, index + 1
+        if (not all(math.isfinite(value) for value in (
+                segments[first].start, segments[first].end,
+                segments[second].start, segments[second].end))
+                or segments[first].end <= segments[first].start
+                or segments[second].end <= segments[second].start
+                or segments[second].start < segments[first].start):
+            index += 1
+            continue
+        if not _same_asr_phrase(source_texts[first], source_texts[second]):
+            index += 1
+            continue
+        first_line, second_line = mapped.get(first), mapped.get(second)
+        if first_line is not None and second_line is not None:
+            index += 2
+            continue
+        if first_line is None and second_line is None:
+            first_length, second_length = len(source_texts[first]), len(source_texts[second])
+            if first_length != second_length:
+                keep = first if first_length > second_length else second
+            else:
+                keep = min((first, second), key=lambda position: (
+                    _reading_rate_score(segments[position], first_length), position
+                ))
+            combined_times[keep] = (segments[first].start, segments[second].end)
+        else:
+            assigned = first if first_line is not None else second
+            alternative = second if assigned == first else first
+            line_index = mapped[assigned]
+            target = _normalized(lines[line_index])
+            match = SequenceMatcher(
+                None, source_texts[alternative], target, autojunk=False
+            ).find_longest_match(0, len(source_texts[alternative]), 0, len(target)).size
+            alternative_compatible = (
+                bool(source_texts[alternative]) and
+                match / len(source_texts[alternative]) >=
+                _duplicate_threshold(len(source_texts[alternative]))
+            )
+            keep = assigned
+            if alternative_compatible and _reading_rate_score(
+                segments[alternative], len(target)
+            ) < _reading_rate_score(segments[assigned], len(target)):
+                keep = alternative
+                mapped[keep] = mapped.pop(assigned)
+        removed.add(second if keep == first else first)
+        index += 2
+    return mapped, removed, combined_times
 
 
 def _original_transcript(state: ProjectState, candidate_id: str):
@@ -197,6 +386,22 @@ def repair_transcript(
     if progress:
         progress(20, f"Đang căn chỉnh {len(rows)} segment với {len(lines)} dòng TXT…")
     mapped, assignments = _match_timelines(source_result.segments, lines)
+    mapped, removed, combined_times = _remove_duplicate_pairs(
+        source_result.segments, lines, mapped
+    )
+    segment_index_by_line = {line_index + 1: index for index, line_index in mapped.items()}
+    for assignment in assignments:
+        source_index = segment_index_by_line[assignment["txt_line"]]
+        source_segment = source_result.segments[source_index]
+        if assignment["source_segment_ids"] != [source_segment.id]:
+            source = _normalized(source_segment.source_text)
+            target = _normalized(lines[mapped[source_index]])
+            common = SequenceMatcher(None, source, target, autojunk=False).find_longest_match(
+                0, len(source), 0, len(target)
+            ).size
+            assignment["source_segment_ids"] = [source_segment.id]
+            assignment["method"] = "duplicate_rate"
+            assignment["similarity"] = round(common / len(source), 3)
     unchanged = len(rows) - len(mapped)
     if progress:
         progress(75, f"Đã ghép {len(mapped)}/{len(rows)} segment ASR; đang lưu output mới…")
@@ -208,13 +413,17 @@ def repair_transcript(
     new_rows = []
     for index, (row, segment) in enumerate(zip(rows, source_result.segments, strict=True)):
         old_text = str(row.get("text", row.get("source_text", "")))
-        text = lines[mapped[index]] if index in mapped else old_text
+        text = "" if index in removed else lines[mapped[index]] if index in mapped else old_text
+        start, end = combined_times.get(index, (segment.start, segment.end))
+        if index in removed:
+            end = start
         new_segments.append(Segment(
-            id=segment.id, start=segment.start, end=segment.end,
+            id=segment.id, start=start, end=end,
             speaker_id=segment.speaker_id, merge_parts=[dict(part) for part in segment.merge_parts],
             source_text=text,
         ))
-        new_rows.append({**row, "text_old": old_text, "text": text})
+        new_rows.append({**row, "text_old": old_text, "text": text,
+                         "start": start, "end": end})
     issues = assess_transcript_timeline(new_segments)
     report = {
         "source_transcript_candidate_id": source_id,
@@ -223,6 +432,7 @@ def repair_transcript(
         "source_segment_count": len(rows),
         "mapped_segment_count": len(mapped),
         "unchanged_segment_count": unchanged,
+        "removed_duplicate_count": len(removed),
     }
     new_payload = {
         **payload, "candidate_id": candidate_id, "created_at": now.isoformat(timespec="seconds"),
@@ -243,7 +453,8 @@ def repair_transcript(
         raise
     summary = (
         f"Đã ghép {len(mapped)}/{len(rows)} segment ASR với {len(lines)} dòng TXT; "
-        f"giữ nguyên text ASR ở {unchanged} segment; {len(issues)} segment cần kiểm tra timeline."
+        f"giữ nguyên text ASR ở {unchanged - len(removed)} segment; "
+        f"đặt rỗng {len(removed)} dòng trùng; {len(issues)} segment cần kiểm tra timeline."
     )
     metadata = {
         **source_result.metadata, **report,

@@ -719,6 +719,11 @@ class MainWindow(QMainWindow):
             for group, path in self.batch_project.story_group_files.items()
             if previous_group_members.get(group) == current_group_members.get(group)
         }
+        for group in current_group_members:
+            if group not in self.batch_project.story_group_files:
+                story_path = self.batch_project.path("stories", f"story_group_{group}.md")
+                if story_path.is_file():
+                    self.batch_project.set_story_for_group(int(group), story_path)
         self.batch_project.source_language = dialog.source_language.currentText()
         self.batch_project.target_language = dialog.target_language.currentText()
         self.batch_project.batch_settings = new_settings

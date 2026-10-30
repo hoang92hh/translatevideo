@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -60,7 +61,12 @@ class StepBatchDialog(QDialog):
         self.loaded_model_steps: set[StepId] = set()
         self.active_step_number: int | float = 1
         self.setWindowTitle("Chạy batch theo step")
-        self.resize(1280, 720)
+        screen = parent.screen() if parent is not None else QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(round(available.width() * 0.9), round(available.height() * 0.9))
+        else:
+            self.resize(1280, 720)
         self.step_statuses = {
             video.id: self._read_step_statuses(video) for video in project.videos
         }
@@ -80,7 +86,6 @@ class StepBatchDialog(QDialog):
         self.clear_selection_button.clicked.connect(lambda: self._set_all_checked(False))
         actions.addWidget(self.select_all_button)
         actions.addWidget(self.clear_selection_button)
-        actions.addWidget(QLabel("Thứ tự được quản lý tại Thiết lập project → Project & Input."))
         self.selection_label = QLabel()
         actions.addWidget(self.selection_label)
         actions.addStretch()
@@ -111,19 +116,6 @@ class StepBatchDialog(QDialog):
         self.table.itemChanged.connect(self._check_changed)
         layout.addWidget(self.table, 1)
 
-        helper = QLabel(
-            "Tích checkbox để chọn video theo thứ tự chung đã lưu trong thiết lập project. "
-            "Chọn một Step trong combobox rồi bấm Chạy step để chạy riêng Step đó cho các video đã tích. "
-            "Step 1.5 nhập SRT/TXT cùng tên video trong thư mục input thành output Step 2 mới; ưu tiên SRT. "
-            "Chạy lại từ 1–2 tạo output Step 1 và 2 mới "
-            "cho video đã tích, không tạo story. Step 2.5 dùng TXT cùng tên trong input; "
-            "nếu thiếu TXT, AI sửa ASR tiếng Trung theo story Group và tạo output Step 2 mới. "
-            "Step 4&5 tạo voice và đồng bộ; "
-            "Step 6&7 ghép audio rồi render video."
-        )
-        helper.setWordWrap(True)
-        layout.addWidget(helper)
-        single_step_actions = QHBoxLayout()
         self.single_step_selector = QComboBox()
         for label, value in (
             ("Step 1", 1), ("Step 1.5", 1.5), ("Step 2", 2),
@@ -134,10 +126,6 @@ class StepBatchDialog(QDialog):
         self.single_step_button = QPushButton("Chạy step")
         self.single_step_button.clicked.connect(self._single_step_clicked)
         self.step_buttons.append(self.single_step_button)
-        single_step_actions.addWidget(self.single_step_selector)
-        single_step_actions.addWidget(self.single_step_button)
-        single_step_actions.addStretch()
-        layout.addLayout(single_step_actions)
         steps = QHBoxLayout()
         rebuild_button = QPushButton("Chạy lại từ 1–2")
         step3_button = QPushButton("Chạy Step 3")
@@ -149,6 +137,8 @@ class StepBatchDialog(QDialog):
         step6_7_button.clicked.connect(lambda: self._step_clicked(6))
         self.step_buttons.extend((rebuild_button, step3_button, step4_5_button, step6_7_button))
         steps.addWidget(rebuild_button)
+        steps.addWidget(self.single_step_selector)
+        steps.addWidget(self.single_step_button)
         steps.addStretch()
         steps.addWidget(step3_button)
         steps.addWidget(step4_5_button)
@@ -194,7 +184,9 @@ class StepBatchDialog(QDialog):
         self.story_editor.textChanged.connect(self._refresh_story_actions)
         self.story_selector.currentIndexChanged.connect(self._story_selected)
         splitter.addWidget(lower)
-        splitter.setSizes([360, 300])
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([600, 300])
         self._load_stories()
         self._refresh_table(0)
 

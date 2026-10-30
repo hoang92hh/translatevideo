@@ -123,10 +123,13 @@ class BatchProject:
 
     def story_path_for_group(self, group: int) -> Path | None:
         value = self.story_group_files.get(str(group), "")
-        if not value:
-            return None
-        path = Path(value)
-        return path if path.is_absolute() else self.path(value)
+        if value:
+            path = Path(value)
+            path = path if path.is_absolute() else self.path(value)
+            if path.is_file():
+                return path
+        canonical = self.path("stories", f"story_group_{group}.md")
+        return canonical if canonical.is_file() else None
 
     def set_story_for_group(self, group: int, path: str | Path) -> None:
         resolved = Path(path).resolve()

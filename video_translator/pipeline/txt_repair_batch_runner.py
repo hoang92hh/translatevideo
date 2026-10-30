@@ -6,7 +6,9 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from ..batch_project import BatchProject, BatchProjectService
 from ..common.models import StepId, StepResult
+from ..config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from ..state import ProjectState
+from ..steps.step3_translation.providers import create_translation_provider
 from ..steps.step2_transcription.ai_asr_repair import correct_asr_with_story
 from ..steps.step2_transcription.txt_repair import reference_path, repair_transcript
 
@@ -16,11 +18,13 @@ class _TxtRepairWorker(QThread):
     failed = Signal(str)
     progress_changed = Signal(int, str)
 
-    def __init__(self, project: BatchProject, video_id: str, state: ProjectState, parent: QObject) -> None:
+    def __init__(self, project: BatchProject, video_id: str, state: ProjectState,
+                 parent: QObject, asr_provider: object | None = None) -> None:
         super().__init__(parent)
         self.project = project
         self.video_id = video_id
         self.state = state
+        self.asr_provider = asr_provider
 
     def run(self) -> None:
         try:
@@ -40,7 +44,7 @@ class _TxtRepairWorker(QThread):
                 self.progress_changed.emit(10, "Không có TXT trong input; đang sửa ASR bằng AI…")
                 settings = dict(self.project.batch_settings.get(StepId.TRANSLATE.value, {}))
                 ai_content, duplicate_pairs = correct_asr_with_story(
-                    self.state, story_path, settings, record.name,
+                    self.state, story_path, settings, record.name, self.asr_provider,
                 )
                 result, summary = repair_transcript(
                     self.state, None, self.progress_changed.emit,
@@ -73,6 +77,13 @@ class TxtRepairBatchRunner(QObject):
         self.result: StepResult | None = None
         self.summary = ""
         self.error = ""
+        self.asr_provider: object | None = None
+        settings = dict(project.batch_settings.get(StepId.TRANSLATE.value, {}))
+        if settings.get("provider") == CHATGPT_WEB_PROVIDER_NAME:
+            self.asr_provider = create_translation_provider(
+                CHATGPT_WEB_PROVIDER_NAME, str(settings.get("model", "")),
+                "Chinese", "Chinese", settings,
+            )
 
     def start(self) -> None:
         QTimer.singleShot(0, self._next_video)
@@ -96,7 +107,7 @@ class TxtRepairBatchRunner(QObject):
             state = ProjectState()
             state.bind_project(BatchProjectService.open_video(self.project, video_id))
             self.state = state
-            worker = _TxtRepairWorker(self.project, video_id, state, self)
+            worker = _TxtRepairWorker(self.project, video_id, state, self, self.asr_provider)
             self.worker = worker
             worker.succeeded.connect(self._succeeded)
             worker.failed.connect(self._failed)

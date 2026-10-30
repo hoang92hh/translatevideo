@@ -456,7 +456,35 @@ export class ChatGPTProvider extends BaseProvider {
       }
       return { text: this.text, file: this.downloadedResponseFile };
     }
-    return this.text;
+    const assistant = this.currentAssistant();
+    const controls = assistant ? this.completionControls(assistant) : null;
+    const copyButton = controls && this.find(S.copyAction, controls);
+    if (!copyButton) throw error("COPY_ACTION_NOT_FOUND", "ChatGPT Copy action is no longer available.");
+    if (!this.win.navigator.clipboard?.readText) {
+      throw error("CLIPBOARD_UNAVAILABLE", "Clipboard read access is unavailable in the ChatGPT tab.");
+    }
+    let previous = "";
+    try {
+      previous = await this.win.navigator.clipboard.readText();
+    } catch (cause) {
+      throw error("CLIPBOARD_UNAVAILABLE", `Cannot read clipboard before Copy: ${cause}`);
+    }
+    copyButton.click();
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      let copied;
+      try {
+        copied = await this.win.navigator.clipboard.readText();
+      } catch (cause) {
+        throw error("CLIPBOARD_UNAVAILABLE", `Cannot read clipboard after Copy: ${cause}`);
+      }
+      if (copied.trim() && (copied !== previous || comparable(copied) === comparable(this.text))) {
+        this.log("RESPONSE COPIED");
+        return copied.trim();
+      }
+      await new Promise(resolve => this.win.setTimeout(resolve, 100));
+    }
+    throw error("RESPONSE_COPY_FAILED", "ChatGPT Copy action did not provide the completed response.");
   }
 
   async cancel() {

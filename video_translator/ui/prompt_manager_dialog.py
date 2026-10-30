@@ -47,7 +47,7 @@ class PromptManagerDialog(QDialog):
         root.addWidget(title)
         description = QLabel(
             "Mỗi provider có thư viện prompt riêng. Mỗi batch gửi đúng một prompt để AI "
-            "tự phân tích, dịch, kiểm tra và trả file kết quả cuối cùng."
+            "tự phân tích, dịch, kiểm tra và trả kết quả cuối cùng."
         )
         description.setObjectName("muted")
         description.setWordWrap(True)

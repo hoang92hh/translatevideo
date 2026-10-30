@@ -6,7 +6,8 @@ trong popup **Chạy batch theo step**. Các prompt này không xuất hiện tr
 - `google_gemini/story.md`: prompt tạo story bằng Gemini API.
 - `chatgpt_web/story.md`: prompt tạo story bằng ChatGPT Web.
 - `google_gemini/translation.md`: prompt cho Gemini API.
-- `chatgpt_web/translation.md`: prompt cho ChatGPT Web, giữ contract trả file JSON tải xuống.
+- `chatgpt_web/translation.md`: prompt cho ChatGPT Web, trả JSON trực tiếp trong chat.
+- `asr_repair_chatgpt.md`: prompt gửi segment Step 2.5 sau lượt thiết lập story và topic_content.
 
 Batch Step 3 với Google Gemini điền `{topic_content}` từ phần `## PROMPT` của template
 được chọn tại **Thiết lập project → Step 3** vào `google_gemini/translation.md`.
@@ -24,7 +25,7 @@ Khi dịch Step 3, ứng dụng đọc nguyên văn `translation.md` rồi đi�
 - `{video_id}`, `{video_order}`, `{video_name}`, `{video_filename}`: video đang dịch và STT hiện tại.
 - `{source_language}`, `{target_language}`: cặp ngôn ngữ trong project.
 - `{batch_index}`, `{batch_total}`, `{segment_count}`, `{segment_start}`, `{segment_end}`: lượt dịch và ID đích.
-- `{input_filename}`, `{output_filename}`: tên input/output theo cơ chế Step 3 hiện tại.
+- `{input_filename}`, `{output_filename}`: tên input/output theo cơ chế Step 3; ChatGPT Web dùng file input và trả JSON trong chat.
 
 Danh sách `segments_to_translate`, ngữ cảnh trước/sau và các trường hỗ trợ vẫn nằm trong input JSON
 đính kèm như luồng dịch thường. Story được điền trực tiếp trong prompt, không sao chép vào từng

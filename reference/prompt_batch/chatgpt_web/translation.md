@@ -46,10 +46,9 @@ riêng được cung cấp và các quy ước có đủ căn cứ trong story.
 
 ## Output contract
 
-Tạo file JSON tải xuống có tên CHÍNH XÁC "{output_filename}" chứa duy nhất một array:
+Trả trực tiếp trong chat duy nhất một JSON array:
 [{"id": integer, "speaker_id": string, "source_text": string, "translated_text": string}]
-Trả file thật theo cơ chế hiện tại. Không in/preview JSON trong chat, không bọc mã, không thêm
-giải thích, timestamp, tên nhân vật hoặc trường khác. Đọc hết input trước khi tạo file.
+Không bọc mã, không thêm giải thích, timestamp, tên nhân vật hoặc trường khác. Đọc hết input trước khi trả lời.
 
 ## Hồ sơ câu chuyện được chọn: {story_name}
 
@@ -57,5 +56,5 @@ giải thích, timestamp, tên nhân vật hoặc trường khác. Đọc hết 
 {story_content}
 --- KẾT THÚC NỘI DUNG STORY ---
 
-Đọc file JSON "{input_filename}" và trả file kết quả cho video {video_filename},
+Đọc file JSON "{input_filename}" và trả JSON trong chat cho video {video_filename},
 lượt {batch_index}/{batch_total}, đúng contract trên. Không trả lại story.

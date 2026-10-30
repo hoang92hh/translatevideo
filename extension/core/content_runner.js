@@ -140,7 +140,7 @@ async function execute(job, record) {
     }
     const provider = factory.create(job.provider, {
       log: (step) => { record.steps.push(step); console.info("[JOB]", job.job_id, step); },
-      timeoutMs: job.options?.response_file_name ? 600000 : undefined,
+      timeoutMs: job.provider === "chatgpt" || job.options?.response_file_name ? 600000 : undefined,
     });
     if (!(await provider.isReady())) {
       throw executionError(

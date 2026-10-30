@@ -6,6 +6,7 @@
   "description": "Local Bridge for ChatGPT and Claude web prompts.",
   "permissions": [
     "alarms",
+    "clipboardRead",
     "downloads",
     "scripting",
     "storage",

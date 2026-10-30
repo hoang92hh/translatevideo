@@ -24,7 +24,7 @@ Phần `PROMPT` quản lý cả chỉ dẫn nghiệp vụ, `OUTPUT CONTRACT` và
 - `{segment_start}`, `{segment_end}`, `{segment_count}`
 - `{batch_index}`, `{batch_total}`
 
-Tên file được tạo từ ID đầu và cuối thực tế của từng batch. Code vẫn kiểm tra JSON schema và danh sách ID sau khi provider trả kết quả. Với Gemini API, ứng dụng lưu JSON response thành `{output_filename}`; với ChatGPT Web và Claude Web, template có thể yêu cầu provider trả file tải xuống đúng tên.
+Tên file được tạo từ ID đầu và cuối thực tế của từng batch. Code vẫn kiểm tra JSON schema và danh sách ID sau khi provider trả kết quả. Với Gemini API, ứng dụng lưu JSON response thành `{output_filename}`; ChatGPT Web trả JSON trực tiếp trong chat để extension sao chép; Claude Web vẫn có thể trả file tải xuống đúng tên.
 
 Template cũ có ba phần vẫn đọc được: ứng dụng lấy nội dung `TRANSLATION` làm prompt duy nhất. Khi lưu lại trong popup, file được chuyển sang định dạng `PROMPT` mới.
 

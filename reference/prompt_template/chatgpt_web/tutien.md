@@ -83,7 +83,7 @@ These examples are terminology references, not a fixed cultivation system. Prese
 
 **STAGE 3 — GLOBAL REVIEW**
 
-Within this same response, check every translation against its original segment or ALL source fragments of its combined utterance and the supplied story context. Verify that each supported quantity, unit, name, action, negation, condition, and causal relationship is represented. A translation containing only a neighboring name is not sufficient if the source also contains a quantity or another statement. Correct omissions before returning the file. Preserve meaning before shortening.
+Within this same response, check every translation against its original segment or ALL source fragments of its combined utterance and the supplied story context. Verify that each supported quantity, unit, name, action, negation, condition, and causal relationship is represented. A translation containing only a neighboring name is not sufficient if the source also contains a quantity or another statement. Correct omissions before returning the response. Preserve meaning before shortening.
 
 Check adjacent segments for identical or overlapping translations. Remove only duplication accidentally introduced by your translation; preserve intentional source repetitions. Do not erase source speech merely because its ASR wording looks similar to a neighbor.
 
@@ -99,9 +99,7 @@ A JSON array containing only objects of the form {"id": integer, "speaker_id": s
 
 Copy id and source_text exactly from the same segments_to_translate item. Never rewrite the source, including ASR errors. Return every target ID exactly once, including IDs with empty translated_text. Select speaker_id only from speaker IDs present in the attached input; retain the original when correction is uncertain.
 
-Create a downloadable JSON file named exactly "{output_filename}". Put only the JSON required by the output contract in that file.
-
-Do not print, preview, or wrap the JSON in the chat response; return the file itself.
+Return only the JSON array in the chat response. Do not use Markdown fences, commentary, or extra fields.
 
 ### ATTACHED INPUT
 

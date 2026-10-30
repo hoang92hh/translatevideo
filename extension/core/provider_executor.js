@@ -298,7 +298,7 @@ export class ProviderExecutor {
     }
     let loggedSteps = 0;
     const executionTimeout = active.action === "configure_project_from_folder"
-      ? 420000 : active.responseFileName ? 620000 : 200000;
+      ? 420000 : active.provider === "chatgpt" || active.responseFileName ? 620000 : 200000;
     while (Date.now() - active.startedAt < executionTimeout) {
       let record;
       try { record = await message(active.tabId, { type: "MYTOOL_STATUS", job_id: active.job_id }); }

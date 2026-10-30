@@ -18,7 +18,7 @@ Read the complete attached input before answering. In this single request, first
 - Preserve names, titles, forms of address, numbers, units, actions, negation, conditions, cause/effect, and sentence force. Keep questions, statements, commands, and exclamations distinct. Concision means fewer words with the SAME information, not a summary with fewer facts.
 - Preserve intentional source repetitions. Similar wording or a recovery label alone does not justify deleting speech. Remove only repetition accidentally introduced by your translation.
 - An empty translation is permitted for a fragment whose complete meaning is already present in its valid representative translation, or when no reliable meaning at all can be recovered. Never use an empty string to hide difficult but recoverable information. Do not infer that an empty neighbor permits moving speech across a pause.
-- Before writing the final file, internally compare each translation against every source fragment it represents. Check that all supported facts, quantities, names, actions, negation, and conditions survive. Correct omissions and borrowed or duplicated content within this same response; do not request another review round.
+- Before returning the final response, internally compare each translation against every source fragment it represents. Check that all supported facts, quantities, names, actions, negation, and conditions survive. Correct omissions and borrowed or duplicated content within this same response; do not request another review round.
 
 Example, only if the three targets are one continuous question:
 101="你", 102="到底想干什么", 103="啊"
@@ -30,7 +30,7 @@ The tool maps the response by ID, applies validated speaker corrections, collaps
 
 ### OUTPUT CONTRACT
 
-A JSON array containing only objects of the form {"id": integer, "speaker_id": string, "source_text": string, "translated_text": string}. Copy id and source_text exactly from the same segments_to_translate item. Return every target ID exactly once, including empty translations, and select speaker_id only from IDs present in the attached input. Create a downloadable JSON file named exactly "{output_filename}". Put only the JSON required by the output contract in that file. Do not print, preview, or wrap the JSON in the chat response; return the file itself.
+A JSON array containing only objects of the form {"id": integer, "speaker_id": string, "source_text": string, "translated_text": string}. Copy id and source_text exactly from the same segments_to_translate item. Return every target ID exactly once, including empty translations, and select speaker_id only from IDs present in the attached input. Return only the JSON array in the chat response, without Markdown fences, commentary, or extra fields.
 
 ### ATTACHED INPUT
 

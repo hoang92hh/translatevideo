@@ -22,16 +22,21 @@ mới từ URL Project; các request phân tích, dịch theo batch và kiểm d
 trong cùng cuộc trò chuyện. Extension chỉ tiếp tục URL cuộc trò chuyện được ghi nhận từ request đầu;
 nếu tab đã chuyển sang chat khác, nó quay lại URL Project.
 
-Cả ba giai đoạn gửi input bằng file JSON đính kèm. Giai đoạn phân tích dùng
+Các giai đoạn Step 3 gửi input bằng file JSON đính kèm. Giai đoạn phân tích dùng
 `step3-analysis.json`, mỗi batch dịch dùng tên theo khoảng ID như
 `step3-translation-0121-0140.json`, và giai đoạn kiểm duyệt dùng `step3-review.json`. Extension tạo file
 trong bộ nhớ và đính kèm vào đúng lượt chat; không thêm chúng vào Project Sources. Nếu file đính kèm
 chưa được giao diện web xác nhận sẵn sàng, extension dừng job trước khi bấm Send.
 
-Khi tắt chế độ chất lượng, mỗi batch dịch yêu cầu provider tạo file kết quả thật có tên dạng
+ChatGPT Web trả JSON trực tiếp trong chat. Extension chờ phản hồi hoàn tất, bấm nút **Copy**
+của lượt trả lời mới nhất, đọc nội dung vừa sao chép rồi gửi về ứng dụng để kiểm tra JSON và ID.
+Step 2.5 mở một chat cho cả batch: gửi story Group và topic_content trước, sau đó gửi toàn bộ
+segment của từng video; khi Group đổi, story mới được gửi vào cùng chat trước video tiếp theo.
+
+Claude Web vẫn có thể yêu cầu file kết quả thật có tên dạng
 `step3-translation-result-0121-0140.json`. Extension chỉ nhận file nằm trong phản hồi mới nhất,
 tải nội dung file và gửi về ứng dụng; batch kế tiếp chỉ được gửi sau khi file trước hợp lệ.
-Với ChatGPT, extension ghép đúng resource card bằng tên file của batch hiện tại, đăng ký theo dõi
+Với job ChatGPT cũ còn yêu cầu file, extension ghép đúng resource card bằng tên file của batch hiện tại, đăng ký theo dõi
 download trước khi bấm nút **Download file**, rồi chỉ chấp nhận download mới có đúng basename đó
 (hoặc hậu tố `(1)`, `(2)` do Chrome tránh ghi đè). File của batch khác không được nhận thay thế.
 Nếu sự kiện tạo download xuất hiện trước khi Chrome xác định tên file, extension đối soát lại các
@@ -63,6 +68,6 @@ tự bấm lại để tránh gửi trùng.
 
 ## Phạm vi hiện tại
 
-- ChatGPT Web: gửi prompt, chờ phản hồi, đọc nội dung; các thao tác ChatGPT Project sẵn có vẫn được giữ nguyên.
+- ChatGPT Web: gửi prompt, chờ phản hồi, bấm Copy và đọc nội dung đã sao chép; các thao tác ChatGPT Project sẵn có vẫn được giữ nguyên.
 - Claude Web: gửi prompt, chờ phản hồi và đọc nội dung; chưa tự thay đổi model trên giao diện Claude.
 - Bridge dùng extension session header để ràng buộc kết quả với đúng worker đã nhận job.

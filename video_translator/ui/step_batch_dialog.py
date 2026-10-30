@@ -57,6 +57,7 @@ class StepBatchDialog(QDialog):
         self.step_buttons: list[QPushButton] = []
         self.batch_busy = False
         self.model_session_key = ""
+        self.loaded_model_steps: set[StepId] = set()
         self.active_step_number: int | float = 1
         self.setWindowTitle("Chạy batch theo step")
         self.resize(1280, 720)
@@ -115,8 +116,9 @@ class StepBatchDialog(QDialog):
             "Chọn một Step trong combobox rồi bấm Chạy step để chạy riêng Step đó cho các video đã tích. "
             "Step 1.5 nhập SRT/TXT cùng tên video trong thư mục input thành output Step 2 mới; ưu tiên SRT. "
             "Chạy lại từ 1–2 tạo output Step 1 và 2 mới "
-            "cho video đã tích, không tạo story. Step 2.5 lấy text từ TXT, ghép timeline "
-            "theo độ giống trên 50% vào output Step 2 mới. Step 4&5 tạo voice và đồng bộ; "
+            "cho video đã tích, không tạo story. Step 2.5 dùng TXT cùng tên trong input; "
+            "nếu thiếu TXT, AI sửa ASR tiếng Trung theo story Group và tạo output Step 2 mới. "
+            "Step 4&5 tạo voice và đồng bộ; "
             "Step 6&7 ghép audio rồi render video."
         )
         helper.setWordWrap(True)

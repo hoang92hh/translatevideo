@@ -39,6 +39,14 @@ class StoryOutput(BaseModel):
     story_markdown: str = Field(min_length=1)
 
 
+class AsrCorrectionItem(BaseModel):
+    id: int
+    start: float
+    end: float
+    source_text: str
+    new_content: str
+
+
 class SourceVerifiedTranslationItem(BaseModel):
     id: int
     speaker_id: str
@@ -513,6 +521,18 @@ class GoogleTranslationService:
         )
         result = parsed if isinstance(parsed, StoryOutput) else StoryOutput.model_validate(parsed)
         return result.story_markdown
+
+    def correct_asr(
+        self, content: object, prompt: str, input_filename: str, output_filename: str,
+    ) -> object:
+        parsed, _credential_source = self._generate_structured(
+            content, prompt, list[AsrCorrectionItem], 0.1, input_filename, output_filename,
+        )
+        return [
+            item.model_dump(mode="json") if isinstance(item, AsrCorrectionItem)
+            else AsrCorrectionItem.model_validate(item).model_dump(mode="json")
+            for item in parsed
+        ]
 
     def analyze_dialogue(
         self,

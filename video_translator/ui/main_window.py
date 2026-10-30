@@ -318,30 +318,9 @@ class MainWindow(QMainWindow):
             dialog.step6_7_requested.connect(
                 lambda video_ids: self._start_step_pair(dialog, video_ids, StepId.BUILD_AUDIO, StepId.RENDER)
             )
-            preloader = BatchModelPreloader(
-                dialog.model_session_key,
-                self.batch_project.batch_settings.get(StepId.STT.value, {}),
-                self.batch_project.batch_settings.get(StepId.TTS.value, {}),
-                self.batch_project.target_language,
-            )
-            dialog.set_batch_busy(True, 2)
-            dialog.update_batch_progress(0, "Đang nạp model cho popup…")
-            preloader.progress_changed.connect(lambda message: dialog.update_batch_progress(0, message))
-
-            def models_loaded(errors: list[str]) -> None:
-                dialog.set_batch_busy(False)
-                if errors:
-                    dialog.update_batch_progress(0, "Không thể nạp một số model; xem chi tiết và kiểm tra cấu hình.")
-                    QMessageBox.warning(dialog, "Nạp model batch", "\n".join(errors))
-                else:
-                    dialog.update_batch_progress(0, "Model đã sẵn sàng; chọn video và lệnh batch.")
-
-            preloader.loaded.connect(models_loaded)
-            preloader.start()
             try:
                 dialog.exec()
             finally:
-                preloader.wait()
                 release_batch_session(dialog.model_session_key)
                 release_tts_session(dialog.model_session_key)
 
@@ -402,6 +381,51 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(dialog, "Không thể chuẩn bị batch", str(exc))
             return False
+        if step in {StepId.STT, StepId.TTS} and video_ids and step not in dialog.loaded_model_steps:
+            preloader = BatchModelPreloader(
+                dialog.model_session_key, step, settings, self.batch_project.target_language,
+            )
+            self.batch_running = True
+            self.batch_status_message = f"Đang nạp model batch Step {number}"
+            dialog.set_batch_busy(True, number)
+            dialog.update_batch_progress(0, f"Đang nạp model Step {number}…")
+            self._refresh_header()
+            preloader.progress_changed.connect(lambda message: dialog.update_batch_progress(0, message))
+
+            def models_loaded(errors: list[str]) -> None:
+                preloader.wait()
+                self.batch_running = False
+                if errors:
+                    if step == StepId.STT:
+                        release_batch_session(dialog.model_session_key)
+                    else:
+                        release_tts_session(dialog.model_session_key)
+                    self.batch_status_message = f"Không thể nạp model batch Step {number}"
+                    dialog.set_batch_busy(False)
+                    dialog.update_batch_progress(0, self.batch_status_message)
+                    self._refresh_header()
+                    QMessageBox.warning(dialog, "Nạp model batch", "\n".join(errors))
+                    return
+                dialog.loaded_model_steps.add(step)
+                if not self._start_step_batch(
+                    dialog, video_ids, step,
+                    story_video_ids=story_video_ids,
+                    create_stories=create_stories,
+                    story_groups=story_groups,
+                    regenerate_stories=regenerate_stories,
+                    force_new_output=force_new_output,
+                    succeeded_video_ids=succeeded_video_ids,
+                    completion=completion,
+                    single_step=single_step,
+                ):
+                    dialog.set_batch_busy(False)
+                    self.batch_status_message = f"Không thể bắt đầu batch Step {number}"
+                    self._refresh_header()
+
+            preloader.loaded.connect(models_loaded)
+            preloader.finished.connect(preloader.deleteLater)
+            preloader.start()
+            return True
         runner = StepBatchRunner(
             self.batch_project, self.pipeline, video_ids, settings, self,
             step=step, story_settings=story_settings,

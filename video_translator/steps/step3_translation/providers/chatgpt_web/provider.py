@@ -281,6 +281,16 @@ class WebTranslationService:
         )
         return StoryOutput.model_validate(parsed).story_markdown
 
+    def correct_asr(
+        self, content: object, prompt: str, input_filename: str, output_filename: str,
+    ) -> object:
+        return self._request_json(
+            prompt, content,
+            'Một JSON array, mỗi phần tử có đúng các trường "id", "start", "end", "source_text", "new_content".',
+            attachment_name=input_filename,
+            response_attachment_name=output_filename,
+        )
+
     def analyze_dialogue(
         self,
         segments: list[Segment],

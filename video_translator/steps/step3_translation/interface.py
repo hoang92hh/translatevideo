@@ -37,6 +37,10 @@ class TranslationProvider(Protocol):
         self, content: object, prompt: str, input_filename: str, output_filename: str,
     ) -> str: ...
 
+    def correct_asr(
+        self, content: object, prompt: str, input_filename: str, output_filename: str,
+    ) -> object: ...
+
     def analyze_dialogue(
         self,
         segments: list[Segment],

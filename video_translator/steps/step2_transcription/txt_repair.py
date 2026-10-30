@@ -17,27 +17,26 @@ from ...state import ProjectState
 from .service import assess_transcript_timeline
 
 
-def reference_path(project_root: Path, input_folder: Path, video_name: str) -> Path:
+def reference_path(input_folder: Path, video_name: str) -> Path | None:
     filename = f"{Path(video_name).stem}.txt"
-    for folder in (project_root, input_folder):
-        path = folder / filename
-        if path.is_file():
-            return path
-    raise FileNotFoundError(
-        f"Không tìm thấy {filename} trong thư mục project hoặc thư mục input."
-    )
+    path = input_folder / filename
+    return path if path.is_file() else None
 
 
-def _read_lines(path: Path) -> list[str]:
+def _read_lines(path: Path) -> tuple[list[str], list[int]]:
     content = path.read_bytes()
     encoding = "utf-16" if content.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
     try:
-        lines = [line.strip() for line in content.decode(encoding).splitlines() if line.strip()]
+        numbered_lines = [
+            (number, line.strip())
+            for number, line in enumerate(content.decode(encoding).splitlines(), start=1)
+            if line.strip()
+        ]
     except UnicodeDecodeError as exc:
         raise ValueError(f"Không đọc được {path.name}; cần UTF-8 hoặc UTF-16.") from exc
-    if not lines:
+    if not numbered_lines:
         raise ValueError(f"{path.name} không có dòng hội thoại nào.")
-    return lines
+    return [line for _, line in numbered_lines], [number for number, _ in numbered_lines]
 
 
 def _normalized(value: str) -> str:
@@ -296,6 +295,18 @@ def _reading_rate_score(segment: Segment, character_count: int) -> tuple[int, fl
     return (0 if in_reference_range else 1, abs(seconds_per_character - 0.22))
 
 
+def _duplicate_pair_times(
+    segments: list[Segment], first: int, second: int, keep: int,
+) -> dict[int, tuple[float, float]]:
+    """Keep the interval between the first end and second end; park the empty row."""
+    removed = second if keep == first else first
+    point = segments[first].start if removed == first else segments[second].end
+    return {
+        keep: (segments[first].end, segments[second].end),
+        removed: (point, point),
+    }
+
+
 def _remove_duplicate_pairs(
     segments: list[Segment], lines: list[str], mapped: dict[int, int],
 ) -> tuple[dict[int, int], set[int], dict[int, tuple[float, float]]]:
@@ -329,7 +340,6 @@ def _remove_duplicate_pairs(
                 keep = min((first, second), key=lambda position: (
                     _reading_rate_score(segments[position], first_length), position
                 ))
-            combined_times[keep] = (segments[first].start, segments[second].end)
         else:
             assigned = first if first_line is not None else second
             alternative = second if assigned == first else first
@@ -350,6 +360,7 @@ def _remove_duplicate_pairs(
                 keep = alternative
                 mapped[keep] = mapped.pop(assigned)
         removed.add(second if keep == first else first)
+        combined_times.update(_duplicate_pair_times(segments, first, second, keep))
         index += 2
     return mapped, removed, combined_times
 
@@ -372,9 +383,7 @@ def _original_transcript(state: ProjectState, candidate_id: str):
     raise ValueError("Không tìm thấy output Step 2 gốc để đối chiếu TXT.")
 
 
-def repair_transcript(
-    state: ProjectState, txt_path: Path, progress: Callable[[int, str], None] | None = None,
-) -> tuple[StepResult | None, str]:
+def source_transcript_for_repair(state: ProjectState):
     selected_id = state.selected_transcript_candidate_id or state.default_transcript_candidate_id
     if not selected_id:
         raise ValueError("Video chưa có output Step 2 hợp lệ để đối chiếu.")
@@ -382,15 +391,55 @@ def repair_transcript(
     rows = payload.get("segments")
     if not isinstance(rows, list) or len(rows) != len(source_result.segments):
         raise ValueError("Danh sách segment trong output Step 2 không hợp lệ.")
-    lines = _read_lines(txt_path)
+    return source_id, payload, source_result
+
+
+def repair_transcript(
+    state: ProjectState, txt_path: Path | None,
+    progress: Callable[[int, str], None] | None = None,
+    *, ai_content: dict[int, str] | None = None, story_path: Path | None = None,
+    duplicate_pairs: list[tuple[int, int]] | None = None,
+) -> tuple[StepResult | None, str]:
+    source_id, payload, source_result = source_transcript_for_repair(state)
+    rows = payload["segments"]
+    if ai_content is None:
+        if txt_path is None:
+            raise ValueError("Chưa có TXT hoặc nội dung AI để đối chiếu.")
+        lines, original_rows = _read_lines(txt_path)
+    else:
+        expected_ids = {segment.id for segment in source_result.segments}
+        if set(ai_content) != expected_ids:
+            raise ValueError("Danh sách ID của nội dung AI không khớp transcript Step 2.")
+        lines = [ai_content[segment.id] for segment in source_result.segments]
+        original_rows = []
     if progress:
-        progress(20, f"Đang căn chỉnh {len(rows)} segment với {len(lines)} dòng TXT…")
-    mapped, assignments = _match_timelines(source_result.segments, lines)
-    mapped, removed, combined_times = _remove_duplicate_pairs(
-        source_result.segments, lines, mapped
-    )
+        progress(20, f"Đang căn chỉnh {len(rows)} segment với {len(lines)} dòng tham chiếu…")
+    if ai_content is None:
+        mapped, assignments = _match_timelines(source_result.segments, lines)
+        mapped, removed, combined_times = _remove_duplicate_pairs(
+            source_result.segments, lines, mapped
+        )
+    else:
+        mapped = {index: index for index, line in enumerate(lines) if line}
+        removed = {index for index, line in enumerate(lines) if not line}
+        combined_times = {}
+        index_by_id = {segment.id: index for index, segment in enumerate(source_result.segments)}
+        for first_id, second_id in duplicate_pairs or []:
+            first, second = index_by_id[first_id], index_by_id[second_id]
+            if (second != first + 1 or first in combined_times or second in combined_times
+                    or (first in removed) == (second in removed)):
+                raise ValueError("Cặp segment trùng của AI không hợp lệ.")
+            keep = second if first in removed else first
+            combined_times.update(_duplicate_pair_times(
+                source_result.segments, first, second, keep,
+            ))
+        assignments = [
+            {"source_segment_ids": [segment.id], "txt_line": index + 1,
+             "method": "ai_asr_repair", "similarity": None}
+            for index, segment in enumerate(source_result.segments) if index in mapped
+        ]
     segment_index_by_line = {line_index + 1: index for index, line_index in mapped.items()}
-    for assignment in assignments:
+    for assignment in (assignments if ai_content is None else ()):
         source_index = segment_index_by_line[assignment["txt_line"]]
         source_segment = source_result.segments[source_index]
         if assignment["source_segment_ids"] != [source_segment.id]:
@@ -404,36 +453,50 @@ def repair_transcript(
             assignment["similarity"] = round(common / len(source), 3)
     unchanged = len(rows) - len(mapped)
     if progress:
-        progress(75, f"Đã ghép {len(mapped)}/{len(rows)} segment ASR; đang lưu output mới…")
+        progress(75, f"Đã xử lý {len(mapped)}/{len(rows)} segment ASR; đang lưu output mới…")
     now = datetime.now(timezone.utc)
     candidate_id = f"stt-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
     folder = Path(state.workspace_path("transcripts", candidate_id))
     output_path = folder / "transcript.json"
+    rows_path = folder / "transcript_rows.txt" if txt_path is not None else None
     new_segments = []
     new_rows = []
     for index, (row, segment) in enumerate(zip(rows, source_result.segments, strict=True)):
         old_text = str(row.get("text", row.get("source_text", "")))
         text = "" if index in removed else lines[mapped[index]] if index in mapped else old_text
         start, end = combined_times.get(index, (segment.start, segment.end))
-        if index in removed:
+        if index in removed and index not in combined_times:
             end = start
         new_segments.append(Segment(
             id=segment.id, start=start, end=end,
             speaker_id=segment.speaker_id, merge_parts=[dict(part) for part in segment.merge_parts],
             source_text=text,
         ))
-        new_rows.append({**row, "text_old": old_text, "text": text,
-                         "start": start, "end": end})
+        new_row = {**row, "text_old": old_text, "text": text,
+                   "start": start, "end": end}
+        if ai_content is not None:
+            new_row["new_content"] = ai_content[segment.id]
+        new_rows.append(new_row)
     issues = assess_transcript_timeline(new_segments)
     report = {
         "source_transcript_candidate_id": source_id,
-        "reference_txt": str(txt_path),
+        "reference_txt": str(txt_path) if txt_path else "",
         "txt_line_count": len(lines),
         "source_segment_count": len(rows),
         "mapped_segment_count": len(mapped),
         "unchanged_segment_count": unchanged,
         "removed_duplicate_count": len(removed),
     }
+    if rows_path is not None:
+        report["reference_rows_txt"] = str(rows_path)
+    if ai_content is not None:
+        report.update(
+            reference_mode="ai_asr_repair",
+            reference_story=str(story_path) if story_path else "",
+            removed_duplicate_segment_ids=[
+                source_result.segments[index].id for index in sorted(removed)
+            ],
+        )
     new_payload = {
         **payload, "candidate_id": candidate_id, "created_at": now.isoformat(timespec="seconds"),
         "source_transcript_candidate_id": source_id,
@@ -443,16 +506,30 @@ def repair_transcript(
     }
     folder.mkdir(parents=True, exist_ok=False)
     temporary = output_path.with_suffix(".json.part")
+    temporary_rows = rows_path.with_suffix(".txt.part") if rows_path is not None else None
     try:
         temporary.write_text(json.dumps(new_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if rows_path is not None and temporary_rows is not None:
+            temporary_rows.write_text(
+                "".join(f"{number}\t{line}\n" for number, line in zip(original_rows, lines, strict=True)),
+                encoding="utf-8",
+            )
+            temporary_rows.replace(rows_path)
         temporary.replace(output_path)
     except Exception:
         temporary.unlink(missing_ok=True)
+        if temporary_rows is not None:
+            temporary_rows.unlink(missing_ok=True)
+        if rows_path is not None:
+            rows_path.unlink(missing_ok=True)
         output_path.unlink(missing_ok=True)
         folder.rmdir()
         raise
     summary = (
+        f"Đã sửa ASR bằng AI cho {len(mapped)}/{len(rows)} segment; "
+        if ai_content is not None else
         f"Đã ghép {len(mapped)}/{len(rows)} segment ASR với {len(lines)} dòng TXT; "
+    ) + (
         f"giữ nguyên text ASR ở {unchanged - len(removed)} segment; "
         f"đặt rỗng {len(removed)} dòng trùng; {len(issues)} segment cần kiểm tra timeline."
     )
@@ -463,7 +540,9 @@ def repair_transcript(
         "recommended_transcript_candidate_id": candidate_id,
     }
     candidate = TranscriptCandidate(
-        id=candidate_id, label=f"TXT đối chiếu · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
+        id=candidate_id,
+        label=("AI sửa ASR" if ai_content is not None else "TXT đối chiếu")
+              + f" · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
         created_at=new_payload["created_at"], path=str(output_path),
         segment_count=len(new_rows), summary=summary, metadata=metadata,
     )

@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from ..batch_project import BatchProject, BatchProjectService
 from ..common.models import StepId, StepResult
 from ..state import ProjectState
+from ..steps.step2_transcription.ai_asr_repair import correct_asr_with_story
 from ..steps.step2_transcription.txt_repair import reference_path, repair_transcript
 
 
@@ -26,12 +27,26 @@ class _TxtRepairWorker(QThread):
             record = self.project.video(self.video_id)
             if record is None:
                 raise ValueError("Video không còn trong project.")
-            txt_path = reference_path(
-                self.project.root_path, Path(self.project.input_folder), record.name,
-            )
-            result, summary = repair_transcript(
-                self.state, txt_path, self.progress_changed.emit,
-            )
+            txt_path = reference_path(Path(self.project.input_folder), record.name)
+            if txt_path is not None:
+                result, summary = repair_transcript(
+                    self.state, txt_path, self.progress_changed.emit,
+                )
+            else:
+                group = self.project.video_group(self.video_id)
+                story_path = self.project.story_path_for_group(group)
+                if story_path is None:
+                    raise FileNotFoundError(f"Group {group} chưa có story để sửa ASR.")
+                self.progress_changed.emit(10, "Không có TXT trong input; đang sửa ASR bằng AI…")
+                settings = dict(self.project.batch_settings.get(StepId.TRANSLATE.value, {}))
+                ai_content, duplicate_pairs = correct_asr_with_story(
+                    self.state, story_path, settings, record.name,
+                )
+                result, summary = repair_transcript(
+                    self.state, None, self.progress_changed.emit,
+                    ai_content=ai_content, story_path=story_path,
+                    duplicate_pairs=duplicate_pairs,
+                )
             self.succeeded.emit(result, summary)
         except Exception as exc:
             self.failed.emit(str(exc))

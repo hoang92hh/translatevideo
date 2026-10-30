@@ -50,6 +50,8 @@ class StepBatchRunner(QObject):
         self.success_count = 0
         self.successful_video_ids: list[str] = []
         self.failure_count = 0
+        self.failed_videos: list[str] = []
+        self.failure_details: list[str] = []
         self.review_video_count = 0
         self.state: ProjectState | None = None
         self.worker: PipelineWorker | StoryWorker | None = None
@@ -152,7 +154,9 @@ class StepBatchRunner(QObject):
         if self.step == StepId.STT:
             progress = round(progress * 0.85)
         self.progress_changed.emit(
-            progress, f"Step {self.step_number} · {self.position}/{len(self.video_ids)} · {name} · {message}",
+            progress,
+            f"Step {self.step_number} · hoàn thành {self.success_count}/{len(self.video_ids)} video"
+            f" · {name} · {message}",
         )
 
     @Slot(object)
@@ -247,6 +251,9 @@ class StepBatchRunner(QObject):
                 record.last_error = error
         if error:
             self.failure_count += 1
+            name = record.name if record is not None else video_id
+            self.failed_videos.append(name)
+            self.failure_details.append(f"Step {self.step_number} · {name}: {error}")
         else:
             self.success_count += 1
             self.successful_video_ids.append(video_id)

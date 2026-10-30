@@ -448,7 +448,11 @@ class MainWindow(QMainWindow):
 
         def finished(succeeded: int, failed: int) -> None:
             self.batch_running = False
-            self.batch_status_message = f"Batch Step {number} hoàn tất · Thành công: {succeeded} · Lỗi: {failed}"
+            failed_videos = list(runner.failed_videos)
+            failure_details = list(runner.failure_details)
+            self.batch_status_message = dialog.result_message(
+                str(number), succeeded, len(video_ids), failed_videos,
+            ).replace("\n", " · ")
             if runner.story_error:
                 self.batch_status_message += " · Chưa tạo được story"
             if runner.review_video_count:
@@ -466,11 +470,15 @@ class MainWindow(QMainWindow):
                 succeeded_video_ids[:] = runner.successful_video_ids
             runner.deleteLater()
             if callable(completion):
-                completion(succeeded, failed, story_error, review_video_count, story_count)
+                completion(
+                    succeeded, failed, story_error, review_video_count, story_count,
+                    failed_videos, failure_details,
+                )
                 return
             dialog.batch_finished(
                 succeeded, failed, story_error, review_video_count, story_count,
-                single_step=single_step,
+                single_step=single_step, step_label=str(number), total_videos=len(video_ids),
+                failed_videos=failed_videos, failure_details=failure_details,
             )
 
         runner.finished.connect(finished)
@@ -515,9 +523,9 @@ class MainWindow(QMainWindow):
 
         def finished(succeeded: int, failed: int) -> None:
             self.batch_running = False
-            self.batch_status_message = (
-                f"Batch Step 1.5 hoàn tất · Thành công: {succeeded} · Lỗi: {failed}"
-            )
+            self.batch_status_message = dialog.result_message(
+                "1.5", succeeded, len(video_ids), runner.failed_videos,
+            ).replace("\n", " · ")
             try:
                 if self.state.project and self.state.project.video_id in video_ids:
                     self._reload_viewed_video(self.state.project.video_id)
@@ -526,7 +534,7 @@ class MainWindow(QMainWindow):
             self._refresh_header()
             details = runner.details
             runner.deleteLater()
-            dialog.text_import_finished(succeeded, failed, details)
+            dialog.text_import_finished(succeeded, failed, details, list(runner.failed_videos))
 
         runner.finished.connect(finished)
         runner.start()
@@ -556,9 +564,9 @@ class MainWindow(QMainWindow):
 
         def finished(succeeded: int, failed: int) -> None:
             self.batch_running = False
-            self.batch_status_message = (
-                f"Batch Step 2.5 hoàn tất · Thành công: {succeeded} · Lỗi: {failed}"
-            )
+            self.batch_status_message = dialog.result_message(
+                "2.5", succeeded, len(video_ids), runner.failed_videos,
+            ).replace("\n", " · ")
             try:
                 if self.state.project and self.state.project.video_id in video_ids:
                     self._reload_viewed_video(self.state.project.video_id)
@@ -567,7 +575,7 @@ class MainWindow(QMainWindow):
             self._refresh_header()
             details = runner.errors + runner.summaries
             runner.deleteLater()
-            dialog.step2_5_finished(succeeded, failed, details)
+            dialog.step2_5_finished(succeeded, failed, details, list(runner.failed_videos))
 
         runner.finished.connect(finished)
         runner.start()
@@ -576,20 +584,40 @@ class MainWindow(QMainWindow):
         self, dialog: StepBatchDialog, video_ids: list[str], first: StepId, second: StepId,
     ) -> None:
         ready: list[str] = []
+        first_number = STEP_ORDER.index(first) + 1
+        second_number = STEP_ORDER.index(second) + 1
+        pair_label = f"{first_number}&{second_number}"
+
+        def show_result(succeeded: int, failed: int, failed_videos: list[str], details: list[str]) -> None:
+            self.batch_status_message = dialog.result_message(
+                pair_label, succeeded, len(video_ids), failed_videos,
+            ).replace("\n", " · ")
+            self._refresh_header()
+            dialog.batch_finished(
+                succeeded, failed, step_label=pair_label, total_videos=len(video_ids),
+                failed_videos=failed_videos, failure_details=details,
+            )
 
         def finish_first(
             _succeeded: int, failed_first: int, _story_error: str,
             _review_count: int, _story_count: int,
+            first_failed_videos: list[str], first_details: list[str],
         ) -> None:
+            first_labels = [f"Step {first_number}: {name}" for name in first_failed_videos]
             if not ready:
-                dialog.batch_finished(0, failed_first)
+                show_result(0, failed_first, first_labels, first_details)
                 return
 
             def finish_second(
                 succeeded: int, failed_second: int, _story_error2: str,
                 _review_count2: int, _story_count2: int,
+                second_failed_videos: list[str], second_details: list[str],
             ) -> None:
-                dialog.batch_finished(succeeded, failed_first + failed_second)
+                second_labels = [f"Step {second_number}: {name}" for name in second_failed_videos]
+                show_result(
+                    succeeded, failed_first + failed_second,
+                    first_labels + second_labels, first_details + second_details,
+                )
 
             if not self._start_step_batch(dialog, ready, second, completion=finish_second):
                 dialog.set_batch_busy(False)
@@ -603,19 +631,36 @@ class MainWindow(QMainWindow):
             return
         ready: list[str] = []
 
+        def show_result(succeeded: int, failed: int, failed_videos: list[str], details: list[str]) -> None:
+            self.batch_status_message = dialog.result_message(
+                "1&2", succeeded, len(video_ids), failed_videos,
+            ).replace("\n", " · ")
+            self._refresh_header()
+            dialog.batch_finished(
+                succeeded, failed, step_label="1&2", total_videos=len(video_ids),
+                failed_videos=failed_videos, failure_details=details,
+            )
+
         def finish_step1(
             _succeeded: int, failed: int, _story_error: str,
             _review_count: int, _story_count: int,
+            first_failed_videos: list[str], first_details: list[str],
         ) -> None:
+            first_labels = [f"Step 1: {name}" for name in first_failed_videos]
             if not ready:
-                dialog.batch_finished(0, failed)
+                show_result(0, failed, first_labels, first_details)
                 return
 
             def finish_step2(
                 succeeded: int, failed_step2: int, _story_error2: str,
                 _review_count2: int, _story_count2: int,
+                second_failed_videos: list[str], second_details: list[str],
             ) -> None:
-                dialog.batch_finished(succeeded, failed + failed_step2)
+                second_labels = [f"Step 2: {name}" for name in second_failed_videos]
+                show_result(
+                    succeeded, failed + failed_step2,
+                    first_labels + second_labels, first_details + second_details,
+                )
 
             started_step2 = self._start_step_batch(
                 dialog, ready, StepId.STT, create_stories=False, completion=finish_step2,
@@ -642,6 +687,7 @@ class MainWindow(QMainWindow):
         def finished(
             _succeeded: int, _failed: int, story_error: str,
             _review_count: int, story_count: int,
+            _failed_videos: list[str], _failure_details: list[str],
         ) -> None:
             dialog.story_regeneration_finished(story_count, len(groups), story_error)
 

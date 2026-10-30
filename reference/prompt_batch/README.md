@@ -7,7 +7,12 @@ trong popup **Chạy batch theo step**. Các prompt này không xuất hiện tr
 - `chatgpt_web/story.md`: prompt tạo story bằng ChatGPT Web.
 - `google_gemini/translation.md`: prompt cho Gemini API.
 - `chatgpt_web/translation.md`: prompt cho ChatGPT Web, trả JSON trực tiếp trong chat.
-- `asr_repair_chatgpt.md`: prompt gửi segment Step 2.5 sau lượt thiết lập story và topic_content.
+- `chatgpt_web/chinh_sua/prompt1.md`: prompt Step 2.5 gửi story và segment video đầu tiên.
+- `chatgpt_web/chinh_sua/prompt2.md`: prompt Step 2.5 cho các video tiếp theo trong cùng chat; nhận story mới khi đổi Group. Hai file độc lập với Prompt Manager.
+
+Hai prompt Step 2.5 chèn JSON của toàn bộ segment video vào `{segments_json}`. `prompt1.md`
+chèn story vào `{story_content}`; `prompt2.md` chèn story mới vào `{story_section}` khi Group
+thay đổi, hoặc để trống biến này khi tiếp tục cùng Group. Không dùng `topic_content` trong Step 2.5.
 
 Batch Step 3 với Google Gemini điền `{topic_content}` từ phần `## PROMPT` của template
 được chọn tại **Thiết lập project → Step 3** vào `google_gemini/translation.md`.

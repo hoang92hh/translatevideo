@@ -123,6 +123,23 @@ function extensionSessionId() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
+  if (message?.type === "MYTOOL_FOCUS_RESPONSE_TAB") {
+    void (async () => {
+      const tabId = sender.tab?.id;
+      const windowId = sender.tab?.windowId;
+      const stored = await chrome.storage.session.get(ACTIVE_KEY);
+      const active = stored[ACTIVE_KEY];
+      if (!Number.isInteger(tabId) || !Number.isInteger(windowId)
+          || active?.tabId !== tabId || active.provider !== "chatgpt"
+          || !sender.url?.startsWith("https://chatgpt.com/")) {
+        throw new Error("No active ChatGPT response job for this tab.");
+      }
+      await chrome.tabs.update(tabId, { active: true });
+      await chrome.windows.update(windowId, { focused: true });
+      sendResponse({ focused: true });
+    })().catch(cause => sendResponse({ focused: false, message: cause.message }));
+    return true;
+  }
   if (message?.type === "MYTOOL_PREPARE_RESPONSE_DOWNLOAD") {
     const expectedName = String(message.expected_name || "").trim();
     if (!Number.isInteger(sender.tab?.id) || !/^step3-translation-result-\d+-\d+\.json$/u.test(expectedName)) {
@@ -213,7 +230,10 @@ export async function runLoop() {
           if (stored[ACTIVE_KEY]) {
             const active = stored[ACTIVE_KEY];
             try { result = await executor.resume(active); }
-            catch (error) { result = failure(active.job_id, error); }
+            catch (error) {
+              console.error("[JOB]", active.job_id, "RESUME ERROR", error);
+              result = failure(active.job_id, error);
+            }
           } else {
             const job = await client.receiveJob(await extensionSessionId());
             if (!job) { delay = 5000; continue; }
@@ -222,7 +242,10 @@ export async function runLoop() {
               [ACTIVE_KEY]: { job_id: job.job_id, tabId: null, startedAt: Date.now() },
             });
             try { result = await executor.execute(job); }
-            catch (error) { result = failure(job.job_id, error); }
+            catch (error) {
+              console.error("[JOB]", job.job_id, "EXECUTION ERROR", error);
+              result = failure(job.job_id, error);
+            }
           }
           await chrome.storage.session.set({ [PENDING_KEY]: result });
         }

@@ -467,18 +467,32 @@ class StepBatchDialog(QDialog):
             self.step_statuses[video_id] = self._read_step_statuses(video)
             self._refresh_table(max(0, self.table.currentRow()))
 
+    @staticmethod
+    def result_message(
+        step_label: str, succeeded: int, total: int, failed_videos: list[str],
+    ) -> str:
+        message = f"Step {step_label}: hoàn thành {succeeded}/{total} video."
+        if failed_videos:
+            message += "\nVideo lỗi: " + ", ".join(failed_videos)
+        return message
+
     def batch_finished(
         self, succeeded: int, failed: int, story_error: str = "", review_video_count: int = 0,
         story_count: int = 0, *, single_step: bool = False,
+        step_label: str | None = None, total_videos: int | None = None,
+        failed_videos: list[str] | None = None, failure_details: list[str] | None = None,
     ) -> None:
         self.set_batch_busy(False)
-        step_label = (
+        step_label = step_label or (
             "4&5" if not single_step and self.active_step_number in {4, 5}
             else "6&7" if not single_step and self.active_step_number in {6, 7}
             else str(self.active_step_number)
         )
         title = f"Batch Step {step_label} hoàn tất"
-        message = f"{title} · Thành công: {succeeded} · Lỗi: {failed}."
+        message = self.result_message(
+            step_label, succeeded, total_videos if total_videos is not None else succeeded + failed,
+            failed_videos or [],
+        )
         if self.active_step_number == 2:
             if story_count:
                 message += f"\nĐã tạo {story_count} story theo Group và nạp vào vùng Output Step 2."
@@ -490,12 +504,14 @@ class StepBatchDialog(QDialog):
                 "Output đã lưu và vẫn có thể dùng cho Step 4 mà không cần sửa."
             )
         self.update_batch_progress(100, message)
-        if story_error:
-            box = QMessageBox(QMessageBox.Icon.Warning, title, message, parent=self)
-            box.setDetailedText(story_error)
-            box.exec()
-        else:
-            QMessageBox.information(self, title, message)
+        box = QMessageBox(
+            QMessageBox.Icon.Warning if failed or story_error else QMessageBox.Icon.Information,
+            title, message, parent=self,
+        )
+        details = [*(failure_details or []), *([story_error] if story_error else [])]
+        if details:
+            box.setDetailedText("\n".join(details))
+        box.exec()
 
     def story_regeneration_finished(self, created: int, total: int, error: str) -> None:
         self.set_batch_busy(False)
@@ -508,10 +524,12 @@ class StepBatchDialog(QDialog):
         else:
             QMessageBox.information(self, "Tạo lại story", message)
 
-    def step2_5_finished(self, succeeded: int, failed: int, details: list[str]) -> None:
+    def step2_5_finished(
+        self, succeeded: int, failed: int, details: list[str], failed_videos: list[str],
+    ) -> None:
         self.set_batch_busy(False)
         title = "Batch Step 2.5 hoàn tất"
-        message = f"{title} · Thành công: {succeeded} · Lỗi: {failed}."
+        message = self.result_message("2.5", succeeded, succeeded + failed, failed_videos)
         self.update_batch_progress(100, message)
         box = QMessageBox(
             QMessageBox.Icon.Warning if failed else QMessageBox.Icon.Information,
@@ -521,10 +539,12 @@ class StepBatchDialog(QDialog):
             box.setDetailedText("\n".join(details))
         box.exec()
 
-    def text_import_finished(self, succeeded: int, failed: int, details: list[str]) -> None:
+    def text_import_finished(
+        self, succeeded: int, failed: int, details: list[str], failed_videos: list[str],
+    ) -> None:
         self.set_batch_busy(False)
         title = "Batch Step 1.5 hoàn tất"
-        message = f"{title} · Thành công: {succeeded} · Lỗi: {failed}."
+        message = self.result_message("1.5", succeeded, succeeded + failed, failed_videos)
         self.update_batch_progress(100, message)
         box = QMessageBox(
             QMessageBox.Icon.Warning if failed else QMessageBox.Icon.Information,

@@ -55,6 +55,7 @@ class TextImportBatchRunner(QObject):
         self.position = 0
         self.success_count = 0
         self.failure_count = 0
+        self.failed_videos: list[str] = []
         self.details: list[str] = []
         self.worker: _TextImportWorker | None = None
         self.summary = ""
@@ -92,7 +93,8 @@ class TextImportBatchRunner(QObject):
     def _progress(self, message: str, *, completed: bool = True) -> None:
         percent = round((self.position if completed else self.position - 1) * 100 / len(self.video_ids))
         self.progress_changed.emit(
-            percent, f"Step 1.5 · {self.position}/{len(self.video_ids)} · {message}",
+            percent,
+            f"Step 1.5 · hoàn thành {self.success_count}/{len(self.video_ids)} video · {message}",
         )
 
     @Slot(str)
@@ -129,6 +131,7 @@ class TextImportBatchRunner(QObject):
                 self.error = f"{self.error}\nKhông thể lưu trạng thái video: {exc}".strip()
         if self.error:
             self.failure_count += 1
+            self.failed_videos.append(name)
             self.details.append(f"{name}: {self.error}")
             self._progress(f"{name}: lỗi — chuyển sang video tiếp theo")
         else:

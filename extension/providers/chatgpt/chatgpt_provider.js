@@ -11,9 +11,10 @@ const comparable = text => normalize(text)
   .replace(/[\u200b-\u200d\ufeff]/gu, "")
   .replace(/\s+/gu, " ");
 const RESPONSE_SETTLE_DELAY_MS = 2000;
-const SEND_BUTTON_INITIAL_DELAY_MS = 12000;
+const SEND_BUTTON_INITIAL_DELAY_MS = 5000;
 const SEND_BUTTON_RETRY_DELAY_MS = 3000;
 const SEND_BUTTON_MAX_ATTEMPTS = 3;
+const RESPONSE_COPY_MAX_ATTEMPTS = 3;
 const RESPONSE_FILE_GRACE_MS = 120000;
 const RESPONSE_FILE_POLL_MS = 250;
 
@@ -69,6 +70,14 @@ export class ChatGPTProvider extends BaseProvider {
       && button.getAttribute("aria-disabled") !== "true"
       && !button.closest("[inert], [hidden]"));
     return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  voiceReady(composer) {
+    const root = this.composerRoot(composer);
+    const button = root && this.find(S.voiceAction, root);
+    return Boolean(button && !button.disabled
+      && button.getAttribute("aria-disabled") !== "true"
+      && !button.closest("[inert], [hidden]"));
   }
 
   sendState(composer) {
@@ -309,12 +318,13 @@ export class ChatGPTProvider extends BaseProvider {
           return responseFile && !stillGenerating && composerEditable ? true : null;
         }
         const controls = this.completionControls(assistant);
-        return controls && this.find(S.copyAction, controls) ? true : null;
+        return controls && this.find(S.copyAction, controls)
+          && this.voiceReady(this.find(S.composer)) ? true : null;
       }, Math.max(1, deadline - Date.now()), () => error(
         sawAssistant ? "RESPONSE_TIMEOUT" : "ASSISTANT_RESPONSE_NOT_FOUND",
         sawAssistant && this.responseFileName
           ? `ChatGPT did not finish preparing ${this.responseFileName} before the deadline.`
-          : sawAssistant ? "ChatGPT did not show a Copy button before the deadline."
+          : sawAssistant ? "ChatGPT did not show both Copy and a ready Start voice button before the deadline."
           : "No assistant message for this prompt was found before the deadline.",
       ));
 
@@ -333,6 +343,7 @@ export class ChatGPTProvider extends BaseProvider {
       const responseFile = this.responseFileName
         ? hasResponseFile(responseTurn, this.responseFileName) : false;
       const composerEditable = this.editable(this.find(S.composer));
+      const voiceReady = this.voiceReady(this.find(S.composer));
       const contentReady = this.responseFileName ? responseFile : Boolean(value);
       lastState = {
         assistant_found: Boolean(assistant),
@@ -340,11 +351,13 @@ export class ChatGPTProvider extends BaseProvider {
         copy_visible: Boolean(copyVisible),
         still_generating: Boolean(stillGenerating),
         composer_editable: composerEditable,
+        voice_ready: voiceReady,
         response_file_required: Boolean(this.responseFileName),
         response_file_found: responseFile,
       };
       const completionReady = this.responseFileName ? responseFile : copyVisible;
-      if (completionReady && !stillGenerating && contentReady && composerEditable) {
+      if (completionReady && !stillGenerating && contentReady && composerEditable
+          && voiceReady) {
         this.text = value;
         if (this.responseFileName) {
           this.log("DOWNLOADING RESPONSE FILE");
@@ -456,35 +469,64 @@ export class ChatGPTProvider extends BaseProvider {
       }
       return { text: this.text, file: this.downloadedResponseFile };
     }
-    const assistant = this.currentAssistant();
-    const controls = assistant ? this.completionControls(assistant) : null;
-    const copyButton = controls && this.find(S.copyAction, controls);
-    if (!copyButton) throw error("COPY_ACTION_NOT_FOUND", "ChatGPT Copy action is no longer available.");
     if (!this.win.navigator.clipboard?.readText) {
       throw error("CLIPBOARD_UNAVAILABLE", "Clipboard read access is unavailable in the ChatGPT tab.");
     }
-    let previous = "";
-    try {
-      previous = await this.win.navigator.clipboard.readText();
-    } catch (cause) {
-      throw error("CLIPBOARD_UNAVAILABLE", `Cannot read clipboard before Copy: ${cause}`);
-    }
-    copyButton.click();
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      let copied;
+    let lastError = null;
+    for (let attempt = 1; attempt <= RESPONSE_COPY_MAX_ATTEMPTS; attempt++) {
+      if (this.cancelled) throw error("PROVIDER_ERROR", "Local response wait cancelled.");
       try {
-        copied = await this.win.navigator.clipboard.readText();
+        const focused = await chrome.runtime.sendMessage({ type: "MYTOOL_FOCUS_RESPONSE_TAB" });
+        if (focused?.focused) {
+          const focusDeadline = Date.now() + 2000;
+          while (!this.doc.hasFocus() && Date.now() < focusDeadline) {
+            await new Promise(resolve => this.win.setTimeout(resolve, 100));
+          }
+        }
+        if (!focused?.focused || !this.doc.hasFocus()) {
+          throw error("CLIPBOARD_UNAVAILABLE",
+            `Cannot focus the ChatGPT tab before Copy: ${focused?.message || "document is not focused"}`);
+        }
+        const assistant = this.currentAssistant();
+        const controls = assistant ? this.completionControls(assistant) : null;
+        const copyButton = controls && this.find(S.copyAction, controls);
+        if (!copyButton) throw error("COPY_ACTION_NOT_FOUND", "ChatGPT Copy action is no longer available.");
+        if (!this.voiceReady(this.find(S.composer)) || this.find(S.stop)) {
+          throw error("RESPONSE_COPY_FAILED", "ChatGPT response is no longer ready for Copy.");
+        }
+        const previous = await this.win.navigator.clipboard.readText();
+        copyButton.click();
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          const copied = await this.win.navigator.clipboard.readText();
+          if (copied.trim() && (copied !== previous || comparable(copied) === comparable(this.text))) {
+            this.log(`RESPONSE COPIED ${attempt}/${RESPONSE_COPY_MAX_ATTEMPTS}`);
+            return copied.trim();
+          }
+          await new Promise(resolve => this.win.setTimeout(resolve, 100));
+        }
+        throw error("RESPONSE_COPY_FAILED", "ChatGPT Copy action did not provide the completed response.");
       } catch (cause) {
-        throw error("CLIPBOARD_UNAVAILABLE", `Cannot read clipboard after Copy: ${cause}`);
+        lastError = cause?.code ? cause : error("CLIPBOARD_UNAVAILABLE", `Cannot read clipboard: ${cause}`);
+        this.log(`RESPONSE COPY FAILED ${attempt}/${RESPONSE_COPY_MAX_ATTEMPTS}: ${lastError.message}`);
+        if (attempt < RESPONSE_COPY_MAX_ATTEMPTS) {
+          await new Promise(resolve => this.win.setTimeout(resolve, 500));
+        }
       }
-      if (copied.trim() && (copied !== previous || comparable(copied) === comparable(this.text))) {
-        this.log("RESPONSE COPIED");
-        return copied.trim();
-      }
-      await new Promise(resolve => this.win.setTimeout(resolve, 100));
     }
-    throw error("RESPONSE_COPY_FAILED", "ChatGPT Copy action did not provide the completed response.");
+    const assistant = this.currentAssistant();
+    const controls = assistant ? this.completionControls(assistant) : null;
+    const copyButton = controls && this.find(S.copyAction, controls);
+    const responseTurn = assistant?.closest(S.turn) || assistant;
+    const currentText = assistant ? this.responseText(assistant) : "";
+    if (copyButton && responseTurn && this.voiceReady(this.find(S.composer))
+        && !this.find(S.stop) && !this.find(S.streaming, responseTurn)
+        && currentText && comparable(currentText) === comparable(this.text)) {
+      this.log(`RESPONSE READ FROM DOM AFTER ${RESPONSE_COPY_MAX_ATTEMPTS} COPY ATTEMPTS`);
+      return currentText;
+    }
+    throw error(lastError?.code || "RESPONSE_COPY_FAILED",
+      `ChatGPT Copy failed after ${RESPONSE_COPY_MAX_ATTEMPTS} attempts and the current DOM response was not stable: ${lastError?.message || "unknown error"}`);
   }
 
   async cancel() {

@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from ..batch_project import BatchProject, BatchProjectService
 from ..common.models import StepId, StepResult
 from ..config.web_translation import CHATGPT_WEB_PROVIDER_NAME
+from ..errors import UserFacingError
 from ..state import ProjectState
 from ..steps.step3_translation.providers import create_translation_provider
 from ..steps.step2_transcription.ai_asr_repair import correct_asr_with_story
@@ -53,7 +54,8 @@ class _TxtRepairWorker(QThread):
                 )
             self.succeeded.emit(result, summary)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            detail = exc.error_message.technical_detail.strip() if isinstance(exc, UserFacingError) else ""
+            self.failed.emit(f"{exc}\n\n{detail[:4000]}" if detail else str(exc))
 
 
 class TxtRepairBatchRunner(QObject):
@@ -70,6 +72,7 @@ class TxtRepairBatchRunner(QObject):
         self.position = 0
         self.success_count = 0
         self.failure_count = 0
+        self.failed_videos: list[str] = []
         self.errors: list[str] = []
         self.summaries: list[str] = []
         self.worker: _TxtRepairWorker | None = None
@@ -101,7 +104,8 @@ class TxtRepairBatchRunner(QObject):
         name = record.name if record else video_id
         self.progress_changed.emit(
             round((self.position - 1) * 100 / len(self.video_ids)),
-            f"Step 2.5 · {self.position}/{len(self.video_ids)} · {name} · Đang chuẩn bị…",
+            f"Step 2.5 · hoàn thành {self.success_count}/{len(self.video_ids)} video"
+            f" · {name} · Đang chuẩn bị…",
         )
         try:
             state = ProjectState()
@@ -126,7 +130,9 @@ class TxtRepairBatchRunner(QObject):
         name = record.name if record else video_id
         percent = round(((self.position - 1) * 100 + max(0, min(100, value))) / len(self.video_ids))
         self.progress_changed.emit(
-            percent, f"Step 2.5 · {self.position}/{len(self.video_ids)} · {name} · {message}",
+            percent,
+            f"Step 2.5 · hoàn thành {self.success_count}/{len(self.video_ids)} video"
+            f" · {name} · {message}",
         )
 
     @Slot(object, str)
@@ -164,6 +170,7 @@ class TxtRepairBatchRunner(QObject):
         name = record.name if record else video_id
         if self.error:
             self.failure_count += 1
+            self.failed_videos.append(name)
             self.errors.append(f"{name}: {self.error}")
             message = "Lỗi — chuyển sang video tiếp theo"
         else:

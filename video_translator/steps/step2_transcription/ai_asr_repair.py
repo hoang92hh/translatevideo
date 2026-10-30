@@ -8,7 +8,6 @@ from pathlib import Path
 
 from ...config.batch_prompts import PROMPT_BATCH_ROOT
 from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
-from ...config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
 from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from ...steps.step3_translation.providers import create_translation_provider
 from ...story_content import load_story_content
@@ -38,26 +37,12 @@ def correct_asr_with_story(
     segments = source_result.segments
     if not segments:
         raise ValueError("Transcript Step 2 không có segment để sửa ASR.")
-    input_name = "asr-repair-input.json"
-    output_name = "asr-repair-response.json"
     provider_name = str(settings.get("provider", GEMINI_PROVIDER_NAME))
-    prompt_file = (
-        "asr_repair_chatgpt.md" if provider_name == CHATGPT_WEB_PROVIDER_NAME
-        else "asr_repair.md"
-    )
-    prompt = (PROMPT_BATCH_ROOT / prompt_file).read_text(encoding="utf-8")
-    prompt = prompt.replace("{input_filename}", input_name)
     if provider is None:
         provider = create_translation_provider(
             provider_name, str(settings.get("model", GEMINI_DEFAULT_MODEL)),
             "Chinese", "Chinese", settings,
         )
-    if provider_name == CHATGPT_WEB_PROVIDER_NAME:
-        topic_content = load_prompt_template(
-            provider_name,
-            str(settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
-        ).prompt
-        provider.begin_asr_context(str(story_path), story, topic_content)
     content = {
         "video_name": video_name,
         "segments": [
@@ -68,7 +53,19 @@ def correct_asr_with_story(
     }
     if provider_name != CHATGPT_WEB_PROVIDER_NAME:
         content["story_content"] = story
-    response = provider.correct_asr(content, prompt, input_name, output_name)
+    if provider_name == CHATGPT_WEB_PROVIDER_NAME:
+        prompt_dir = PROMPT_BATCH_ROOT / "chatgpt_web" / "chinh_sua"
+        first_prompt = (prompt_dir / "prompt1.md").read_text(encoding="utf-8")
+        later_prompt = (prompt_dir / "prompt2.md").read_text(encoding="utf-8")
+        response = provider.correct_asr_in_chat(
+            content, str(story_path), story, first_prompt, later_prompt,
+        )
+    else:
+        input_name = "asr-repair-input.json"
+        output_name = "asr-repair-response.json"
+        prompt = (PROMPT_BATCH_ROOT / "asr_repair.md").read_text(encoding="utf-8")
+        prompt = prompt.replace("{input_filename}", input_name)
+        response = provider.correct_asr(content, prompt, input_name, output_name)
     if not isinstance(response, list) or len(response) != len(segments):
         raise ValueError("AI không trả đủ một dòng new_content cho mỗi segment.")
     corrected: dict[int, str] = {}

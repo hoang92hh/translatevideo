@@ -170,6 +170,7 @@ async function execute(job, record) {
       ...(typeof response === "string" ? { text: response } : response),
     };
   } catch (error) {
+    console.error("[JOB]", job.job_id, "PROVIDER EXECUTION ERROR", error);
     record.result = failure(job.job_id, error);
   } finally {
     record.status = record.result.status;

@@ -30,8 +30,12 @@ chưa được giao diện web xác nhận sẵn sàng, extension dừng job tr�
 
 ChatGPT Web trả JSON trực tiếp trong chat. Extension chờ phản hồi hoàn tất, bấm nút **Copy**
 của lượt trả lời mới nhất, đọc nội dung vừa sao chép rồi gửi về ứng dụng để kiểm tra JSON và ID.
-Step 2.5 mở một chat cho cả batch: gửi story Group và topic_content trước, sau đó gửi toàn bộ
-segment của từng video; khi Group đổi, story mới được gửi vào cùng chat trước video tiếp theo.
+Step 2.5 mở một chat cho cả batch: prompt đầu gửi story Group cùng toàn bộ segment video đầu tiên
+và nhận JSON ngay. Các video sau dùng prompt thứ hai trong cùng chat; khi đổi Group, story mới
+được kèm trong prompt của video đó. Hai prompt nằm tại `reference/prompt_batch/chatgpt_web/chinh_sua/`
+và không do Prompt Manager quản lý.
+Nếu lượt đầu đã tạo chat nhưng lấy phản hồi thất bại, extension vẫn lưu URL chat để video tiếp theo
+tiếp tục tại đó. Nếu không xác nhận được URL chat, batch báo lỗi thay vì mở chat thứ hai.
 
 Claude Web vẫn có thể yêu cầu file kết quả thật có tên dạng
 `step3-translation-result-0121-0140.json`. Extension chỉ nhận file nằm trong phản hồi mới nhất,
@@ -62,9 +66,14 @@ Adapter xác định đúng resource row bằng tên file, loại nút preview p
 duy nhất một action hợp lệ, nên không phụ thuộc vào bất kỳ ngôn ngữ giao diện nào.
 
 Với ChatGPT, sau khi file đính kèm đã sẵn sàng và prompt đã được điền đầy đủ, extension chờ
-12 giây rồi kiểm tra nút Send tối đa 3 lần, cách nhau 3 giây. Khi tìm thấy đúng một nút hợp lệ,
+5 giây rồi kiểm tra nút Send tối đa 3 lần, cách nhau 3 giây. Khi tìm thấy đúng một nút hợp lệ,
 extension chỉ bấm một lần; nếu đã thử bấm nhưng giao diện chưa xác nhận gửi, job báo lỗi và không
 tự bấm lại để tránh gửi trùng.
+Với phản hồi trả trực tiếp trong chat, extension chờ icon Copy và nút Start voice trong ô chat
+sẵn sàng, đồng thời phản hồi ngừng tạo. Sau đó extension đưa tab ChatGPT lên trước và thử lấy
+nội dung qua icon Copy tối đa 3 lần trên cùng câu trả lời; không gửi lại prompt khi Copy lỗi.
+Nếu clipboard vẫn không có kết quả mới, extension đọc phần chữ DOM của đúng câu trả lời vừa hoàn tất
+sau khi kiểm tra lại icon Copy, nút Start voice và nội dung ổn định.
 
 ## Phạm vi hiện tại
 

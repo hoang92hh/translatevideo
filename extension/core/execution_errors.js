@@ -7,18 +7,21 @@ const codes = new Set([
   "CLAUDE_TAB_NOT_FOUND", "CLAUDE_MULTIPLE_TABS",
   "COMPOSER_NOT_FOUND", "COMPOSER_NOT_EMPTY", "COMPOSER_WRITE_FAILED",
   "PROMPT_SEND_FAILED", "ASSISTANT_RESPONSE_NOT_FOUND", "RESPONSE_TIMEOUT",
+  "COPY_ACTION_NOT_FOUND", "CLIPBOARD_UNAVAILABLE", "RESPONSE_COPY_FAILED",
   "RESPONSE_FILE_NOT_FOUND", "RESPONSE_FILE_DOWNLOAD_FAILED", "RESPONSE_FILE_DOWNLOAD_TIMEOUT",
   "RESPONSE_FILE_TOO_LARGE",
   "DUPLICATE_EXECUTION", "EXECUTION_STATE_LOST",
   "PROJECT_CREATE_FAILED", "PROJECT_INSTRUCTIONS_FAILED", "PROJECT_NOT_FOUND", "PROJECT_NAVIGATION_FAILED",
+  "PROJECT_CONVERSATION_LOST",
   "PROJECT_SOURCE_DELETE_FAILED", "PROJECT_SOURCE_UPLOAD_FAILED", "PROJECT_SOURCE_UPLOAD_TIMEOUT",
 ]);
 export function failure(jobId, error) {
   const known = codes.has(error?.code);
+  const detail = typeof error?.message === "string" ? error.message.trim().slice(0, 1000) : "";
   return {
     job_id: jobId, status: "error",
     error: known ? error.code : "PROVIDER_ERROR",
-    message: known ? error.message : "Provider execution failed; inspect the extension console.",
+    message: detail || "Provider execution failed; inspect the extension console.",
   };
 }
 export function executionError(code, message) {

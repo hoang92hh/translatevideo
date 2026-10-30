@@ -17,6 +17,7 @@ export const chatgptSelectors = Object.freeze({
   composer: '#prompt-textarea[contenteditable="true"], textarea#prompt-textarea, form[data-type="unified-composer"] [contenteditable="true"], main [contenteditable="true"][role="textbox"]',
   send: 'button[data-testid="send-button"], button#composer-submit-button, button[type="submit"], button[aria-label="Send"], button[aria-label="Send prompt"], button[aria-label="Gửi lời nhắc"], button[aria-label="Send message"], [role="button"][aria-label="Send"]',
   stop: 'button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Dừng tạo"]',
+  voiceAction: 'button[data-testid="composer-voice-button"], button[data-testid="voice-button"], button[aria-label="Start voice mode" i], button[aria-label="Start voice" i], button[aria-label="Bắt đầu chế độ giọng nói" i]',
   signedOut: 'button[data-testid="login-button"], a[href="/auth/login"], button[data-testid="signup-button"]',
   user: '[data-message-author-role="user"]',
   assistant: '[data-message-author-role="assistant"]',

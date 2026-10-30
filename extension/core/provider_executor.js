@@ -151,6 +151,18 @@ async function saveProjectBinding(active) {
   await chrome.storage.session.set({ [PROJECT_BINDINGS_KEY]: bindings });
 }
 
+function isChatGPTProjectConversation(url, projectUrl) {
+  try {
+    const project = new URL(projectUrl);
+    const current = new URL(url);
+    if (project.origin !== "https://chatgpt.com" || current.origin !== project.origin) return false;
+    const projectId = project.pathname.match(/^\/g\/(g-p-[^/]+)\/project\/?$/)?.[1];
+    return Boolean(projectId && new RegExp(
+      "^/g/" + escapeRegExp(projectId) + "(?:-[^/]+)?/c/[^/]+/?$",
+    ).test(current.pathname));
+  } catch { return false; }
+}
+
 async function clearProjectBinding(provider) {
   const stored = await chrome.storage.session.get(PROJECT_BINDINGS_KEY);
   const bindings = stored[PROJECT_BINDINGS_KEY] || {};
@@ -260,6 +272,7 @@ export class ProviderExecutor {
     const active = { job_id: job.job_id, tabId, startedAt: Date.now(),
       action: job.action, projectName: job.action === "create_project" ? job.content : null,
       provider: job.provider, projectUrl: job.project_url || "",
+      conversationMode: job.conversation_mode || "start",
       responseFileName: String(job.options?.response_file_name || ""),
       initialProjectId: initialTab ? projectFromUrl(initialTab.url, job.content)?.id : null };
     await chrome.storage.session.set({ [ACTIVE_KEY]: active });
@@ -309,7 +322,14 @@ export class ProviderExecutor {
       loggedSteps = (record.steps || []).length;
       if (record.result) {
         if (record.result.job_id !== active.job_id) throw executionError("EXECUTION_STATE_LOST", "Result job ID mismatch.");
-        if (record.result.status === "completed") await saveProjectBinding(active);
+        if (record.result.status === "completed") {
+          await saveProjectBinding(active);
+        } else if (active.provider === "chatgpt" && active.conversationMode === "start"
+            && active.projectUrl) {
+          // ChatGPT may have sent the first prompt even if reading its response failed.
+          const tab = await chrome.tabs.get(active.tabId);
+          if (isChatGPTProjectConversation(tab.url, active.projectUrl)) await saveProjectBinding(active);
+        }
         return record.result;
       }
       await sleep(1000);

@@ -83,7 +83,7 @@ Các bước dưới đây chỉ chạy khi bật **Segment recovery** và **VAD
 - **Đầu vào:** video gốc, `voice_track.wav`, tùy chọn voice gốc/background/phụ đề và `video_timing_plan` từ Step 5.
 - **Xử lý:** trộn voice mới với các nguồn âm thanh tùy chọn. Nếu có chỉnh thời gian hình, FFmpeg cắt thành các khoảng, làm chậm hoặc đóng băng theo plan rồi nối lại. Nếu bật burn subtitle, phụ đề được vẽ trực tiếp lên khung hình; nếu chỉ tạo SRT, file phụ đề được lưu riêng. Xuất MP4 và ghi manifest.
 - **Model/engine:** **không có AI model**; FFmpeg mã hóa video **H.264 `libx264`, preset `medium`, CRF 20**, âm thanh **AAC 192 kb/s**.
-- **Đầu ra:** `translated_video.mp4`, tùy chọn `translated.srt` và manifest Step 7.
+- **Đầu ra:** MP4 cùng tên gốc với video input (ví dụ `01.mov` → `01.mp4`), tùy chọn `translated.srt` và manifest Step 7.
 - **Điểm cần xem xét:** code hiện **luôn mã hóa lại toàn bộ video**. Khi có slow motion/freeze hoặc burn subtitle, xử lý khung hình là cần thiết; khi **không** có hai điều đó, có cơ hội copy luồng hình gốc và chỉ mã hóa audio mới. Với trường hợp buộc render hình, có thể đánh giá preset nhanh hơn hoặc hardware encoder nhưng cần đo tốc độ, chất lượng và tính tương thích trên cùng video.
 - **Nguồn code:** [pipeline Step 7](../video_translator/pipeline/mock_steps/render.py), [FFmpeg render](../video_translator/steps/step7_export/service.py).
 

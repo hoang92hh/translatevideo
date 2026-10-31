@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import subprocess
 import threading
 import uuid
@@ -630,21 +631,58 @@ class MergeWorker(QThread):
                 item.unlink(missing_ok=True)
 
 
+class CopyOutputsWorker(QThread):
+    progress_changed = Signal(int, str)
+    succeeded = Signal(int, str)
+    failed = Signal(str)
+
+    def __init__(self, copies: list[tuple[Path, Path]]) -> None:
+        super().__init__()
+        self.copies = copies
+
+    def run(self) -> None:
+        completed = 0
+        try:
+            for source, target in self.copies:
+                temporary = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.part.mp4")
+                try:
+                    with source.open("rb") as input_file, temporary.open("wb") as output_file:
+                        shutil.copyfileobj(input_file, output_file)
+                    shutil.copystat(source, temporary)
+                    temporary.replace(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                completed += 1
+                self.progress_changed.emit(round(completed / len(self.copies) * 100),
+                                           f"Đã copy {completed}/{len(self.copies)} video…")
+            self.succeeded.emit(completed, str(self.copies[0][1].parent))
+        except Exception as exc:
+            self.failed.emit(f"Đã copy {completed}/{len(self.copies)} video.\n{exc}")
+
+
 class OutputManagerDialog(QDialog):
     def __init__(self, project: BatchProject, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.project = project
         self.worker: MergeWorker | None = None
+        self.copy_worker: CopyOutputsWorker | None = None
         self.setWindowTitle("Output của project")
         self.resize(980, 580)
         layout = QVBoxLayout(self)
         helper = QLabel(
             "Thứ tự lấy từ Thiết lập project → Project & Input. "
-            "Chỉ các video được tích sẽ được ghép từ trên xuống dưới; chọn một dòng rồi bấm Xem để kiểm tra."
+            "Chỉ các video được tích sẽ được ghép hoặc copy; khi copy, phiên bản output "
+            "đang chọn ở từng dòng được dùng. Chọn một dòng rồi bấm Xem để kiểm tra."
         )
         helper.setWordWrap(True)
         layout.addWidget(helper)
         row_actions = QHBoxLayout()
+        self.select_all_button = QPushButton("Chọn tất cả")
+        self.select_all_button.clicked.connect(lambda _checked=False: self._set_all_checked(True))
+        row_actions.addWidget(self.select_all_button)
+        self.clear_selection_button = QPushButton("Bỏ chọn tất cả")
+        self.clear_selection_button.clicked.connect(lambda _checked=False: self._set_all_checked(False))
+        row_actions.addWidget(self.clear_selection_button)
         self.view_button = QPushButton("Xem")
         self.view_button.clicked.connect(self._view_selected)
         row_actions.addWidget(self.view_button)
@@ -679,6 +717,9 @@ class OutputManagerDialog(QDialog):
         self.merge_button.setObjectName("primaryButton")
         self.merge_button.clicked.connect(self._merge)
         actions.addWidget(self.merge_button)
+        self.copy_button = QPushButton("Copy các output đã chọn")
+        self.copy_button.clicked.connect(self._copy_selected)
+        actions.addWidget(self.copy_button)
         self.close_button = QPushButton("Đóng")
         self.close_button.clicked.connect(self.accept)
         actions.addWidget(self.close_button)
@@ -702,8 +743,9 @@ class OutputManagerDialog(QDialog):
             row = self.table.rowCount()
             self.table.insertRow(row)
             checked = QTableWidgetItem()
-            checked.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-            checked.setCheckState(Qt.CheckState.Checked if previous.get(video.id, (False, ""))[0]
+            checked.setFlags((Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                             if outputs else Qt.ItemFlag.NoItemFlags)
+            checked.setCheckState(Qt.CheckState.Checked if outputs and previous.get(video.id, (False, ""))[0]
                                   else Qt.CheckState.Unchecked)
             self.table.setItem(row, 0, checked)
             number = QTableWidgetItem(str(row + 1))
@@ -751,6 +793,90 @@ class OutputManagerDialog(QDialog):
                     selected.append(path)
         return selected
 
+    def _set_all_checked(self, checked: bool) -> None:
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            combo = self.table.cellWidget(row, 3)
+            if item and isinstance(combo, QComboBox) and combo.count():
+                item.setCheckState(state)
+
+    def _copy_selected(self) -> None:
+        selected: list[tuple[Path, str]] = []
+        for row in range(self.table.rowCount()):
+            checked = self.table.item(row, 0)
+            name = self.table.item(row, 2)
+            combo = self.table.cellWidget(row, 3)
+            if (checked and checked.checkState() == Qt.CheckState.Checked and name
+                    and isinstance(combo, QComboBox) and combo.currentData()):
+                selected.append((Path(str(combo.currentData())), name.text()))
+        if not selected:
+            QMessageBox.information(self, "Chưa chọn output", "Hãy tích ít nhất một video có output.")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Chọn thư mục nhận video", str(self.project.path("output")))
+        if not folder:
+            return
+        destination = Path(folder)
+        copies = [(source, destination / f"{Path(name).stem}.mp4") for source, name in selected]
+        targets = [target.resolve() for _, target in copies]
+        input_paths = {Path(video.source_path).resolve() for video in self.project.videos}
+        if len(set(targets)) != len(targets):
+            QMessageBox.warning(self, "Tên file trùng nhau", "Các video đã chọn sẽ có tên output trùng nhau. Hãy chọn lại.")
+            return
+        for source, target in copies:
+            if target.resolve() == source.resolve() or target.resolve() in input_paths:
+                QMessageBox.warning(self, "Đường dẫn không hợp lệ",
+                                    f"File đích trùng với video nguồn hoặc output:\n{target}")
+                return
+            if not source.is_file():
+                QMessageBox.warning(self, "Thiếu output", f"Không tìm thấy file:\n{source}")
+                return
+            if target.exists() and not target.is_file():
+                QMessageBox.warning(self, "Đường dẫn không hợp lệ", f"Đích không phải file:\n{target}")
+                return
+        existing = [target.name for _, target in copies if target.exists()]
+        if existing:
+            answer = QMessageBox.question(
+                self, "Thay thế file?",
+                f"Có {len(existing)} file đã tồn tại trong thư mục đích. Thay thế các file đó?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.copy_button.setEnabled(False)
+        self.merge_button.setEnabled(False)
+        self.close_button.setEnabled(False)
+        self.table.setEnabled(False)
+        self.select_all_button.setEnabled(False)
+        self.clear_selection_button.setEnabled(False)
+        self.view_button.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.progress_label.setText("Đang copy video…")
+        self.copy_worker = CopyOutputsWorker(copies)
+        self.copy_worker.progress_changed.connect(self._merge_progress)
+        self.copy_worker.succeeded.connect(self._copy_succeeded)
+        self.copy_worker.failed.connect(self._copy_failed)
+        self.copy_worker.finished.connect(self._copy_finished)
+        self.copy_worker.start()
+
+    def _copy_succeeded(self, count: int, folder: str) -> None:
+        QMessageBox.information(self, "Đã copy video", f"Đã copy {count} video vào:\n{folder}")
+
+    def _copy_failed(self, error: str) -> None:
+        QMessageBox.critical(self, "Không thể copy video", error)
+
+    def _copy_finished(self) -> None:
+        self.copy_button.setEnabled(True)
+        self.merge_button.setEnabled(True)
+        self.close_button.setEnabled(True)
+        self.table.setEnabled(True)
+        self.select_all_button.setEnabled(True)
+        self.clear_selection_button.setEnabled(True)
+        self._update_row_actions()
+        if self.copy_worker:
+            self.copy_worker.deleteLater()
+            self.copy_worker = None
+
     def _merge(self) -> None:
         inputs = self._selected_paths()
         if len(inputs) < 2:
@@ -779,6 +905,9 @@ class OutputManagerDialog(QDialog):
         self.close_button.setEnabled(False)
         self.table.setEnabled(False)
         self.view_button.setEnabled(False)
+        self.copy_button.setEnabled(False)
+        self.select_all_button.setEnabled(False)
+        self.clear_selection_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
@@ -821,6 +950,9 @@ class OutputManagerDialog(QDialog):
         self.merge_button.setText("Ghép các output đã chọn")
         self.close_button.setEnabled(True)
         self.table.setEnabled(True)
+        self.copy_button.setEnabled(True)
+        self.select_all_button.setEnabled(True)
+        self.clear_selection_button.setEnabled(True)
         self._update_row_actions()
         self.cancel_button.setEnabled(False)
         if self.worker:
@@ -828,6 +960,9 @@ class OutputManagerDialog(QDialog):
             self.worker = None
 
     def reject(self) -> None:
+        if self.copy_worker and self.copy_worker.isRunning():
+            QMessageBox.information(self, "Đang copy video", "Hãy chờ copy hoàn thành trước khi đóng.")
+            return
         if self.worker and self.worker.isRunning():
             QMessageBox.information(self, "Đang ghép video", "Hãy chờ FFmpeg hoàn thành trước khi đóng.")
             return

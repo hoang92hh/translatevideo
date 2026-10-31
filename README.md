@@ -224,9 +224,12 @@ chỉ đọc thông tin, không tạo workspace hay ghi manifest. Nút **Chạy 
 batch theo từng step vẫn giữ chế độ hiện có.
 
 Nút **Outputs** hiển thị một row cho mỗi video. Select box trong row chọn phiên bản
-render cần xem; checkbox chọn các phiên bản cần ghép. Các row được ghép theo thứ tự
-chung đã lưu trong thiết lập project và tạo một MP4 mới trong `output/merged/` hoặc vị trí
-do người dùng chọn. Để đổi thứ tự ghép, chỉnh thứ tự video tại **Project & Input** trước.
+render cần xem; checkbox chọn các phiên bản cần ghép hoặc copy. Có nút chọn và bỏ chọn
+tất cả các row có output. Nút Copy sao chép phiên bản đang chọn của mỗi row vào thư mục
+người dùng chọn, dùng tên video input với đuôi `.mp4`; file trùng tên chỉ được thay thế
+sau khi xác nhận. Các row được ghép theo thứ tự chung đã lưu trong thiết lập project và
+tạo một MP4 mới trong `output/merged/` hoặc vị trí do người dùng chọn. Để đổi thứ tự
+ghép, chỉnh thứ tự video tại **Project & Input** trước.
 
 ## Trạng thái hiện tại
 

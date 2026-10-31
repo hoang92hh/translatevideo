@@ -129,7 +129,7 @@ def execute(
     now = datetime.now(timezone.utc)
     candidate_id = f"render-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
     candidate_folder = Path(state.workspace_path("output", candidate_id))
-    video_output = candidate_folder / "translated_video.mp4"
+    video_output = candidate_folder / f"{Path(state.input_video).stem}.mp4"
     subtitle_output = candidate_folder / "translated.srt"
     manifest = candidate_folder / "manifest.json"
     candidate_folder.mkdir(parents=True, exist_ok=False)

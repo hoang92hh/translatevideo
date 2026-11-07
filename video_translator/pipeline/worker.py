@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+from typing import Any
+
+from PySide6.QtCore import QThread, Signal
+
+from ..errors import error_payload
+from ..common.models import StepId
+from ..state import ProjectState
+from ..steps.step5_alignment.service import (
+    borrow_neighbor_time,
+    repair_sync_segments,
+    rewrite_sync_drafts,
+)
+from .mock_pipeline import MockPipeline
+
+
+class PipelineWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    progress_changed = Signal(int, str)
+
+    def __init__(
+        self,
+        pipeline: MockPipeline,
+        step: StepId,
+        state: ProjectState,
+        settings: dict[str, Any],
+    ) -> None:
+        super().__init__()
+        self.pipeline = pipeline
+        self.step = step
+        self.state = state
+        self.settings = settings
+
+    def _progress(self, value: int, message: str) -> None:
+        self.progress_changed.emit(value, message)
+
+    def run(self) -> None:
+        try:
+            result = self.pipeline.execute(
+                self.step,
+                self.state,
+                self.settings,
+                self._progress,
+            )
+        except Exception as exc:
+            self.failed.emit(error_payload(exc))
+            return
+        self.succeeded.emit(result)
+
+
+class AudioSyncAiRewriteWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    progress_changed = Signal(int, str)
+
+    def __init__(
+        self,
+        manifest_path: str,
+        selected_texts: dict[int, str],
+        model_name: str,
+        provider_name: str,
+        source_language: str,
+        target_language: str,
+    ) -> None:
+        super().__init__()
+        self.manifest_path = manifest_path
+        self.selected_texts = selected_texts
+        self.model_name = model_name
+        self.provider_name = provider_name
+        self.source_language = source_language
+        self.target_language = target_language
+
+    def run(self) -> None:
+        try:
+            result = rewrite_sync_drafts(
+                self.manifest_path,
+                self.selected_texts,
+                self.model_name,
+                self.source_language,
+                self.target_language,
+                self.progress_changed.emit,
+                self.provider_name,
+            )
+        except Exception as exc:
+            self.failed.emit(error_payload(exc))
+            return
+        self.succeeded.emit(result)
+
+
+class AudioSyncBatchRepairWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    progress_changed = Signal(int, str)
+
+    def __init__(
+        self,
+        sync_manifest_path: str,
+        tts_manifest_path: str,
+        translation_manifest_path: str,
+        transcript_manifest_path: str,
+        segment_updates: dict[int, dict[str, object]],
+        target_language: str,
+        tts_session_key: str = "",
+    ) -> None:
+        super().__init__()
+        self.sync_manifest_path = sync_manifest_path
+        self.tts_manifest_path = tts_manifest_path
+        self.translation_manifest_path = translation_manifest_path
+        self.transcript_manifest_path = transcript_manifest_path
+        self.segment_updates = segment_updates
+        self.target_language = target_language
+        self.tts_session_key = tts_session_key
+
+    def run(self) -> None:
+        try:
+            result = repair_sync_segments(
+                self.sync_manifest_path,
+                self.tts_manifest_path,
+                self.translation_manifest_path,
+                self.transcript_manifest_path,
+                self.segment_updates,
+                self.target_language,
+                self.progress_changed.emit,
+                self.tts_session_key,
+            )
+        except Exception as exc:
+            self.failed.emit(error_payload(exc))
+            return
+        self.succeeded.emit(result)
+
+
+class AudioSyncNeighborBorrowWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    progress_changed = Signal(int, str)
+
+    def __init__(self, manifest_path: str) -> None:
+        super().__init__()
+        self.manifest_path = manifest_path
+
+    def run(self) -> None:
+        try:
+            result = borrow_neighbor_time(
+                self.manifest_path,
+                self.progress_changed.emit,
+            )
+        except Exception as exc:
+            self.failed.emit(error_payload(exc))
+            return
+        self.succeeded.emit(result)

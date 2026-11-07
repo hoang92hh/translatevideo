@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from datetime import datetime, timezone
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -9,6 +11,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QProgressBar,
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
@@ -17,14 +20,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...models import STEP_ORDER, StepResult, StepStatus
+from ...common.models import STEP_ORDER, StepId, StepResult, StepStatus
 from ...state import ProjectState
-from ..components import Card, ProviderPanel
+from ..components import Card
 from ..specs import StepSpec
 
 
 class StepPage(QWidget):
     run_requested = Signal(str)
+    run_from_here_requested = Signal(str)
     SPEC: StepSpec
 
     def __init__(self, state: ProjectState) -> None:
@@ -47,9 +51,30 @@ class StepPage(QWidget):
         content_layout.setSpacing(16)
         content_layout.addLayout(self._build_settings_column(), 2)
         content_layout.addLayout(self._build_result_column(), 3)
+        if self.table.isHidden():
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
         scroll.setWidget(content)
-        root.addWidget(scroll)
+        root.addWidget(scroll, 1)
+        root.addLayout(self._build_run_actions())
         self.refresh()
+
+    @staticmethod
+    def newest_candidates(candidates: Iterable[Any]) -> list[Any]:
+        """Sort display choices by creation time, without changing pipeline inputs."""
+        def order_key(item: tuple[int, Any]) -> tuple[datetime, int]:
+            index, candidate = item
+            try:
+                created = datetime.fromisoformat(str(candidate.created_at).strip())
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                created = created.astimezone(timezone.utc)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                created = datetime.min.replace(tzinfo=timezone.utc)
+            return created, index
+
+        return [candidate for _, candidate in sorted(enumerate(candidates), key=order_key, reverse=True)]
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
@@ -65,9 +90,6 @@ class StepPage(QWidget):
         header.addWidget(number)
         header.addLayout(title_box)
         header.addStretch()
-        self.status = QLabel()
-        self.status.setObjectName("statusBadge")
-        header.addWidget(self.status)
         return header
 
     def _build_settings_column(self) -> QVBoxLayout:
@@ -81,8 +103,6 @@ class StepPage(QWidget):
         special_card = self.build_special_card()
         if special_card:
             column.addWidget(special_card)
-        self.provider_panel = ProviderPanel(self.spec.providers)
-        column.addWidget(self.provider_panel)
         column.addStretch()
         return column
 
@@ -93,11 +113,22 @@ class StepPage(QWidget):
         self.result_summary.setObjectName("resultSummary")
         self.result_summary.setWordWrap(True)
         output_card.content_layout.addWidget(self.result_summary)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["ID", "Start", "End", "Source", "Translation", "Audio"])
+        self.progress_message = QLabel("Đang chờ xử lý")
+        self.progress_message.setObjectName("muted")
+        self.progress_message.setVisible(False)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setVisible(False)
+        output_card.content_layout.addWidget(self.progress_message)
+        output_card.content_layout.addWidget(self.progress_bar)
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(
+            ["ID", "Speaker", "Start", "End", "Source", "Translation", "Audio"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setMinimumHeight(260)
@@ -108,53 +139,87 @@ class StepPage(QWidget):
         self.artifacts.setMaximumHeight(92)
         self.artifacts.setPlaceholderText("Các artifact đầu ra sẽ xuất hiện tại đây")
         output_card.content_layout.addWidget(self.artifacts)
-        column.addWidget(output_card)
-        actions = QHBoxLayout()
-        actions.addStretch()
-        self.run_button = QPushButton(f"Chạy step {self.spec.number}")
-        self.run_button.setObjectName("primaryButton")
-        self.run_button.clicked.connect(lambda: self.run_requested.emit(self.spec.step.value))
-        actions.addWidget(self.run_button)
-        column.addLayout(actions)
+        result_extra = self.build_result_extra()
+        if result_extra:
+            output_card.content_layout.addWidget(result_extra)
+        if self.table.isHidden():
+            column.addWidget(output_card, 0, Qt.AlignmentFlag.AlignTop)
+            column.addStretch(1)
+        else:
+            column.addWidget(output_card)
         return column
 
+    def _build_run_actions(self) -> QHBoxLayout:
+        actions = QHBoxLayout()
+        self.run_button = QPushButton(self)
+        self.run_button.hide()
+        self.run_from_here_button = QPushButton(self)
+        self.run_from_here_button.hide()
+        return actions
+
     def build_special_card(self) -> Card | None:
+        return None
+
+    def build_result_extra(self) -> QWidget | None:
         return None
 
     def refresh_special(self) -> None:
         pass
 
     def settings(self) -> dict[str, Any]:
-        return self.provider_panel.values()
+        return {}
+
+    def prepare_run(self) -> None:
+        """Cho phép step giải phóng resource trước khi worker bắt đầu."""
+        pass
 
     def set_busy(self, busy: bool) -> None:
         self.run_button.setDisabled(busy)
         self.run_button.setText("Đang xử lý…" if busy else f"Chạy step {self.spec.number}")
+        self.run_from_here_button.setDisabled(busy)
+        self.run_from_here_button.setText(
+            "Đang chạy pipeline…"
+            if busy
+            else f"Chạy từ Step {self.spec.number} đến cuối"
+        )
+        if busy:
+            self.progress_bar.setValue(0)
+            self.progress_bar.setVisible(True)
+            self.progress_message.setText("Đang bắt đầu xử lý…")
+            self.progress_message.setVisible(True)
+
+    def set_progress(self, value: int, message: str) -> None:
+        self.progress_bar.setVisible(True)
+        self.progress_message.setVisible(True)
+        self.progress_bar.setValue(max(0, min(100, value)))
+        self.progress_message.setText(message)
 
     def refresh(self) -> None:
         status = self.state.statuses[self.spec.step]
-        labels = {
-            StepStatus.PENDING: "ĐANG CHỜ",
-            StepStatus.READY: "SẴN SÀNG",
-            StepStatus.RUNNING: "ĐANG CHẠY",
-            StepStatus.DONE: "HOÀN THÀNH",
-            StepStatus.STALE: "CẦN CẬP NHẬT",
-            StepStatus.ERROR: "CÓ LỖI",
-        }
-        self.status.setText(labels[status])
-        self.status.setProperty("state", status.value)
-        self.status.style().unpolish(self.status)
-        self.status.style().polish(self.status)
         self.input_summary.setText(self.state.input_summary(self.spec.step))
-        self.refresh_special()
         result = self.state.results.get(self.spec.step)
+        self.show_candidate_result(result)
+        self.refresh_special()
+        can_run = self.state.can_run(self.spec.step) and status != StepStatus.RUNNING
+        self.run_button.setEnabled(can_run)
+        self.run_from_here_button.setEnabled(can_run)
+
+    def show_candidate_result(self, result: StepResult | None) -> None:
         if result:
             self._show_result(result)
-        else:
-            self.result_summary.setText("Chưa có kết quả")
-            self.artifacts.clear()
-            self.table.setRowCount(0)
-        self.run_button.setEnabled(self.state.can_run(self.spec.step) and status != StepStatus.RUNNING)
+            active = self.state.results.get(self.spec.step)
+            if active is None or active.artifacts != result.artifacts:
+                for row in range(self.table.rowCount()):
+                    for column in range(self.table.columnCount()):
+                        item = self.table.item(row, column)
+                        if item:
+                            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return
+        self.result_summary.setText("Chưa có kết quả")
+        self.artifacts.clear()
+        self.table.setRowCount(0)
+        if self.table.isHidden():
+            self._fit_compact_artifacts()
 
     def _show_result(self, result: StepResult) -> None:
         self.result_summary.setText(result.summary)
@@ -162,34 +227,54 @@ class StepPage(QWidget):
         self._updating_table = True
         self.table.setRowCount(len(result.segments))
         for row, segment in enumerate(result.segments):
+            missing_timeline = (
+                result.step == StepId.STT and segment.start == 0.0 and segment.end == 0.0
+            )
             values = (
                 str(segment.id),
-                f"{segment.start:.2f}",
-                f"{segment.end:.2f}",
+                segment.speaker_id,
+                "" if missing_timeline else f"{segment.start:.2f}",
+                "" if missing_timeline else f"{segment.end:.2f}",
                 segment.source_text,
                 segment.translated_text,
                 segment.synced_audio_file or segment.audio_file,
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if column not in (3, 4):
+                if column not in (4, 5):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
         self._updating_table = False
 
+    def _show_result_without_segments(self, result: StepResult) -> None:
+        self.result_summary.setText(result.summary)
+        self.artifacts.setPlainText(
+            "\n".join(f"{name}:  {path}" for name, path in result.artifacts.items())
+        )
+        self.table.setRowCount(0)
+        self._fit_compact_artifacts()
+
+    def _fit_compact_artifacts(self) -> None:
+        line_count = max(1, self.artifacts.toPlainText().count("\n") + 1)
+        line_height = self.artifacts.fontMetrics().lineSpacing()
+        self.artifacts.setFixedHeight(min(92, max(44, 18 + line_count * line_height)))
+
     def _table_cell_changed(self, row: int, column: int) -> None:
-        if self._updating_table or column not in (3, 4):
+        if self._updating_table or column not in (4, 5):
             return
         result = self.state.results.get(self.spec.step)
         if not result or row >= len(result.segments):
             return
         text = self.table.item(row, column).text()
-        if column == 3:
+        if column == 4:
+            if text == result.segments[row].source_text:
+                return
             result.segments[row].source_text = text
         else:
+            if text == result.segments[row].translated_text:
+                return
             result.segments[row].translated_text = text
         index = STEP_ORDER.index(self.spec.step)
         if index + 1 < len(STEP_ORDER):
             self.state.invalidate_from(STEP_ORDER[index + 1])
         self.state.save_project()
-

@@ -1,0 +1,19 @@
+from ...steps.step1_separation.ui import ExtractStepPage
+from ...steps.step2_transcription.ui import SpeechToTextStepPage
+from ...steps.step3_translation.ui import TranslationStepPage
+from ...steps.step4_tts.ui import TextToSpeechStepPage
+from ...steps.step5_alignment.ui import AudioSyncStepPage
+from ...steps.step6_render.ui import BuildAudioStepPage
+from ...steps.step7_export.ui import RenderStepPage
+
+STEP_PAGE_TYPES = (
+    ExtractStepPage,
+    SpeechToTextStepPage,
+    TranslationStepPage,
+    TextToSpeechStepPage,
+    AudioSyncStepPage,
+    BuildAudioStepPage,
+    RenderStepPage,
+)
+
+__all__ = ["STEP_PAGE_TYPES"]

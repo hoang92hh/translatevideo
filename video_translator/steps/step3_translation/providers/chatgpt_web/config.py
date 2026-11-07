@@ -1,0 +1,2 @@
+PROVIDER_ID = "ChatGPT Web"
+VERSION = "1"

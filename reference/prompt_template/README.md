@@ -1,0 +1,46 @@
+# Thư viện Prompt Step 3
+
+Prompt được quản lý độc lập theo provider trong ba thư mục:
+
+- `google_gemini/`
+- `chatgpt_web/`
+- `claude_web/`
+
+Mỗi file Markdown là một template có tên hiển thị ở tiêu đề cấp 1 và một phần prompt duy nhất:
+
+```markdown
+# Tên prompt
+
+## PROMPT
+
+Đọc file đính kèm, phân tích ngữ cảnh, dịch từ {source_language} sang
+{target_language}, tự kiểm tra và chỉ trả kết quả cuối theo OUTPUT CONTRACT.
+```
+
+Phần `PROMPT` quản lý cả chỉ dẫn nghiệp vụ, `OUTPUT CONTRACT` và `ATTACHED INPUT`. Ứng dụng thay thế các biến sau khi chạy:
+
+- `{source_language}`, `{target_language}`
+- `{input_filename}`, `{output_filename}`
+- `{segment_start}`, `{segment_end}`, `{segment_count}`
+- `{batch_index}`, `{batch_total}`
+
+Tên file được tạo từ ID đầu và cuối thực tế của từng batch. Code vẫn kiểm tra JSON schema và danh sách ID sau khi provider trả kết quả. Với Gemini API, ứng dụng lưu JSON response thành `{output_filename}`; ChatGPT Web trả JSON trực tiếp trong chat để extension sao chép; Claude Web vẫn có thể trả file tải xuống đúng tên.
+
+Template cũ có ba phần vẫn đọc được: ứng dụng lấy nội dung `TRANSLATION` làm prompt duy nhất. Khi lưu lại trong popup, file được chuyển sang định dạng `PROMPT` mới.
+
+Mỗi project chỉ lưu provider và mã template đã chọn. Popup **Quản lý Prompt** trên màn hình chính là nơi thêm, sửa và xóa template; màn hình **Thiết lập project** chỉ lựa chọn template có sẵn.
+
+## Prompt batch theo step
+
+Prompt tạo story và prompt dịch Step 3 trong popup batch được quản lý tại `../prompt_batch/`.
+Riêng batch Step 3 của Google Gemini chèn nội dung template được chọn tại
+**Thiết lập project → Step 3** vào biến `{topic_content}` của prompt dịch batch.
+
+Popup **Chạy batch video đã chọn** dùng bộ prompt Gemini riêng tại `../prompt_video/google_gemini/`:
+prompt lấy story của từng video, prompt dịch block đầu và prompt dịch các block tiếp theo.
+Ba prompt này cũng chèn template đã chọn vào `{topic_content}`; mỗi block dịch trả
+`Noi_dung` để làm ngữ cảnh cho block kế tiếp. Story chỉ giữ trong bộ nhớ khi batch chạy.
+Tác vụ tạo story dùng `../prompt_batch/google_gemini/story.md` hoặc
+`../prompt_batch/chatgpt_web/story.md` theo provider đã chọn. Prompt phân tích video
+`google_gemini/story/video_analysis.md` và `chatgpt_web/story/video_analysis.md` vẫn nằm
+trong thư mục này.

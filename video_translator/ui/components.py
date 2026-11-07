@@ -6,10 +6,13 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSpinBox,
     QStackedWidget,
     QVBoxLayout,
@@ -17,6 +20,36 @@ from PySide6.QtWidgets import (
 )
 
 from .specs import FieldSpec, ProviderSpec
+
+
+class FilePicker(QWidget):
+    def __init__(self, value: str = "") -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.field = QLineEdit(value)
+        self.field.setPlaceholderText("Để trống hoặc chọn đường dẫn file")
+        browse = QPushButton("Chọn file…")
+        browse.clicked.connect(self._browse)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.field, 1)
+        row.addWidget(browse)
+        layout.addLayout(row)
+
+    def _browse(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Chọn file",
+            "",
+            "Audio (*.wav *.mp3 *.flac *.m4a *.ogg);;Executable (*.exe);;Tất cả file (*)",
+        )
+        if path:
+            self.field.setText(path)
+
+    def value(self) -> str:
+        return self.field.text().strip()
 
 
 class Card(QFrame):
@@ -51,6 +84,7 @@ class ProviderPanel(Card):
                 item = self.provider_combo.model().item(index)
                 if item:
                     item.setEnabled(False)
+                    item.setToolTip("Tính năng này đã được khai báo nhưng chưa triển khai.")
             page = QWidget()
             form = QFormLayout(page)
             form.setContentsMargins(0, 8, 0, 0)
@@ -70,6 +104,8 @@ class ProviderPanel(Card):
 
     @staticmethod
     def _make_control(spec: FieldSpec) -> QWidget:
+        if spec.kind == "file":
+            return FilePicker(str(spec.default))
         if spec.kind == "choice":
             widget = QComboBox()
             widget.addItems(spec.choices)
@@ -86,7 +122,7 @@ class ProviderPanel(Card):
             return widget
         if spec.kind == "float":
             widget = QDoubleSpinBox()
-            widget.setRange(0.25, 4.0)
+            widget.setRange(spec.minimum if spec.minimum is not None else 0.25, 4.0)
             widget.setSingleStep(0.05)
             widget.setValue(float(spec.default))
             return widget
@@ -103,5 +139,27 @@ class ProviderPanel(Card):
                 values[key] = control.value()
             elif isinstance(control, QLineEdit):
                 values[key] = control.text()
+            elif isinstance(control, FilePicker):
+                values[key] = control.value()
         return values
 
+    def set_values(self, values: dict[str, Any]) -> None:
+        provider = str(values.get("provider", ""))
+        index = self.provider_combo.findText(provider)
+        if index >= 0:
+            self.provider_combo.setCurrentIndex(index)
+        controls = self.controls[self.provider_combo.currentIndex()]
+        for key, value in values.items():
+            control = controls.get(key)
+            if isinstance(control, QComboBox):
+                target = control.findText(str(value))
+                if target >= 0:
+                    control.setCurrentIndex(target)
+            elif isinstance(control, QCheckBox):
+                control.setChecked(bool(value))
+            elif isinstance(control, (QSpinBox, QDoubleSpinBox)):
+                control.setValue(value)
+            elif isinstance(control, QLineEdit):
+                control.setText(str(value))
+            elif isinstance(control, FilePicker):
+                control.field.setText(str(value))

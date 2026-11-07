@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QApplication
 APP_STYLE = """
 QWidget { background: #0c111b; color: #e8edf6; font-family: "Segoe UI"; font-size: 13px; }
 QFrame#topBar { background: #111827; border-bottom: 1px solid #253047; }
+QFrame#bottomBar { background: #111827; border-top: 1px solid #253047; }
 QLabel#brand, QLabel#brandLarge { color: #7dd3fc; font-weight: 800; letter-spacing: 2px; }
 QLabel#brand { font-size: 18px; }
 QLabel#brandLarge { font-size: 22px; }
@@ -21,13 +22,6 @@ QLabel#inputValue {
     border-radius: 8px; padding: 12px;
 }
 QLabel#resultSummary { color: #b9f6d2; padding: 4px 0; }
-QLabel#progressLabel { background: #172033; border: 1px solid #2b3a55; border-radius: 9px; padding: 9px 13px; }
-QLabel#statusBadge { border-radius: 9px; padding: 7px 11px; font-size: 11px; font-weight: 800; background: #202a3d; color: #9aa7bb; }
-QLabel#statusBadge[state="done"] { background: #123527; color: #86efac; }
-QLabel#statusBadge[state="running"] { background: #173357; color: #7dd3fc; }
-QLabel#statusBadge[state="ready"] { background: #302852; color: #c4b5fd; }
-QLabel#statusBadge[state="stale"] { background: #463516; color: #fcd34d; }
-QLabel#statusBadge[state="error"] { background: #4b1e28; color: #fda4af; }
 QFrame#card { background: #121a29; border: 1px solid #253047; border-radius: 12px; }
 QLabel#cardTitle { font-size: 15px; font-weight: 700; }
 QPushButton { background: #1d293d; border: 1px solid #34445f; border-radius: 8px; padding: 9px 14px; font-weight: 600; }
@@ -42,9 +36,23 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QListWidget {
 QLineEdit:focus, QComboBox:focus, QTextEdit:focus { border-color: #38bdf8; }
 QComboBox::drop-down { border: none; width: 24px; }
 QCheckBox { spacing: 8px; }
-QListWidget#recentProjects::item { padding: 12px; border-bottom: 1px solid #202c41; }
+QProgressBar {
+    background: #0b1220; border: 1px solid #2a3850; border-radius: 6px;
+    min-height: 14px; text-align: center; color: #e8edf6;
+}
+QProgressBar::chunk { background: #0284c7; border-radius: 5px; }
+QListWidget#recentProjects::item { padding: 0; border-bottom: 1px solid #202c41; }
 QListWidget#recentProjects::item:hover { background: #162237; }
-QTableWidget { background: #0b1220; alternate-background-color: #101827; border: 1px solid #29364d; border-radius: 8px; gridline-color: #253047; selection-background-color: #164e63; }
+QTableWidget {
+    background: #0b1220; alternate-background-color: #101827; color: #e8edf6;
+    border: 1px solid #29364d; border-radius: 8px; gridline-color: #253047;
+    selection-background-color: #164e63; selection-color: #ffffff;
+}
+QTableView {
+    background: #0c111b; alternate-background-color: #0c111b; color: #e8edf6;
+    border: 1px solid #29364d; border-radius: 8px; gridline-color: #253047;
+    selection-background-color: #164e63; selection-color: #ffffff;
+}
 QHeaderView::section { background: #182235; color: #aab6c9; border: none; border-bottom: 1px solid #33415a; padding: 9px; font-weight: 700; }
 QTabWidget::pane { border: none; }
 QTabBar::tab { background: #101725; color: #8996aa; padding: 13px 18px; border-bottom: 2px solid transparent; }
@@ -65,4 +73,3 @@ def apply_application_style(app: QApplication) -> None:
     palette.setColor(palette.ColorRole.HighlightedText, QColor("#ffffff"))
     app.setPalette(palette)
     app.setFont(QFont("Segoe UI", 10))
-

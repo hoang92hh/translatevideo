@@ -1,13 +1,35 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+import json
+import math
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, Signal
 
-from .models import STEP_ORDER, Segment, StepId, StepResult, StepStatus
+from .errors import UserFacingError
+from .common.models import (
+    AudioCandidate,
+    BuildAudioCandidate,
+    RenderCandidate,
+    STEP_ORDER,
+    Segment,
+    StepId,
+    StepResult,
+    StepStatus,
+    SyncCandidate,
+    TranscriptCandidate,
+    TranslationCandidate,
+    TtsCandidate,
+)
 from .project import VideoProject
+from .steps.step2_transcription.service import assess_transcript_timeline
+from .steps.step2_transcription.import_text import read_srt, read_txt
+from .steps.step2_transcription.csv_exchange import import_segments as import_transcript_csv_segments
+from .steps.step3_translation.csv_exchange import import_segments
 
 
 class ProjectState(QObject):
@@ -21,16 +43,104 @@ class ProjectState(QObject):
         self.source_language = "Chinese"
         self.target_language = "Vietnamese"
         self.project: VideoProject | None = None
+        self.audio_candidates: dict[str, AudioCandidate] = {}
+        self.selected_audio_candidate_id = ""
+        self.selected_audio_stem = ""
+        self.default_audio_candidate_id = ""
+        self.default_audio_stem = ""
+        self.transcript_candidates: dict[str, TranscriptCandidate] = {}
+        self.selected_transcript_candidate_id = ""
+        self.default_transcript_candidate_id = ""
+        self.translation_candidates: dict[str, TranslationCandidate] = {}
+        self.selected_translation_candidate_id = ""
+        self.default_translation_candidate_id = ""
+        self.tts_candidates: dict[str, TtsCandidate] = {}
+        self.selected_tts_candidate_id = ""
+        self.default_tts_candidate_id = ""
+        self.sync_candidates: dict[str, SyncCandidate] = {}
+        self.selected_sync_candidate_id = ""
+        self.default_sync_candidate_id = ""
+        self.build_audio_candidates: dict[str, BuildAudioCandidate] = {}
+        self.selected_build_audio_candidate_id = ""
+        self.default_build_audio_candidate_id = ""
+        self.render_candidates: dict[str, RenderCandidate] = {}
+        self.selected_render_candidate_id = ""
         self.results: dict[StepId, StepResult] = {}
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
 
-    def bind_project(self, project: VideoProject) -> None:
+    def bind_project(self, project: VideoProject, *, restore_candidates: bool = True) -> None:
         self.project = project
         self.input_video = str(project.path(project.input_video))
         self.output_folder = str(project.path("output"))
         self.source_language = project.source_language
         self.target_language = project.target_language
+        self.audio_candidates = {
+            item["id"]: AudioCandidate(**item)
+            for item in project.audio_candidates
+            if item.get("id")
+        }
+        self.selected_audio_candidate_id = project.selected_audio_candidate_id
+        self.selected_audio_stem = project.selected_audio_stem
+        self.default_audio_candidate_id = project.default_audio_candidate_id
+        self.default_audio_stem = project.default_audio_stem
+        selected_audio = self.audio_candidates.get(self.selected_audio_candidate_id)
+        default_audio = self.audio_candidates.get(self.default_audio_candidate_id)
+        if (
+            selected_audio
+            and self.selected_audio_stem in selected_audio.stems
+            and Path(selected_audio.stem_path(self.selected_audio_stem)).is_file()
+        ):
+            self.default_audio_candidate_id = self.selected_audio_candidate_id
+            self.default_audio_stem = self.selected_audio_stem
+        elif (
+            default_audio
+            and self.default_audio_stem in default_audio.stems
+            and Path(default_audio.stem_path(self.default_audio_stem)).is_file()
+        ):
+            self.selected_audio_candidate_id = self.default_audio_candidate_id
+            self.selected_audio_stem = self.default_audio_stem
+        self.transcript_candidates = {
+            item["id"]: TranscriptCandidate(**item)
+            for item in project.transcript_candidates
+            if item.get("id")
+        }
+        self.selected_transcript_candidate_id = project.selected_transcript_candidate_id
+        self.default_transcript_candidate_id = project.default_transcript_candidate_id
+        self.translation_candidates = {
+            item["id"]: TranslationCandidate(**item)
+            for item in project.translation_candidates
+            if item.get("id")
+        }
+        self.selected_translation_candidate_id = project.selected_translation_candidate_id
+        self.default_translation_candidate_id = project.default_translation_candidate_id
+        self.tts_candidates = {
+            item["id"]: TtsCandidate(**item)
+            for item in project.tts_candidates
+            if item.get("id")
+        }
+        self.selected_tts_candidate_id = project.selected_tts_candidate_id
+        self.default_tts_candidate_id = project.default_tts_candidate_id
+        self.sync_candidates = {
+            item["id"]: SyncCandidate(**item)
+            for item in project.sync_candidates
+            if item.get("id")
+        }
+        self.selected_sync_candidate_id = project.selected_sync_candidate_id
+        self.default_sync_candidate_id = project.default_sync_candidate_id
+        self.build_audio_candidates = {
+            item["id"]: BuildAudioCandidate(**item)
+            for item in project.build_audio_candidates
+            if item.get("id")
+        }
+        self.selected_build_audio_candidate_id = project.selected_build_audio_candidate_id
+        self.default_build_audio_candidate_id = project.default_build_audio_candidate_id
+        self.render_candidates = {
+            item["id"]: RenderCandidate(**item)
+            for item in project.render_candidates
+            if item.get("id")
+        }
+        self.selected_render_candidate_id = project.selected_render_candidate_id
         self.results.clear()
         self.statuses = {step: StepStatus.PENDING for step in STEP_ORDER}
         self.statuses[StepId.EXTRACT] = StepStatus.READY
@@ -40,12 +150,171 @@ class ProjectState(QObject):
                 break
             self.results[step] = self._deserialize_result(step, stored)
             self.statuses[step] = StepStatus.DONE
-        completed = len(self.results)
-        if completed < len(STEP_ORDER):
-            self.statuses[STEP_ORDER[completed]] = StepStatus.READY
+        self._register_legacy_transcript()
+        step2_result = self.results.get(StepId.STT)
+        srt_only = bool(step2_result and step2_result.metadata.get("srt_only"))
+        if restore_candidates and not srt_only:
+            self._restore_imported_srt_inputs()
+            self._restore_selected_transcript()
+        self._register_legacy_translation()
+        if restore_candidates and not srt_only:
+            self._restore_selected_translation()
+        self._register_legacy_tts()
+        if restore_candidates and not srt_only:
+            self._restore_selected_tts()
+            self._restore_selected_sync()
+            self._restore_selected_build_audio()
+            self._restore_selected_render()
+        for index, step in enumerate(STEP_ORDER):
+            if self.statuses[step] == StepStatus.DONE:
+                continue
+            if step == StepId.TRANSLATE and self.results.get(StepId.STT) and self.results[StepId.STT].metadata.get("srt_only"):
+                break
+            if self.statuses[step] == StepStatus.PENDING and (
+                index == 0 or self.statuses[STEP_ORDER[index - 1]] == StepStatus.DONE
+            ):
+                self.statuses[step] = StepStatus.READY
+            break
         for step in STEP_ORDER:
             self.step_changed.emit(step.value)
         self.project_changed.emit()
+
+    def batch_resume_step(self, *, before_step: StepId | None = None) -> StepId | None:
+        """Validate the active pipeline in order, without resurrecting old outputs."""
+        artifacts = {
+            StepId.EXTRACT: ("source_audio",),
+            StepId.STT: ("transcript",),
+            StepId.TRANSLATE: ("translation",),
+            StepId.TTS: ("tts_manifest",),
+            StepId.SYNC: ("sync_manifest",),
+            StepId.BUILD_AUDIO: ("voice_track", "build_audio_manifest"),
+            StepId.RENDER: ("output_video", "render_manifest"),
+        }
+        candidates = {
+            StepId.STT: ("transcript_candidate_id", self.selected_transcript_candidate_id, self._result_from_transcript),
+            StepId.TRANSLATE: ("translation_candidate_id", self.selected_translation_candidate_id, self._result_from_translation),
+            StepId.TTS: ("tts_candidate_id", self.selected_tts_candidate_id, self._result_from_tts),
+            StepId.SYNC: ("sync_candidate_id", self.selected_sync_candidate_id,
+                          lambda value: self._result_from_sync(value, allow_incomplete=True)),
+            StepId.BUILD_AUDIO: ("build_audio_candidate_id", self.selected_build_audio_candidate_id, self._result_from_build_audio),
+            StepId.RENDER: ("render_candidate_id", self.selected_render_candidate_id, self._result_from_render),
+        }
+        sources = {
+            StepId.STT: ("input_candidate_id", self.selected_audio_candidate_id),
+            StepId.TRANSLATE: ("source_transcript_candidate_id", self.selected_transcript_candidate_id),
+            StepId.TTS: ("source_translation_candidate_id", self.selected_translation_candidate_id),
+            StepId.SYNC: ("source_tts_candidate_id", self.selected_tts_candidate_id),
+            StepId.BUILD_AUDIO: ("source_sync_candidate_id", self.selected_sync_candidate_id),
+            StepId.RENDER: ("source_build_audio_candidate_id", self.selected_build_audio_candidate_id),
+        }
+        for index, step in enumerate(STEP_ORDER):
+            if step == before_step:
+                # An explicit start only needs valid inputs from preceding steps.
+                return step
+            result = self.results.get(step)
+            if step == StepId.STT and result and result.metadata.get("srt_only"):
+                srt_path = result.artifacts.get("srt", "")
+                if srt_path and Path(srt_path).is_file():
+                    self.statuses[step] = StepStatus.DONE
+                    return StepId.STT
+                self.invalidate_from(step)
+                return step
+            # A file/candidate outside the active saved pipeline is not a checkpoint.
+            valid = bool(self.project and self.project.pipeline.get(step.value) and result)
+            if valid and step in candidates:
+                key, selected_id, loader = candidates[step]
+                candidate_id = str(result.metadata.get(key, ""))
+                if candidate_id:
+                    if selected_id and candidate_id != selected_id:
+                        valid = False
+                    else:
+                        restored = loader(candidate_id)
+                        valid = restored is not None
+                        if restored is not None:
+                            result = restored
+                            self.results[step] = result
+            if valid:
+                valid = all(Path(str(result.artifacts.get(key, ""))).is_file() for key in artifacts[step])
+            if valid and step == StepId.EXTRACT:
+                valid = bool(self.audio_input_path() and Path(self.audio_input_path()).is_file())
+            if valid and step in sources:
+                key, source_id = sources[step]
+                recorded_id = str(result.metadata.get(key, ""))
+                if recorded_id and source_id and recorded_id != source_id:
+                    valid = False
+            if not valid:
+                self.invalidate_from(step)
+                return step
+            blocking_errors = (
+                step == StepId.STT and int(result.metadata.get("timeline_error_count", 0)) > 0
+            ) or (
+                step == StepId.SYNC and int(result.metadata.get("error_count", 0)) > 0
+            )
+            if blocking_errors:
+                self.statuses[step] = StepStatus.ERROR
+                if index + 1 < len(STEP_ORDER):
+                    self.invalidate_from(STEP_ORDER[index + 1])
+                return step
+            self.statuses[step] = StepStatus.DONE
+        return None
+
+    def restore_selected_inputs(self, before_step: StepId) -> StepId | None:
+        """Hydrate the selected output immediately preceding an explicit start step."""
+        target_index = STEP_ORDER.index(before_step)
+        if target_index == 0:
+            self.invalidate_from(before_step)
+            self.statuses[before_step] = StepStatus.READY
+            return before_step
+
+        input_step = STEP_ORDER[target_index - 1]
+        if input_step == StepId.EXTRACT:
+            input_path = self.audio_input_path()
+            if not input_path or not Path(input_path).is_file():
+                self.invalidate_from(before_step)
+                return input_step
+            self.statuses[input_step] = StepStatus.DONE
+        else:
+            selected_inputs = {
+                StepId.STT: (
+                    self.selected_transcript_candidate_id,
+                    self._result_from_transcript,
+                ),
+                StepId.TRANSLATE: (
+                    self.selected_translation_candidate_id,
+                    self._result_from_translation,
+                ),
+                StepId.TTS: (
+                    self.selected_tts_candidate_id,
+                    self._result_from_tts,
+                ),
+                StepId.SYNC: (
+                    self.selected_sync_candidate_id,
+                    lambda value: self._result_from_sync(value, allow_incomplete=True),
+                ),
+                StepId.BUILD_AUDIO: (
+                    self.selected_build_audio_candidate_id,
+                    self._result_from_build_audio,
+                ),
+            }
+            candidate_id, loader = selected_inputs[input_step]
+            result = loader(candidate_id) if candidate_id else None
+            blocking_errors = bool(result) and (
+                input_step == StepId.STT
+                and int(result.metadata.get("timeline_error_count", 0)) > 0
+                or input_step == StepId.SYNC
+                and int(result.metadata.get("error_count", 0)) > 0
+            )
+            if result is None or blocking_errors:
+                self.invalidate_from(before_step)
+                if blocking_errors:
+                    self.statuses[input_step] = StepStatus.ERROR
+                return input_step
+            self.results[input_step] = result
+            self.statuses[input_step] = StepStatus.DONE
+
+        self.invalidate_from(before_step)
+        self.statuses[before_step] = StepStatus.READY
+        return before_step
 
     def workspace_path(self, *parts: str) -> str:
         if self.project:
@@ -57,6 +326,36 @@ class ProjectState(QObject):
             return
         self.project.source_language = self.source_language
         self.project.target_language = self.target_language
+        self.project.audio_candidates = [asdict(candidate) for candidate in self.audio_candidates.values()]
+        self.project.selected_audio_candidate_id = self.selected_audio_candidate_id
+        self.project.selected_audio_stem = self.selected_audio_stem
+        self.project.default_audio_candidate_id = self.default_audio_candidate_id
+        self.project.default_audio_stem = self.default_audio_stem
+        self.project.transcript_candidates = [
+            asdict(candidate) for candidate in self.transcript_candidates.values()
+        ]
+        self.project.selected_transcript_candidate_id = self.selected_transcript_candidate_id
+        self.project.default_transcript_candidate_id = self.default_transcript_candidate_id
+        self.project.translation_candidates = [
+            asdict(candidate) for candidate in self.translation_candidates.values()
+        ]
+        self.project.selected_translation_candidate_id = self.selected_translation_candidate_id
+        self.project.default_translation_candidate_id = self.default_translation_candidate_id
+        self.project.tts_candidates = [asdict(candidate) for candidate in self.tts_candidates.values()]
+        self.project.selected_tts_candidate_id = self.selected_tts_candidate_id
+        self.project.default_tts_candidate_id = self.default_tts_candidate_id
+        self.project.sync_candidates = [asdict(candidate) for candidate in self.sync_candidates.values()]
+        self.project.selected_sync_candidate_id = self.selected_sync_candidate_id
+        self.project.default_sync_candidate_id = self.default_sync_candidate_id
+        self.project.build_audio_candidates = [
+            asdict(candidate) for candidate in self.build_audio_candidates.values()
+        ]
+        self.project.selected_build_audio_candidate_id = self.selected_build_audio_candidate_id
+        self.project.default_build_audio_candidate_id = self.default_build_audio_candidate_id
+        self.project.render_candidates = [
+            asdict(candidate) for candidate in self.render_candidates.values()
+        ]
+        self.project.selected_render_candidate_id = self.selected_render_candidate_id
         self.project.pipeline = {
             step.value: self._serialize_result(result)
             for step, result in self.results.items()
@@ -70,6 +369,19 @@ class ProjectState(QObject):
             "artifacts": result.artifacts,
             "segments": [asdict(segment) for segment in result.segments],
             "metadata": result.metadata,
+            "audio_candidates": [asdict(candidate) for candidate in result.audio_candidates],
+            "transcript_candidates": [
+                asdict(candidate) for candidate in result.transcript_candidates
+            ],
+            "translation_candidates": [
+                asdict(candidate) for candidate in result.translation_candidates
+            ],
+            "tts_candidates": [asdict(candidate) for candidate in result.tts_candidates],
+            "sync_candidates": [asdict(candidate) for candidate in result.sync_candidates],
+            "build_audio_candidates": [
+                asdict(candidate) for candidate in result.build_audio_candidates
+            ],
+            "render_candidates": [asdict(candidate) for candidate in result.render_candidates],
         }
 
     @staticmethod
@@ -78,8 +390,1560 @@ class ProjectState(QObject):
             step=step,
             summary=data.get("summary", ""),
             artifacts=data.get("artifacts", {}),
-            segments=[Segment(**item) for item in data.get("segments", [])],
+            segments=[
+                Segment(**{
+                    key: value for key, value in item.items()
+                    if key not in {"asr_metadata", "translation_metadata"}
+                })
+                for item in data.get("segments", [])
+            ],
             metadata=data.get("metadata", {}),
+            audio_candidates=[AudioCandidate(**item) for item in data.get("audio_candidates", [])],
+            transcript_candidates=[
+                TranscriptCandidate(**item) for item in data.get("transcript_candidates", [])
+            ],
+            translation_candidates=[
+                TranslationCandidate(**item) for item in data.get("translation_candidates", [])
+            ],
+            tts_candidates=[TtsCandidate(**item) for item in data.get("tts_candidates", [])],
+            sync_candidates=[SyncCandidate(**item) for item in data.get("sync_candidates", [])],
+            build_audio_candidates=[
+                BuildAudioCandidate(**item) for item in data.get("build_audio_candidates", [])
+            ],
+            render_candidates=[
+                RenderCandidate(**item) for item in data.get("render_candidates", [])
+            ],
+        )
+
+    def add_audio_candidate(self, candidate: AudioCandidate) -> None:
+        self.audio_candidates[candidate.id] = candidate
+
+    def candidate(self, candidate_id: str) -> AudioCandidate | None:
+        return self.audio_candidates.get(candidate_id)
+
+    def audio_input_path(self, candidate_id: str = "", stem: str = "") -> str:
+        candidate = self.candidate(candidate_id or self.selected_audio_candidate_id)
+        if not candidate:
+            return ""
+        return candidate.stem_path(stem or self.selected_audio_stem)
+
+    def select_audio_input(self, candidate_id: str, stem: str) -> None:
+        candidate = self.candidate(candidate_id)
+        if not candidate or stem not in candidate.stems:
+            return
+        selection_changed = (
+            candidate_id != self.selected_audio_candidate_id
+            or stem != self.selected_audio_stem
+        )
+        self.selected_audio_candidate_id = candidate_id
+        self.selected_audio_stem = stem
+        self.default_audio_candidate_id = candidate_id
+        self.default_audio_stem = stem
+        if not selection_changed:
+            self.project_changed.emit()
+            self.save_project()
+            return
+        self.invalidate_from(StepId.STT)
+        if self.statuses[StepId.EXTRACT] == StepStatus.DONE:
+            self.statuses[StepId.STT] = StepStatus.READY
+            self.step_changed.emit(StepId.STT.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def remove_audio_candidate(self, candidate_id: str) -> None:
+        if candidate_id == "original-mix":
+            return
+        removed_selected = candidate_id == self.selected_audio_candidate_id
+        self.audio_candidates.pop(candidate_id, None)
+        if removed_selected:
+            self.selected_audio_candidate_id = ""
+            self.selected_audio_stem = ""
+            self.invalidate_from(StepId.STT)
+        if candidate_id == self.default_audio_candidate_id:
+            self.default_audio_candidate_id = ""
+            self.default_audio_stem = ""
+        self.step_changed.emit(StepId.EXTRACT.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def valid_default_audio_input(self) -> tuple[str, str] | None:
+        choices = (
+            (self.selected_audio_candidate_id, self.selected_audio_stem),
+            (self.default_audio_candidate_id, self.default_audio_stem),
+        )
+        for candidate_id, stem in choices:
+            path = self.audio_input_path(candidate_id, stem)
+            if path and Path(path).is_file():
+                return candidate_id, stem
+        return None
+
+    def activate_audio_candidate(self, candidate_id: str, stem: str) -> None:
+        candidate = self.candidate(candidate_id)
+        if not candidate or not Path(candidate.stem_path(stem)).is_file():
+            return
+        self.selected_audio_candidate_id = candidate_id
+        self.selected_audio_stem = stem
+        self.default_audio_candidate_id = candidate_id
+        self.default_audio_stem = stem
+        self.invalidate_from(StepId.STT)
+        self.statuses[StepId.EXTRACT] = StepStatus.DONE
+        self.statuses[StepId.STT] = StepStatus.READY
+        self.step_changed.emit(StepId.EXTRACT.value)
+        self.step_changed.emit(StepId.STT.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def transcript_candidate(self, candidate_id: str) -> TranscriptCandidate | None:
+        return self.transcript_candidates.get(candidate_id)
+
+    def select_transcript_candidate(self, candidate_id: str) -> bool:
+        result = self._result_from_transcript(candidate_id)
+        if result is None:
+            return False
+        current = self.results.get(StepId.STT)
+        current_path = current.artifacts.get("transcript", "") if current else ""
+        selection_changed = (
+            candidate_id != self.selected_transcript_candidate_id
+            or not current_path
+            or Path(current_path) != Path(result.artifacts["transcript"])
+        )
+        self.selected_transcript_candidate_id = candidate_id
+        self.default_transcript_candidate_id = candidate_id
+        if not selection_changed:
+            self.results[StepId.STT] = result
+            has_errors = bool(result.metadata.get("timeline_error_count", 0))
+            self.statuses[StepId.STT] = StepStatus.ERROR if has_errors else StepStatus.DONE
+            if has_errors:
+                self.invalidate_from(StepId.TRANSLATE)
+            self.step_changed.emit(StepId.STT.value)
+            self.project_changed.emit()
+            self.save_project()
+            return True
+        self.results[StepId.STT] = result
+        has_errors = bool(result.metadata.get("timeline_error_count", 0))
+        self.statuses[StepId.STT] = StepStatus.ERROR if has_errors else StepStatus.DONE
+        self.invalidate_from(StepId.TRANSLATE)
+        if not has_errors:
+            self.statuses[StepId.TRANSLATE] = StepStatus.READY
+        self.step_changed.emit(StepId.STT.value)
+        self.step_changed.emit(StepId.TRANSLATE.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def import_transcript_text(self, file_path: str, source_candidate_id: str = "") -> TranscriptCandidate:
+        if not self.project or not self.can_run(StepId.STT):
+            raise ValueError("Cần có audio Step 1 hợp lệ trước khi nhập transcript vào Step 2.")
+        source = Path(file_path)
+        extension = source.suffix.lower()
+        if extension not in {".txt", ".srt"}:
+            raise ValueError("Chỉ hỗ trợ file .txt hoặc .srt.")
+        if not source.is_file():
+            raise ValueError(f"Không tìm thấy file: {source}")
+
+        if extension == ".txt":
+            original = self.transcript_candidate(source_candidate_id)
+            if not original or not Path(original.path).is_file():
+                raise ValueError("Nhập TXT cần một output transcript Step 2 đang được chọn.")
+            payload = json.loads(Path(original.path).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
+                raise ValueError("Output transcript nguồn không có danh sách segment hợp lệ.")
+            original_input = str(original.metadata.get("input_candidate_id", ""))
+            if original_input and original_input != self.selected_audio_candidate_id:
+                raise ValueError("Hãy chọn lại audio Step 1 tương ứng với transcript nguồn trước khi nhập TXT.")
+            original_stem = str(original.metadata.get("input_stem", ""))
+            if original_stem and original_stem != self.selected_audio_stem:
+                raise ValueError("Hãy chọn lại đúng Voice hoặc Original Mix của transcript nguồn trước khi nhập TXT.")
+            rows = read_txt(source, payload["segments"])
+            base_metadata = dict(original.metadata)
+            source_transcript_id = original.id
+        else:
+            rows = read_srt(source)
+            payload = {
+                "version": 3,
+                "input_audio": self.audio_input_path(),
+                "source_language": self.source_language,
+                "language": self.source_language,
+                "language_probability": None,
+                "model": "SRT import",
+                "requested_device": "",
+                "actual_device": "",
+                "compute_type": "",
+                "device_selection_reason": "",
+                "vad_filter": False,
+                "segment_recovery": False,
+                "diarization": False,
+                "diarization_turns": [],
+                "duration_seconds": max(row["end"] for row in rows),
+                "asr_recovery": {"enabled": False},
+            }
+            base_metadata = {}
+            source_transcript_id = ""
+
+        now = datetime.now(timezone.utc)
+        candidate_id = f"stt-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        folder = Path(self.workspace_path("transcripts", candidate_id))
+        output_path = folder / "transcript.json"
+        issues = assess_transcript_timeline([
+            Segment(
+                id=int(row["id"]), start=float(row["start"]), end=float(row["end"]),
+                source_text=str(row["text"]),
+            )
+            for row in rows
+        ])
+        payload.update({
+            "candidate_id": candidate_id,
+            "created_at": now.isoformat(timespec="seconds"),
+            "imported_from_file": source.name,
+            "import_format": extension[1:],
+            "source_transcript_candidate_id": source_transcript_id,
+            "timeline_issues": issues,
+            "timeline_error_count": len(issues),
+            "segments": rows,
+        })
+        folder.mkdir(parents=True, exist_ok=False)
+        temporary = output_path.with_suffix(".json.part")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(output_path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise
+
+        summary = f"Đã nhập {extension.upper()} · {len(rows)} segment"
+        metadata = {
+            **base_metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "input_candidate_id": self.selected_audio_candidate_id,
+            "input_stem": self.selected_audio_stem,
+            "transcript_candidate_id": candidate_id,
+            "recommended_transcript_candidate_id": candidate_id,
+        }
+        candidate = TranscriptCandidate(
+            id=candidate_id,
+            label=f"{extension[1:].upper()} · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
+            created_at=payload["created_at"], path=str(output_path),
+            segment_count=len(rows), summary=summary, metadata=metadata,
+        )
+        self.transcript_candidates[candidate_id] = candidate
+        if not self.select_transcript_candidate(candidate_id):
+            self.transcript_candidates.pop(candidate_id, None)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise ValueError("Không thể nạp output transcript vừa tạo.")
+        return candidate
+
+    def import_transcript_csv(self, source_candidate_id: str, csv_path: str) -> TranscriptCandidate:
+        source_candidate = self.transcript_candidate(source_candidate_id)
+        if not self.project or not source_candidate or not Path(source_candidate.path).is_file():
+            raise ValueError("Không tìm thấy output Step 2 nguồn để nhập CSV.")
+        source_payload = json.loads(Path(source_candidate.path).read_text(encoding="utf-8"))
+        if not isinstance(source_payload, dict):
+            raise ValueError("Output Step 2 nguồn không phải JSON object hợp lệ.")
+        original_rows = source_payload.get("segments")
+        if not isinstance(original_rows, list):
+            raise ValueError("Output Step 2 nguồn không có danh sách segment hợp lệ.")
+        rows = import_transcript_csv_segments(Path(csv_path), original_rows)
+        issues = assess_transcript_timeline([
+            Segment(
+                id=int(row["id"]), start=float(row["start"]), end=float(row["end"]),
+                source_text=str(row["text"]),
+            )
+            for row in rows
+        ])
+
+        now = datetime.now(timezone.utc)
+        candidate_id = f"stt-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        folder = Path(self.workspace_path("transcripts", candidate_id))
+        output_path = folder / "transcript.json"
+        payload = {
+            **source_payload,
+            "candidate_id": candidate_id,
+            "created_at": now.isoformat(timespec="seconds"),
+            "source_transcript_candidate_id": source_candidate_id,
+            "imported_from_csv": Path(csv_path).name,
+            "timeline_issues": issues,
+            "timeline_error_count": len(issues),
+            "segments": rows,
+        }
+        folder.mkdir(parents=True, exist_ok=False)
+        temporary = output_path.with_suffix(".json.part")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(output_path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise
+
+        summary = f"Đã nhập CSV · {len(rows)} segment · {len(issues)} lỗi timeline"
+        metadata = {
+            **source_candidate.metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "transcript_candidate_id": candidate_id,
+            "recommended_transcript_candidate_id": candidate_id,
+        }
+        candidate = TranscriptCandidate(
+            id=candidate_id,
+            label=f"CSV · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
+            created_at=payload["created_at"], path=str(output_path),
+            segment_count=len(rows), summary=summary, metadata=metadata,
+        )
+        self.transcript_candidates[candidate_id] = candidate
+        if not self.select_transcript_candidate(candidate_id):
+            self.transcript_candidates.pop(candidate_id, None)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise ValueError("Không thể nạp output transcript vừa tạo từ CSV.")
+        return candidate
+
+    def save_transcript_candidate_edits(self, candidate_id: str, updates: dict) -> int:
+        candidate = self.transcript_candidate(candidate_id)
+        if not candidate or candidate_id != self.selected_transcript_candidate_id:
+            raise UserFacingError("Chưa chọn transcript", "Chỉ lưu transcript đang dùng làm input Step 3.",
+                                  "Chọn Dùng làm input Step 3 rồi mở lại popup.")
+        result = self._result_from_transcript(candidate_id)
+        if result is None or set(updates) != {item.id for item in result.segments}:
+            raise UserFacingError("Transcript không khớp", "Danh sách ID đã thay đổi hoặc không đọc được file.",
+                                  "Mở lại popup từ output cần sửa.")
+        edited = []
+        for item in result.segments:
+            try:
+                start, end = float(updates[item.id]["start"]), float(updates[item.id]["end"])
+                if not math.isfinite(start) or not math.isfinite(end):
+                    raise ValueError("Thời gian phải là số hữu hạn")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise UserFacingError("Thời gian không hợp lệ", f"Kiểm tra Start/End của ID {item.id}.",
+                                      "Nhập số giây.", str(exc)) from exc
+            parts = item.merge_parts
+            if (start, end) != (item.start, item.end):
+                parts = [{**part, "start": start, "end": end,
+                          "duration": max(0.0, end - start)} for part in parts]
+            edited.append(replace(item, start=start, end=end, merge_parts=parts))
+        path = Path(candidate.path)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            rows = payload["segments"]
+            if len(rows) != len(edited) or {int(row["id"]) for row in rows} != set(updates):
+                raise ValueError("Danh sách ID trong file đã thay đổi")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise UserFacingError("Không đọc được transcript", "File transcript không còn khớp.",
+                                  "Mở lại output để kiểm tra.", str(exc)) from exc
+        by_id = {item.id: item for item in edited}
+        for row in rows:
+            item = by_id[int(row["id"])]
+            row.update(start=item.start, end=item.end, merge_parts=item.merge_parts)
+            row.pop("updated_in_step_5", None)
+        issues = assess_transcript_timeline(edited)
+        payload["timeline_issues"] = issues
+        payload["timeline_error_count"] = len(issues)
+        payload["manually_edited_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        recovery = payload.get("asr_recovery", {})
+        if isinstance(recovery, dict):
+            original_by_id = {item.id: item for item in result.segments}
+            for record in recovery.get("final_segment_sources", []):
+                item = by_id.get(record.get("id"))
+                if item and (item.start, item.end) != (original_by_id[item.id].start, original_by_id[item.id].end):
+                    record.update(after_start=item.start, after_end=item.end,
+                                  action="manually_adjusted", reason="manual_timeline_edit")
+            sources = {record.get("id"): record.get("source")
+                       for record in recovery.get("final_segment_sources", [])}
+            recovery["max_main_overlap_seconds"] = max((
+                max(0.0, min(main.end, recovered.end) - max(main.start, recovered.start))
+                for main in edited if sources.get(main.id) == "main"
+                for recovered in edited if sources.get(recovered.id) == "recovery"
+            ), default=0.0)
+        temporary = path.with_suffix(path.suffix + ".part")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        candidate.metadata.update({key: value for key, value in payload.items() if key != "segments"})
+        result.segments = edited
+        result.metadata = {**result.metadata, **candidate.metadata}
+        candidate.summary = result.summary = (
+            f"Transcript {len(edited)} segment · "
+            + (f"đã lưu, còn {len(issues)} segment lỗi timeline" if issues else "timeline hợp lệ")
+        )
+        self.results[StepId.STT] = result
+        self.statuses[StepId.STT] = StepStatus.ERROR if issues else StepStatus.DONE
+        self.invalidate_from(StepId.TRANSLATE)
+        if not issues:
+            self.statuses[StepId.TRANSLATE] = StepStatus.READY
+        self.step_changed.emit(StepId.STT.value)
+        self.step_changed.emit(StepId.TRANSLATE.value)
+        self.project_changed.emit()
+        self.save_project()
+        return len(issues)
+
+    def remove_transcript_candidate(self, candidate_id: str) -> None:
+        removed_selected = candidate_id == self.selected_transcript_candidate_id
+        removed_default = candidate_id == self.default_transcript_candidate_id
+        self.transcript_candidates.pop(candidate_id, None)
+        fallback = self._latest_valid_transcript_candidate()
+        if removed_default:
+            self.default_transcript_candidate_id = fallback.id if fallback else ""
+        if removed_selected:
+            self.selected_transcript_candidate_id = ""
+            if fallback and self.select_transcript_candidate(fallback.id):
+                return
+            self.invalidate_from(StepId.STT)
+            if self.statuses[StepId.EXTRACT] == StepStatus.DONE:
+                self.statuses[StepId.STT] = StepStatus.READY
+        self.step_changed.emit(StepId.STT.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _register_legacy_transcript(self) -> None:
+        if self.transcript_candidates:
+            return
+        result = self.results.get(StepId.STT)
+        if not result:
+            return
+        path = Path(result.artifacts.get("transcript", ""))
+        if not path.is_file():
+            return
+        created_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+        candidate_id = "stt-legacy"
+        candidate = TranscriptCandidate(
+            id=candidate_id,
+            label=f"Transcript cũ · {path.stem}",
+            created_at=created_at,
+            path=str(path),
+            segment_count=len(result.segments),
+            summary=result.summary,
+            metadata={**result.metadata, "transcript_candidate_id": candidate_id},
+        )
+        self.transcript_candidates[candidate_id] = candidate
+        self.selected_transcript_candidate_id = candidate_id
+        self.default_transcript_candidate_id = candidate_id
+        result.metadata["transcript_candidate_id"] = candidate_id
+
+    def _restore_imported_srt_inputs(self) -> None:
+        """Recover Step 1 when a selected SRT transcript still has its audio input."""
+        if StepId.EXTRACT in self.results:
+            return
+        transcript = self.transcript_candidate(self.selected_transcript_candidate_id)
+        audio = self.candidate(self.selected_audio_candidate_id)
+        if not transcript or not audio or not Path(transcript.path).is_file():
+            return
+        metadata = transcript.metadata
+        if (
+            metadata.get("import_format") != "srt"
+            or metadata.get("input_candidate_id") != audio.id
+            or metadata.get("input_stem") != self.selected_audio_stem
+        ):
+            return
+        selected_path = audio.stem_path(self.selected_audio_stem)
+        original = next(
+            (
+                candidate for candidate in self.audio_candidates.values()
+                if candidate.stem_path("original")
+                and Path(candidate.stem_path("original")).is_file()
+            ),
+            None,
+        )
+        if not selected_path or not Path(selected_path).is_file() or not original:
+            return
+        self.results[StepId.EXTRACT] = StepResult(
+            step=StepId.EXTRACT,
+            summary="Đã khôi phục audio Step 1 từ output đã chọn",
+            artifacts={"source_audio": original.stem_path("original"), **audio.stems},
+            metadata={
+                "recommended_candidate_id": audio.id,
+                "recommended_stem": self.selected_audio_stem,
+                "recovered_from_candidates": True,
+            },
+            audio_candidates=[original] if original.id == audio.id else [original, audio],
+        )
+        self.statuses[StepId.EXTRACT] = StepStatus.DONE
+
+    def _restore_selected_transcript(self) -> None:
+        if StepId.EXTRACT not in self.results:
+            return
+        choices = (
+            self.selected_transcript_candidate_id,
+            self.default_transcript_candidate_id,
+        )
+        candidate = next(
+            (
+                self.transcript_candidate(candidate_id)
+                for candidate_id in choices
+                if candidate_id
+                and self.transcript_candidate(candidate_id)
+                and Path(self.transcript_candidate(candidate_id).path).is_file()
+            ),
+            None,
+        )
+        candidate = candidate or self._latest_valid_transcript_candidate()
+        if not candidate:
+            return
+        self.selected_transcript_candidate_id = candidate.id
+        self.default_transcript_candidate_id = candidate.id
+        current = self.results.get(StepId.STT)
+        current_path = current.artifacts.get("transcript", "") if current else ""
+        if current and current_path and Path(current_path) == Path(candidate.path):
+            current.metadata["transcript_candidate_id"] = candidate.id
+            issues = assess_transcript_timeline(current.segments)
+            current.metadata.update(timeline_issues=issues, timeline_error_count=len(issues))
+            self.statuses[StepId.STT] = StepStatus.ERROR if issues else StepStatus.DONE
+            if issues:
+                self.invalidate_from(StepId.TRANSLATE)
+            return
+        result = self._result_from_transcript(candidate.id)
+        if result:
+            self.results[StepId.STT] = result
+            self.statuses[StepId.STT] = (
+                StepStatus.ERROR if result.metadata.get("timeline_error_count", 0) else StepStatus.DONE
+            )
+            for later in STEP_ORDER[STEP_ORDER.index(StepId.TRANSLATE) :]:
+                self.results.pop(later, None)
+                self.statuses[later] = StepStatus.PENDING
+
+    def _latest_valid_transcript_candidate(self) -> TranscriptCandidate | None:
+        valid = [
+            candidate
+            for candidate in self.transcript_candidates.values()
+            if Path(candidate.path).is_file()
+        ]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_transcript(self, candidate_id: str) -> StepResult | None:
+        candidate = self.transcript_candidate(candidate_id)
+        if not candidate:
+            return None
+        path = Path(candidate.path)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            segments = []
+            legacy_recovered = 0
+            for index, item in enumerate(payload.get("segments", []), start=1):
+                parts = [
+                    dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
+                ]
+                start = float(item.get("start", 0.0))
+                end = float(item.get("end", 0.0))
+                speaker_id = str(item.get("speaker_id", ""))
+                if item.get("updated_in_step_5") and parts:
+                    part_starts = [float(part["start"]) for part in parts if part.get("start") is not None]
+                    part_ends = [float(part["end"]) for part in parts if part.get("end") is not None]
+                    if part_starts and part_ends:
+                        start, end = min(part_starts), max(part_ends)
+                        legacy_recovered += 1
+                    original_speaker = next(
+                        (str(part.get("speaker_id", "")) for part in parts if part.get("speaker_id")),
+                        "",
+                    )
+                    speaker_id = original_speaker or speaker_id
+                segments.append(Segment(
+                    id=int(item.get("id", index)),
+                    start=start,
+                    end=end,
+                    speaker_id=speaker_id,
+                    merge_parts=parts,
+                    source_text=str(item.get("text", item.get("source_text", ""))),
+                    translated_text=str(item.get("translated_text", "")),
+                    audio_file=str(item.get("audio_file", "")),
+                    synced_audio_file=str(item.get("synced_audio_file", "")),
+                ))
+        except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        metadata = {**candidate.metadata, **{key: value for key, value in payload.items() if key != "segments"}}
+        metadata["transcript_candidate_id"] = candidate.id
+        if legacy_recovered:
+            metadata["legacy_step5_timeline_recovered"] = legacy_recovered
+        issues = assess_transcript_timeline(segments)
+        metadata.update(timeline_issues=issues, timeline_error_count=len(issues))
+        summary = candidate.summary or f"Transcript {candidate.label} · {len(segments)} segment"
+        return StepResult(
+            step=StepId.STT,
+            summary=summary,
+            artifacts={"transcript": str(path)},
+            segments=segments,
+            metadata=metadata,
+        )
+
+    def translation_candidate(self, candidate_id: str) -> TranslationCandidate | None:
+        return self.translation_candidates.get(candidate_id)
+
+    def select_translation_candidate(self, candidate_id: str) -> bool:
+        result = self._result_from_translation(candidate_id)
+        if result is None:
+            return False
+        current = self.results.get(StepId.TRANSLATE)
+        current_path = current.artifacts.get("translation", "") if current else ""
+        selection_changed = (
+            candidate_id != self.selected_translation_candidate_id
+            or not current_path
+            or Path(current_path) != Path(result.artifacts["translation"])
+        )
+        self.selected_translation_candidate_id = candidate_id
+        self.default_translation_candidate_id = candidate_id
+        if not selection_changed:
+            self.project_changed.emit()
+            self.save_project()
+            return True
+        self.results[StepId.TRANSLATE] = result
+        self.statuses[StepId.TRANSLATE] = StepStatus.DONE
+        self.invalidate_from(StepId.TTS)
+        self.statuses[StepId.TTS] = StepStatus.READY
+        self.step_changed.emit(StepId.TRANSLATE.value)
+        self.step_changed.emit(StepId.TTS.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def import_translation_csv(self, source_candidate_id: str, csv_path: str) -> TranslationCandidate:
+        source_candidate = self.translation_candidate(source_candidate_id)
+        if not self.project or not source_candidate or not Path(source_candidate.path).is_file():
+            raise ValueError("Không tìm thấy output Step 3 nguồn để nhập CSV.")
+        source_payload = json.loads(Path(source_candidate.path).read_text(encoding="utf-8"))
+        if not isinstance(source_payload, dict):
+            raise ValueError("Output Step 3 nguồn không phải JSON object hợp lệ.")
+        original_rows = source_payload.get("segments")
+        if not isinstance(original_rows, list):
+            raise ValueError("Output Step 3 nguồn không có danh sách segment hợp lệ.")
+        transcript_id = str(source_payload.get("source_transcript_candidate_id", ""))
+        if transcript_id and transcript_id != self.selected_transcript_candidate_id:
+            raise ValueError("Hãy chọn transcript Step 2 của output nguồn trước khi nhập CSV.")
+        rows = import_segments(Path(csv_path), original_rows)
+
+        now = datetime.now(timezone.utc)
+        candidate_id = f"translation-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        folder = Path(self.workspace_path("translations", candidate_id))
+        output_path = folder / "translated_segments.json"
+        profile_path = folder / "dialogue_profile.json"
+        source_profile_path = Path(str(source_payload.get("dialogue_profile_path") or ""))
+        has_profile = source_profile_path.is_file()
+        payload = {
+            **source_payload,
+            "candidate_id": candidate_id,
+            "created_at": now.isoformat(timespec="seconds"),
+            "source_translation_candidate_id": source_candidate_id,
+            "imported_from_csv": Path(csv_path).name,
+            "dialogue_profile_path": str(profile_path) if has_profile else "",
+            "skipped_translation_ids": [row["id"] for row in rows if not row["translated_text"]],
+            "segments": rows,
+        }
+        workflow = payload.get("workflow")
+        if isinstance(workflow, dict):
+            payload["workflow"] = {key: value for key, value in workflow.items() if key != "review_issues"}
+        folder.mkdir(parents=True, exist_ok=False)
+        try:
+            if has_profile:
+                profile_payload = json.loads(source_profile_path.read_text(encoding="utf-8"))
+                profile_payload["candidate_id"] = candidate_id
+                profile_payload["created_at"] = payload["created_at"]
+                profile_path.write_text(json.dumps(profile_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            profile_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise
+
+        summary = f"Đã nhập CSV · {len(rows)} segment · từ {source_candidate.label}"
+        metadata = {
+            **source_candidate.metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "translation_candidate_id": candidate_id,
+        }
+        candidate = TranslationCandidate(
+            id=candidate_id,
+            label=f"CSV · {now.astimezone().strftime('%d/%m/%Y %H:%M:%S')}",
+            created_at=payload["created_at"],
+            path=str(output_path),
+            segment_count=len(rows),
+            summary=summary,
+            metadata=metadata,
+        )
+        self.translation_candidates[candidate_id] = candidate
+        if not self.select_translation_candidate(candidate_id):
+            self.translation_candidates.pop(candidate_id, None)
+            profile_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            folder.rmdir()
+            raise ValueError("Không thể nạp output JSON vừa tạo từ CSV.")
+        return candidate
+
+    def save_translation_candidate_edits(
+        self,
+        candidate_id: str,
+        updates: dict[int, dict[str, object]],
+    ) -> None:
+        candidate = self.translation_candidate(candidate_id)
+        if not candidate or candidate_id != self.selected_translation_candidate_id:
+            raise UserFacingError(
+                "Chưa chọn đúng bản dịch",
+                "Chỉ có thể lưu candidate đang được dùng làm input Step 4.",
+                "Nhấn “Dùng làm input Step 4”, sửa nội dung rồi lưu lại.",
+            )
+        result = self.results.get(StepId.TRANSLATE)
+        path = Path(candidate.path)
+        if not result or not path.is_file():
+            raise UserFacingError(
+                "Không tìm thấy bản dịch cần lưu",
+                "Candidate hoặc file translated_segments.json không còn tồn tại.",
+                "Chọn lại một output hợp lệ của Step 3.",
+            )
+
+        expected_ids = {segment.id for segment in result.segments}
+        if set(updates) != expected_ids:
+            raise UserFacingError(
+                "Danh sách segment đã thay đổi",
+                "Bảng chỉnh sửa không còn khớp với candidate hiện tại.",
+                "Tải lại Step 3 rồi thực hiện chỉnh sửa lại.",
+            )
+        manual_check = any("start" in update for update in updates.values())
+        edited_segments = []
+        allowed_speakers = {segment.speaker_id for segment in result.segments}
+        for segment in result.segments:
+            update = updates[segment.id]
+            edited = replace(
+                segment,
+                source_text=segment.source_text if manual_check else str(update.get("source_text", "")),
+                translated_text=str(update.get("translated_text", "")).strip(),
+            )
+            if manual_check:
+                try:
+                    edited.start = float(update["start"])
+                    edited.end = float(update["end"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise UserFacingError("Timeline không hợp lệ", f"Kiểm tra Start/End của ID {segment.id}.",
+                                          "Nhập thời gian bằng giây.") from exc
+                edited.speaker_id = str(update.get("speaker_id", segment.speaker_id)).strip()
+                if (not math.isfinite(edited.start) or not math.isfinite(edited.end)
+                        or edited.start < 0 or edited.end < edited.start):
+                    raise UserFacingError("Timeline không hợp lệ", f"ID {segment.id}: cần 0 ≤ Start ≤ End.",
+                                          "Kiểm tra lại thời gian.")
+                if edited.speaker_id not in allowed_speakers:
+                    raise UserFacingError("Speaker không hợp lệ", f"ID {segment.id}: {edited.speaker_id}",
+                                          "Chọn speaker ID có trong bản dịch.")
+                if not edited.translated_text:
+                    edited.start = edited.end
+                elif edited.end <= edited.start:
+                    raise UserFacingError("Câu dịch chưa có thời lượng", f"ID {segment.id} có chữ nhưng Start = End.",
+                                          "Đặt Start/End để khôi phục câu này.")
+            edited_segments.append(edited)
+        if manual_check:
+            active = sorted((item for item in edited_segments if item.translated_text),
+                            key=lambda item: (item.start, item.end))
+            for previous, following in zip(active, active[1:]):
+                if previous.end > following.start + 0.000001:
+                    raise UserFacingError("Timeline chồng nhau",
+                                          f"ID {previous.id} và {following.id} đang chồng thời gian.",
+                                          "Điều chỉnh Start/End; dùng Hiển thị toàn bộ segment nếu cần.")
+        empty_ids = sorted(
+            segment.id
+            for segment in edited_segments
+            if segment.duration > 0
+            and not segment.translated_text
+        )
+        if empty_ids:
+            raise UserFacingError(
+                "Bản dịch còn trống",
+                f"Các segment chưa có nội dung dịch: {empty_ids}",
+                "Nhập nội dung Translation cho mọi segment có thời lượng rồi lưu lại.",
+            )
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise TypeError("manifest không phải object")
+            raw_segments = payload.get("segments", [])
+            if not isinstance(raw_segments, list):
+                raise TypeError("segments không phải danh sách")
+            manifest_segments = {
+                int(item["id"]): item
+                for item in raw_segments
+                if isinstance(item, dict) and "id" in item
+            }
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise UserFacingError(
+                "File bản dịch không hợp lệ",
+                "Không thể đọc cấu trúc translated_segments.json để lưu thay đổi.",
+                "Mở file để kiểm tra hoặc chạy lại Step 3.",
+                repr(exc),
+            ) from exc
+        if set(manifest_segments) != expected_ids or len(raw_segments) != len(expected_ids):
+            raise UserFacingError(
+                "File bản dịch không khớp",
+                "Danh sách ID trong translated_segments.json khác với bảng đang hiển thị.",
+                "Chọn lại candidate hoặc chạy lại Step 3.",
+            )
+
+        for segment in edited_segments:
+            manifest_segments[segment.id]["source_text"] = segment.source_text
+            manifest_segments[segment.id]["translated_text"] = segment.translated_text
+            if manual_check:
+                manifest_segments[segment.id].update(
+                    speaker_id=segment.speaker_id, start=segment.start, end=segment.end,
+                )
+        from .config.gemini import GEMINI_PROVIDER_NAME
+        from .config.deepseek import DEEPSEEK_PROVIDER_NAME
+        from .config.opencode_go import OPENCODE_GO_PROVIDER_NAME
+        from .config.web_translation import CHATGPT_WEB_PROVIDER_NAME
+        if candidate.metadata.get("provider") in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME}:
+            from .steps.step3_translation.quality import assess_manual_segments
+            payload.setdefault("workflow", {})["review_issues"] = assess_manual_segments(
+                edited_segments, self.target_language,
+            )
+            payload["skipped_translation_ids"] = [
+                item.id for item in edited_segments if not item.translated_text
+            ]
+
+        edited_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            previous_edit_count = int(payload.get("manual_edit_count", 0) or 0)
+        except (TypeError, ValueError):
+            previous_edit_count = 0
+        edit_count = previous_edit_count + 1
+        payload["manually_edited_at"] = edited_at
+        payload["manual_edit_count"] = edit_count
+        temporary_path = path.with_suffix(f"{path.suffix}.part")
+        try:
+            temporary_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+        result.segments = edited_segments
+        for key in ("workflow", "skipped_translation_ids"):
+            if key in payload:
+                candidate.metadata[key] = payload[key]
+                result.metadata[key] = payload[key]
+        candidate.metadata["manually_edited_at"] = edited_at
+        candidate.metadata["manual_edit_count"] = edit_count
+        result.metadata["manually_edited_at"] = edited_at
+        result.metadata["manual_edit_count"] = edit_count
+        self.statuses[StepId.TRANSLATE] = StepStatus.DONE
+        self.invalidate_from(StepId.TTS)
+        self.statuses[StepId.TTS] = StepStatus.READY
+        self.step_changed.emit(StepId.TRANSLATE.value)
+        self.step_changed.emit(StepId.TTS.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def remove_translation_candidate(self, candidate_id: str) -> None:
+        removed_selected = candidate_id == self.selected_translation_candidate_id
+        removed_default = candidate_id == self.default_translation_candidate_id
+        self.translation_candidates.pop(candidate_id, None)
+        fallback = self._latest_valid_translation_candidate()
+        if removed_default:
+            self.default_translation_candidate_id = fallback.id if fallback else ""
+        if removed_selected:
+            self.selected_translation_candidate_id = ""
+            if fallback and self.select_translation_candidate(fallback.id):
+                return
+            self.invalidate_from(StepId.TRANSLATE)
+            if self.statuses[StepId.STT] == StepStatus.DONE:
+                self.statuses[StepId.TRANSLATE] = StepStatus.READY
+        self.step_changed.emit(StepId.TRANSLATE.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _register_legacy_translation(self) -> None:
+        if self.translation_candidates:
+            return
+        result = self.results.get(StepId.TRANSLATE)
+        if not result:
+            return
+        path = Path(result.artifacts.get("translation", ""))
+        if not path.is_file():
+            self.invalidate_from(StepId.TRANSLATE)
+            if self.statuses[StepId.STT] == StepStatus.DONE:
+                self.statuses[StepId.TRANSLATE] = StepStatus.READY
+            return
+        created_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+        candidate_id = "translate-legacy"
+        candidate = TranslationCandidate(
+            id=candidate_id,
+            label=f"Bản dịch cũ · {path.stem}",
+            created_at=created_at,
+            path=str(path),
+            segment_count=len(result.segments),
+            summary=result.summary,
+            metadata={**result.metadata, "translation_candidate_id": candidate_id},
+        )
+        self.translation_candidates[candidate_id] = candidate
+        self.selected_translation_candidate_id = candidate_id
+        self.default_translation_candidate_id = candidate_id
+        result.metadata["translation_candidate_id"] = candidate_id
+
+    def _restore_selected_translation(self) -> None:
+        if StepId.STT not in self.results or self.statuses[StepId.STT] != StepStatus.DONE:
+            return
+        choices = (
+            self.selected_translation_candidate_id,
+            self.default_translation_candidate_id,
+        )
+        candidate = next(
+            (
+                self.translation_candidate(candidate_id)
+                for candidate_id in choices
+                if candidate_id
+                and self.translation_candidate(candidate_id)
+                and Path(self.translation_candidate(candidate_id).path).is_file()
+            ),
+            None,
+        )
+        candidate = candidate or self._latest_valid_translation_candidate()
+        if not candidate:
+            return
+        self.selected_translation_candidate_id = candidate.id
+        self.default_translation_candidate_id = candidate.id
+        current = self.results.get(StepId.TRANSLATE)
+        current_path = current.artifacts.get("translation", "") if current else ""
+        if current and current_path and Path(current_path) == Path(candidate.path):
+            current.metadata["translation_candidate_id"] = candidate.id
+            return
+        result = self._result_from_translation(candidate.id)
+        if result:
+            self.results[StepId.TRANSLATE] = result
+            self.statuses[StepId.TRANSLATE] = StepStatus.DONE
+            for later in STEP_ORDER[STEP_ORDER.index(StepId.TTS) :]:
+                self.results.pop(later, None)
+                self.statuses[later] = StepStatus.PENDING
+
+    def _latest_valid_translation_candidate(self) -> TranslationCandidate | None:
+        valid = [
+            candidate
+            for candidate in self.translation_candidates.values()
+            if Path(candidate.path).is_file()
+        ]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_translation(self, candidate_id: str) -> StepResult | None:
+        candidate = self.translation_candidate(candidate_id)
+        if not candidate:
+            return None
+        path = Path(candidate.path)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            segments = [
+                Segment(
+                    id=int(item.get("id", index)),
+                    start=float(item.get("start", 0.0)),
+                    end=float(item.get("end", 0.0)),
+                    speaker_id=str(item.get("speaker_id", "")),
+                    merge_parts=[
+                        dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
+                    ],
+                    source_text=str(item.get("source_text", "")),
+                    translated_text=str(item.get("translated_text", "")),
+                    audio_file=str(item.get("audio_file", "")),
+                    synced_audio_file=str(item.get("synced_audio_file", "")),
+                )
+                for index, item in enumerate(payload.get("segments", []), start=1)
+            ]
+        except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if not segments or any(
+            segment.end > segment.start and not segment.translated_text.strip()
+            for segment in segments
+        ):
+            return None
+        metadata = {
+            **candidate.metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "translation_candidate_id": candidate.id,
+        }
+        artifacts = {"translation": str(path)}
+        dialogue_profile_path = str(metadata.get("dialogue_profile_path", "")).strip()
+        if dialogue_profile_path and Path(dialogue_profile_path).is_file():
+            artifacts["dialogue_profile"] = dialogue_profile_path
+        summary = candidate.summary or f"Bản dịch {candidate.label} · {len(segments)} segment"
+        return StepResult(
+            step=StepId.TRANSLATE,
+            summary=summary,
+            artifacts=artifacts,
+            segments=segments,
+            metadata=metadata,
+        )
+
+    def tts_candidate(self, candidate_id: str) -> TtsCandidate | None:
+        return self.tts_candidates.get(candidate_id)
+
+    def select_tts_candidate(self, candidate_id: str) -> bool:
+        result = self._result_from_tts(candidate_id)
+        if result is None:
+            return False
+        self.selected_tts_candidate_id = candidate_id
+        self.default_tts_candidate_id = candidate_id
+        self.results[StepId.TTS] = result
+        self.statuses[StepId.TTS] = StepStatus.DONE
+        self.invalidate_from(StepId.SYNC)
+        self.statuses[StepId.SYNC] = StepStatus.READY
+        self.step_changed.emit(StepId.TTS.value)
+        self.step_changed.emit(StepId.SYNC.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def remove_tts_candidate(self, candidate_id: str) -> None:
+        removed_selected = candidate_id == self.selected_tts_candidate_id
+        removed_default = candidate_id == self.default_tts_candidate_id
+        self.tts_candidates.pop(candidate_id, None)
+        fallback = self._latest_valid_tts_candidate()
+        if removed_default:
+            self.default_tts_candidate_id = fallback.id if fallback else ""
+        if removed_selected:
+            self.selected_tts_candidate_id = ""
+            if fallback and self.select_tts_candidate(fallback.id):
+                return
+            self.invalidate_from(StepId.TTS)
+            if self.statuses[StepId.TRANSLATE] == StepStatus.DONE:
+                self.statuses[StepId.TTS] = StepStatus.READY
+        self.step_changed.emit(StepId.TTS.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _register_legacy_tts(self) -> None:
+        if self.tts_candidates:
+            return
+        result = self.results.get(StepId.TTS)
+        if not result or not result.segments:
+            return
+        valid_files = [Path(segment.audio_file) for segment in result.segments]
+        if not valid_files or any(not path.is_file() for path in valid_files):
+            return
+        folder = valid_files[0].parent
+        manifest = Path(result.artifacts.get("tts_manifest", folder / "manifest.json"))
+        if not manifest.is_file():
+            return
+        candidate_id = "tts-legacy"
+        created_at = datetime.fromtimestamp(manifest.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+        candidate = TtsCandidate(
+            id=candidate_id,
+            label=f"TTS cũ · {folder.name}",
+            created_at=created_at,
+            path=str(manifest),
+            folder=str(folder),
+            provider=str(result.metadata.get("provider", "Legacy")),
+            voice=str(result.metadata.get("voice", "")),
+            segment_count=len(result.segments),
+            summary=result.summary,
+            metadata={**result.metadata, "tts_candidate_id": candidate_id},
+        )
+        self.tts_candidates[candidate_id] = candidate
+        self.selected_tts_candidate_id = candidate_id
+        self.default_tts_candidate_id = candidate_id
+
+    def _restore_selected_tts(self) -> None:
+        if StepId.TRANSLATE not in self.results:
+            return
+        choices = (self.selected_tts_candidate_id, self.default_tts_candidate_id)
+        candidate = next(
+            (self.tts_candidate(item) for item in choices if item and self._result_from_tts(item)),
+            None,
+        )
+        candidate = candidate or self._latest_valid_tts_candidate()
+        if not candidate:
+            return
+        result = self._result_from_tts(candidate.id)
+        if not result:
+            return
+        self.selected_tts_candidate_id = candidate.id
+        self.default_tts_candidate_id = candidate.id
+        current = self.results.get(StepId.TTS)
+        if current and str(current.metadata.get("tts_candidate_id", "")) == candidate.id:
+            return
+        self.results[StepId.TTS] = result
+        self.statuses[StepId.TTS] = StepStatus.DONE
+        for later in STEP_ORDER[STEP_ORDER.index(StepId.SYNC):]:
+            self.results.pop(later, None)
+            self.statuses[later] = StepStatus.PENDING
+
+    def _latest_valid_tts_candidate(self) -> TtsCandidate | None:
+        valid = [item for item in self.tts_candidates.values() if self._result_from_tts(item.id)]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_tts(self, candidate_id: str) -> StepResult | None:
+        candidate = self.tts_candidate(candidate_id)
+        if not candidate:
+            return None
+        path = Path(candidate.path)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            segments = [
+                Segment(
+                    id=int(item.get("id", index)),
+                    start=float(item.get("start", 0.0)),
+                    end=float(item.get("end", 0.0)),
+                    speaker_id=str(item.get("speaker_id", "")),
+                    merge_parts=[
+                        dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
+                    ],
+                    source_text=str(item.get("source_text", "")),
+                    translated_text=str(item.get("translated_text", "")),
+                    audio_file=str(item.get("audio_file", "")),
+                    tts_provider=str(item.get("tts_provider", "")),
+                    tts_model=str(item.get("tts_model", "")),
+                    tts_voice=str(item.get("tts_voice", "")),
+                    tts_reference_voice=str(item.get("tts_reference_voice", "")),
+                    tts_actual_device=str(item.get("tts_actual_device", "")),
+                )
+                for index, item in enumerate(payload.get("segments", []), start=1)
+            ]
+        except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if not segments or any(
+            item.duration > 0 and (not item.audio_file or not Path(item.audio_file).is_file())
+            for item in segments
+        ):
+            return None
+        metadata = {
+            **candidate.metadata,
+            **{key: value for key, value in payload.items() if key != "segments"},
+            "tts_candidate_id": candidate.id,
+        }
+        return StepResult(
+            step=StepId.TTS,
+            summary=candidate.summary or f"{candidate.label} · {len(segments)} segment",
+            artifacts={"tts_manifest": str(path), "audio_folder": candidate.folder},
+            segments=segments,
+            metadata=metadata,
+        )
+
+    def sync_candidate(self, candidate_id: str) -> SyncCandidate | None:
+        return self.sync_candidates.get(candidate_id)
+
+    def select_sync_candidate(self, candidate_id: str) -> bool:
+        result = self._result_from_sync(candidate_id)
+        if result is None or int(result.metadata.get("error_count", 0)) > 0:
+            return False
+        self.selected_sync_candidate_id = candidate_id
+        self.default_sync_candidate_id = candidate_id
+        self.results[StepId.SYNC] = result
+        self.statuses[StepId.SYNC] = StepStatus.DONE
+        self.invalidate_from(StepId.BUILD_AUDIO)
+        self.statuses[StepId.BUILD_AUDIO] = StepStatus.READY
+        self.step_changed.emit(StepId.SYNC.value)
+        self.step_changed.emit(StepId.BUILD_AUDIO.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def refresh_sync_candidate(self, candidate_id: str, activate_if_complete: bool = True) -> bool:
+        result = self._result_from_sync(candidate_id, allow_incomplete=True)
+        if result is None:
+            return False
+        candidate = self.sync_candidate(candidate_id)
+        error_count = int(result.metadata.get("error_count", 0))
+        if candidate:
+            candidate.error_count = error_count
+            candidate.summary = result.summary
+            candidate.metadata = dict(result.metadata)
+        self.results[StepId.SYNC] = result
+        self.statuses[StepId.SYNC] = StepStatus.ERROR if error_count else StepStatus.DONE
+        self.invalidate_from(StepId.BUILD_AUDIO)
+        if error_count:
+            if self.selected_sync_candidate_id == candidate_id:
+                self.selected_sync_candidate_id = ""
+            if self.default_sync_candidate_id == candidate_id:
+                self.default_sync_candidate_id = ""
+        elif activate_if_complete:
+            self.selected_sync_candidate_id = candidate_id
+            self.default_sync_candidate_id = candidate_id
+            self.statuses[StepId.BUILD_AUDIO] = StepStatus.READY
+            self.step_changed.emit(StepId.BUILD_AUDIO.value)
+        self.step_changed.emit(StepId.SYNC.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def refresh_repaired_chain(
+        self,
+        transcript_candidate_id: str,
+        translation_candidate_id: str,
+        tts_candidate_id: str,
+        sync_candidate_id: str,
+    ) -> bool:
+        transcript = (
+            self._result_from_transcript(transcript_candidate_id)
+            if transcript_candidate_id
+            else None
+        )
+        translation = self._result_from_translation(translation_candidate_id)
+        tts = self._result_from_tts(tts_candidate_id)
+        if translation is None or tts is None:
+            return False
+        transcript_candidate = self.transcript_candidate(transcript_candidate_id)
+        translation_candidate = self.translation_candidate(translation_candidate_id)
+        tts_candidate = self.tts_candidate(tts_candidate_id)
+        if transcript_candidate and transcript:
+            transcript_candidate.metadata = dict(transcript.metadata)
+        if translation_candidate:
+            translation_candidate.metadata = dict(translation.metadata)
+        if tts_candidate:
+            tts_candidate.metadata = dict(tts.metadata)
+        if (
+            transcript
+            and self.selected_transcript_candidate_id == transcript_candidate_id
+        ):
+            self.results[StepId.STT] = transcript
+            self.statuses[StepId.STT] = StepStatus.DONE
+            self.step_changed.emit(StepId.STT.value)
+        if self.selected_translation_candidate_id == translation_candidate_id:
+            self.results[StepId.TRANSLATE] = translation
+            self.statuses[StepId.TRANSLATE] = StepStatus.DONE
+            self.step_changed.emit(StepId.TRANSLATE.value)
+        if self.selected_tts_candidate_id == tts_candidate_id:
+            self.results[StepId.TTS] = tts
+            self.statuses[StepId.TTS] = StepStatus.DONE
+            self.step_changed.emit(StepId.TTS.value)
+        return self.refresh_sync_candidate(sync_candidate_id, activate_if_complete=True)
+
+    def remove_sync_candidate(self, candidate_id: str) -> None:
+        removed_selected = candidate_id == self.selected_sync_candidate_id
+        removed_default = candidate_id == self.default_sync_candidate_id
+        current = self.results.get(StepId.SYNC)
+        current_id = str(current.metadata.get("sync_candidate_id", "")) if current else ""
+        self.sync_candidates.pop(candidate_id, None)
+        fallback = self._latest_valid_sync_candidate()
+        if removed_default:
+            self.default_sync_candidate_id = fallback.id if fallback else ""
+        if removed_selected:
+            self.selected_sync_candidate_id = ""
+        if current_id == candidate_id or removed_selected:
+            if fallback and self.select_sync_candidate(fallback.id):
+                return
+            self.invalidate_from(StepId.SYNC)
+            if self.statuses[StepId.TTS] == StepStatus.DONE:
+                self.statuses[StepId.SYNC] = StepStatus.READY
+        self.step_changed.emit(StepId.SYNC.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _restore_selected_sync(self) -> None:
+        if StepId.TTS not in self.results:
+            return
+        current = self.results.get(StepId.SYNC)
+        current_id = str(current.metadata.get("sync_candidate_id", "")) if current else ""
+        if current_id and current_id in self.sync_candidates:
+            restored = self._result_from_sync(current_id, allow_incomplete=True)
+            if restored:
+                self.results[StepId.SYNC] = restored
+                self.statuses[StepId.SYNC] = (
+                    StepStatus.ERROR
+                    if int(restored.metadata.get("error_count", 0))
+                    else StepStatus.DONE
+                )
+                return
+        choices = (self.selected_sync_candidate_id, self.default_sync_candidate_id)
+        candidate = next(
+            (self.sync_candidate(item) for item in choices if item and self._result_from_sync(item)),
+            None,
+        )
+        candidate = candidate or self._latest_valid_sync_candidate()
+        if not candidate:
+            return
+        result = self._result_from_sync(candidate.id)
+        if result:
+            self.selected_sync_candidate_id = candidate.id
+            self.default_sync_candidate_id = candidate.id
+            self.results[StepId.SYNC] = result
+            self.statuses[StepId.SYNC] = StepStatus.DONE
+
+    def _latest_valid_sync_candidate(self) -> SyncCandidate | None:
+        valid = [item for item in self.sync_candidates.values() if self._result_from_sync(item.id)]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_sync(
+        self,
+        candidate_id: str,
+        allow_incomplete: bool = False,
+    ) -> StepResult | None:
+        candidate = self.sync_candidate(candidate_id)
+        if not candidate:
+            return None
+        path = Path(candidate.path)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            raw_segments = payload.get("segments", [])
+            segments = [
+                Segment(
+                    id=int(item.get("id", index)),
+                    start=float(item.get("start", 0.0)),
+                    end=float(item.get("end", 0.0)),
+                    speaker_id=str(item.get("speaker_id", "")),
+                    merge_parts=[
+                        dict(part) for part in item.get("merge_parts", []) if isinstance(part, dict)
+                    ],
+                    source_text=str(item.get("source_text", "")),
+                    translated_text=str(item.get("translated_text", "")),
+                    audio_file=str(item.get("audio_file", "")),
+                    synced_audio_file=str(item.get("synced_audio_file", "")),
+                    tts_provider=str(item.get("tts_provider", "")),
+                    tts_model=str(item.get("tts_model", "")),
+                    tts_voice=str(item.get("tts_voice", "")),
+                    tts_reference_voice=str(item.get("tts_reference_voice", "")),
+                    tts_actual_device=str(item.get("tts_actual_device", "")),
+                )
+                for index, item in enumerate(raw_segments, start=1)
+            ]
+        except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        error_count = int(payload.get("error_count", 0))
+        if not segments or (error_count and not allow_incomplete):
+            return None
+        playable_segments = [item for item in segments if item.end > item.start]
+        ready_files = [Path(item.synced_audio_file) for item in playable_segments if item.synced_audio_file]
+        expected_ready = len(playable_segments) - error_count
+        if len(ready_files) != expected_ready or any(not item.is_file() for item in ready_files):
+            return None
+        metadata = {
+            **candidate.metadata,
+            **{key: value for key, value in payload.items() if key not in {"segments", "source_tts_settings"}},
+            "sync_candidate_id": candidate.id,
+        }
+        summary = (
+            f"Đã đồng bộ {len(segments) - error_count}/{len(segments)} segment · "
+            f"{error_count} segment cần sửa"
+            if error_count
+            else f"Đã đồng bộ thành công {len(segments)} segment"
+        )
+        return StepResult(
+            step=StepId.SYNC,
+            summary=summary,
+            artifacts={"sync_manifest": str(path), "synced_folder": str(Path(candidate.folder) / "segments")},
+            segments=segments,
+            metadata=metadata,
+        )
+
+    def build_audio_candidate(self, candidate_id: str) -> BuildAudioCandidate | None:
+        return self.build_audio_candidates.get(candidate_id)
+
+    def select_build_audio_candidate(self, candidate_id: str) -> bool:
+        result = self._result_from_build_audio(candidate_id)
+        if result is None:
+            return False
+        changed = candidate_id != self.selected_build_audio_candidate_id
+        self.selected_build_audio_candidate_id = candidate_id
+        self.default_build_audio_candidate_id = candidate_id
+        if changed:
+            self.selected_render_candidate_id = ""
+        self.results[StepId.BUILD_AUDIO] = result
+        self.statuses[StepId.BUILD_AUDIO] = StepStatus.DONE
+        self.invalidate_from(StepId.RENDER)
+        self.statuses[StepId.RENDER] = StepStatus.READY
+        self.step_changed.emit(StepId.BUILD_AUDIO.value)
+        self.step_changed.emit(StepId.RENDER.value)
+        self.project_changed.emit()
+        self.save_project()
+        return True
+
+    def remove_build_audio_candidate(self, candidate_id: str) -> None:
+        removed_selected = candidate_id == self.selected_build_audio_candidate_id
+        removed_default = candidate_id == self.default_build_audio_candidate_id
+        current = self.results.get(StepId.BUILD_AUDIO)
+        current_id = str(current.metadata.get("build_audio_candidate_id", "")) if current else ""
+        self.build_audio_candidates.pop(candidate_id, None)
+        fallback = self._latest_valid_build_audio_candidate()
+        if removed_default:
+            self.default_build_audio_candidate_id = fallback.id if fallback else ""
+        if removed_selected:
+            self.selected_build_audio_candidate_id = ""
+        if current_id == candidate_id or removed_selected:
+            if fallback and self.select_build_audio_candidate(fallback.id):
+                return
+            self.invalidate_from(StepId.BUILD_AUDIO)
+            if self.statuses[StepId.SYNC] == StepStatus.DONE:
+                self.statuses[StepId.BUILD_AUDIO] = StepStatus.READY
+        self.step_changed.emit(StepId.BUILD_AUDIO.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _restore_selected_build_audio(self) -> None:
+        if StepId.SYNC not in self.results:
+            return
+        current = self.results.get(StepId.BUILD_AUDIO)
+        current_id = str(current.metadata.get("build_audio_candidate_id", "")) if current else ""
+        if current_id and current_id in self.build_audio_candidates:
+            restored = self._result_from_build_audio(current_id)
+            if restored:
+                self.selected_build_audio_candidate_id = current_id
+                self.default_build_audio_candidate_id = current_id
+                self.results[StepId.BUILD_AUDIO] = restored
+                self.statuses[StepId.BUILD_AUDIO] = StepStatus.DONE
+                return
+        choices = (
+            self.selected_build_audio_candidate_id,
+            self.default_build_audio_candidate_id,
+        )
+        candidate = next(
+            (
+                self.build_audio_candidate(item)
+                for item in choices
+                if item and self._result_from_build_audio(item)
+            ),
+            None,
+        )
+        candidate = candidate or self._latest_valid_build_audio_candidate()
+        if not candidate:
+            return
+        result = self._result_from_build_audio(candidate.id)
+        if result:
+            self.selected_build_audio_candidate_id = candidate.id
+            self.default_build_audio_candidate_id = candidate.id
+            self.results[StepId.BUILD_AUDIO] = result
+            self.statuses[StepId.BUILD_AUDIO] = StepStatus.DONE
+
+    def _latest_valid_build_audio_candidate(self) -> BuildAudioCandidate | None:
+        valid = [
+            item
+            for item in self.build_audio_candidates.values()
+            if self._result_from_build_audio(item.id)
+        ]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_build_audio(self, candidate_id: str) -> StepResult | None:
+        candidate = self.build_audio_candidate(candidate_id)
+        if not candidate:
+            return None
+        manifest = Path(candidate.path)
+        audio = Path(candidate.audio_file)
+        if not manifest.is_file() or not audio.is_file():
+            return None
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            duration = float(payload.get("duration_seconds", candidate.duration_seconds))
+            source_sync_id = str(
+                payload.get("source_sync_candidate_id", candidate.source_sync_candidate_id)
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        source = self._result_from_sync(source_sync_id)
+        if duration <= 0 or source is None:
+            return None
+        metadata = {
+            **candidate.metadata,
+            **payload,
+            "build_audio_candidate_id": candidate.id,
+        }
+        return StepResult(
+            step=StepId.BUILD_AUDIO,
+            summary=candidate.summary or f"{candidate.label} · {duration:.2f}s",
+            artifacts={"voice_track": str(audio), "build_audio_manifest": str(manifest)},
+            segments=source.segments,
+            metadata=metadata,
+        )
+
+    def render_candidate(self, candidate_id: str) -> RenderCandidate | None:
+        return self.render_candidates.get(candidate_id)
+
+    def remove_render_candidate(self, candidate_id: str) -> None:
+        current = self.results.get(StepId.RENDER)
+        current_id = str(current.metadata.get("render_candidate_id", "")) if current else ""
+        self.render_candidates.pop(candidate_id, None)
+        if candidate_id == self.selected_render_candidate_id:
+            self.selected_render_candidate_id = ""
+        if current_id == candidate_id:
+            fallback = self._latest_valid_render_candidate()
+            if fallback:
+                restored = self._result_from_render(fallback.id)
+                if restored:
+                    self.selected_render_candidate_id = fallback.id
+                    self.results[StepId.RENDER] = restored
+                    self.statuses[StepId.RENDER] = StepStatus.DONE
+            else:
+                self.results.pop(StepId.RENDER, None)
+                self.statuses[StepId.RENDER] = (
+                    StepStatus.READY
+                    if self.statuses[StepId.BUILD_AUDIO] == StepStatus.DONE
+                    else StepStatus.PENDING
+                )
+        self.step_changed.emit(StepId.RENDER.value)
+        self.project_changed.emit()
+        self.save_project()
+
+    def _restore_selected_render(self) -> None:
+        if StepId.BUILD_AUDIO not in self.results:
+            return
+        current = self.results.get(StepId.RENDER)
+        current_id = str(current.metadata.get("render_candidate_id", "")) if current else ""
+        choices = (current_id, self.selected_render_candidate_id)
+        candidate = next(
+            (
+                self.render_candidate(item)
+                for item in choices
+                if item and self._result_from_render(item)
+            ),
+            None,
+        )
+        candidate = candidate or self._latest_valid_render_candidate()
+        if not candidate:
+            return
+        result = self._result_from_render(candidate.id)
+        if result:
+            self.selected_render_candidate_id = candidate.id
+            self.results[StepId.RENDER] = result
+            self.statuses[StepId.RENDER] = StepStatus.DONE
+
+    def _latest_valid_render_candidate(self) -> RenderCandidate | None:
+        valid = [
+            item for item in self.render_candidates.values() if self._result_from_render(item.id)
+        ]
+        return max(valid, key=lambda item: item.created_at, default=None)
+
+    def _result_from_render(
+        self,
+        candidate_id: str,
+        require_selected_source: bool = True,
+    ) -> StepResult | None:
+        candidate = self.render_candidate(candidate_id)
+        if not candidate:
+            return None
+        manifest = Path(candidate.path)
+        video = Path(candidate.video_file)
+        if not manifest.is_file() or not video.is_file():
+            return None
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            duration = float(payload.get("duration_seconds", candidate.duration_seconds))
+            source_build_audio_id = str(payload.get("source_build_audio_candidate_id", ""))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if (
+            duration <= 0
+            or not source_build_audio_id
+            or (
+                require_selected_source
+                and source_build_audio_id != self.selected_build_audio_candidate_id
+            )
+        ):
+            return None
+        source = self.results.get(StepId.BUILD_AUDIO)
+        source_id = str(source.metadata.get("build_audio_candidate_id", "")) if source else ""
+        if source_id != source_build_audio_id:
+            source = self._result_from_build_audio(source_build_audio_id)
+        subtitle = Path(candidate.subtitle_file) if candidate.subtitle_file else None
+        artifacts = {
+            "output_video": str(video),
+            **({"subtitle": str(subtitle)} if subtitle and subtitle.is_file() else {}),
+            "render_manifest": str(manifest),
+        }
+        return StepResult(
+            step=StepId.RENDER,
+            summary=candidate.summary or f"{candidate.label} · {duration:.2f}s",
+            artifacts=artifacts,
+            segments=source.segments if source else [],
+            metadata={**candidate.metadata, **payload, "render_candidate_id": candidate.id},
         )
 
     def set_input_video(self, path: str) -> None:
@@ -100,23 +1964,100 @@ class ProjectState(QObject):
             self.project_changed.emit()
 
     def mark_running(self, step: StepId) -> None:
+        self.invalidate_from(step)
         self.statuses[step] = StepStatus.RUNNING
         self.step_changed.emit(step.value)
+        self.save_project()
 
-    def mark_error(self, step: StepId) -> None:
+    def mark_error(self, step: StepId, restore_previous: bool = True) -> None:
+        if restore_previous and step == StepId.STT and self.default_transcript_candidate_id:
+            if self.select_transcript_candidate(self.default_transcript_candidate_id):
+                return
+        if restore_previous and step == StepId.TRANSLATE and self.default_translation_candidate_id:
+            if self.select_translation_candidate(self.default_translation_candidate_id):
+                return
+        if restore_previous and step == StepId.TTS and self.default_tts_candidate_id:
+            if self.select_tts_candidate(self.default_tts_candidate_id):
+                return
+        if restore_previous and step == StepId.SYNC and self.default_sync_candidate_id:
+            if self.select_sync_candidate(self.default_sync_candidate_id):
+                return
+        if restore_previous and step == StepId.BUILD_AUDIO and self.default_build_audio_candidate_id:
+            if self.select_build_audio_candidate(self.default_build_audio_candidate_id):
+                return
+        if restore_previous and step == StepId.RENDER and self.selected_render_candidate_id:
+            restored = self._result_from_render(self.selected_render_candidate_id)
+            if restored:
+                self.results[StepId.RENDER] = restored
+                self.statuses[StepId.RENDER] = StepStatus.DONE
+                self.step_changed.emit(StepId.RENDER.value)
+                self.save_project()
+                return
         self.statuses[step] = StepStatus.ERROR
         self.step_changed.emit(step.value)
 
     def set_result(self, result: StepResult) -> None:
         index = STEP_ORDER.index(result.step)
+        for candidate in result.audio_candidates:
+            self.add_audio_candidate(candidate)
+        recommended_id = str(result.metadata.get("recommended_candidate_id", ""))
+        recommended_stem = str(result.metadata.get("recommended_stem", ""))
+        if recommended_id and recommended_stem:
+            self.selected_audio_candidate_id = recommended_id
+            self.selected_audio_stem = recommended_stem
+            self.default_audio_candidate_id = recommended_id
+            self.default_audio_stem = recommended_stem
+        for candidate in result.transcript_candidates:
+            self.transcript_candidates[candidate.id] = candidate
+        transcript_id = str(result.metadata.get("recommended_transcript_candidate_id", ""))
+        if transcript_id and transcript_id in self.transcript_candidates:
+            self.selected_transcript_candidate_id = transcript_id
+            self.default_transcript_candidate_id = transcript_id
+        for candidate in result.translation_candidates:
+            self.translation_candidates[candidate.id] = candidate
+        translation_id = str(result.metadata.get("recommended_translation_candidate_id", ""))
+        if translation_id and translation_id in self.translation_candidates:
+            self.selected_translation_candidate_id = translation_id
+            self.default_translation_candidate_id = translation_id
+        for candidate in result.tts_candidates:
+            self.tts_candidates[candidate.id] = candidate
+        tts_id = str(result.metadata.get("recommended_tts_candidate_id", ""))
+        if tts_id and tts_id in self.tts_candidates:
+            self.selected_tts_candidate_id = tts_id
+            self.default_tts_candidate_id = tts_id
+        for candidate in result.sync_candidates:
+            self.sync_candidates[candidate.id] = candidate
+        sync_id = str(result.metadata.get("recommended_sync_candidate_id", ""))
+        if sync_id and sync_id in self.sync_candidates:
+            self.selected_sync_candidate_id = sync_id
+            self.default_sync_candidate_id = sync_id
+        for candidate in result.build_audio_candidates:
+            self.build_audio_candidates[candidate.id] = candidate
+        build_audio_id = str(result.metadata.get("recommended_build_audio_candidate_id", ""))
+        if build_audio_id and build_audio_id in self.build_audio_candidates:
+            changed = build_audio_id != self.selected_build_audio_candidate_id
+            self.selected_build_audio_candidate_id = build_audio_id
+            self.default_build_audio_candidate_id = build_audio_id
+            if changed:
+                self.selected_render_candidate_id = ""
+        for candidate in result.render_candidates:
+            self.render_candidates[candidate.id] = candidate
+        render_id = str(result.metadata.get("recommended_render_candidate_id", ""))
+        if render_id and render_id in self.render_candidates:
+            self.selected_render_candidate_id = render_id
         self.results[result.step] = result
-        self.statuses[result.step] = StepStatus.DONE
+        has_blocking_errors = (
+            result.step == StepId.SYNC and int(result.metadata.get("error_count", 0)) > 0
+        ) or (
+            result.step == StepId.STT and int(result.metadata.get("timeline_error_count", 0)) > 0
+        )
+        self.statuses[result.step] = StepStatus.ERROR if has_blocking_errors else StepStatus.DONE
         for later in STEP_ORDER[index + 1 :]:
             if later in self.results:
                 del self.results[later]
             self.statuses[later] = StepStatus.PENDING
             self.step_changed.emit(later.value)
-        if index + 1 < len(STEP_ORDER):
+        if index + 1 < len(STEP_ORDER) and not has_blocking_errors and not result.metadata.get("srt_only"):
             self.statuses[STEP_ORDER[index + 1]] = StepStatus.READY
             self.step_changed.emit(STEP_ORDER[index + 1].value)
         self.step_changed.emit(result.step.value)
@@ -135,7 +2076,15 @@ class ProjectState(QObject):
         index = STEP_ORDER.index(step)
         if index == 0:
             return bool(self.input_video)
-        return self.statuses[STEP_ORDER[index - 1]] == StepStatus.DONE
+        previous_done = self.statuses[STEP_ORDER[index - 1]] == StepStatus.DONE
+        if step == StepId.STT:
+            input_path = self.audio_input_path()
+            return previous_done and bool(input_path) and Path(input_path).is_file()
+        if step == StepId.TRANSLATE:
+            transcript = self.results.get(StepId.STT)
+            return previous_done and bool(transcript and not transcript.metadata.get("srt_only")
+                                          and transcript.segments)
+        return previous_done
 
     def previous_result(self, step: StepId) -> StepResult | None:
         index = STEP_ORDER.index(step)
@@ -143,9 +2092,38 @@ class ProjectState(QObject):
             return None
         return self.results.get(STEP_ORDER[index - 1])
 
+    def candidate_result(self, step: StepId, candidate_id: str) -> StepResult | None:
+        active = self.results.get(step)
+        candidate_keys = {
+            StepId.STT: "transcript_candidate_id",
+            StepId.TRANSLATE: "translation_candidate_id",
+            StepId.TTS: "tts_candidate_id",
+            StepId.SYNC: "sync_candidate_id",
+            StepId.BUILD_AUDIO: "build_audio_candidate_id",
+            StepId.RENDER: "render_candidate_id",
+        }
+        key = candidate_keys.get(step, "")
+        if active and key and str(active.metadata.get(key, "")) == candidate_id:
+            return active
+        loaders = {
+            StepId.STT: self._result_from_transcript,
+            StepId.TRANSLATE: self._result_from_translation,
+            StepId.TTS: self._result_from_tts,
+            StepId.BUILD_AUDIO: self._result_from_build_audio,
+        }
+        if step == StepId.SYNC:
+            return self._result_from_sync(candidate_id, allow_incomplete=True)
+        if step == StepId.RENDER:
+            return self._result_from_render(candidate_id, require_selected_source=False)
+        loader = loaders.get(step)
+        return loader(candidate_id) if loader else None
+
     def input_summary(self, step: StepId) -> str:
         if step == StepId.EXTRACT:
             return self.input_video or "Chưa chọn video đầu vào"
+        if step == StepId.STT:
+            path = self.audio_input_path()
+            return path or "Chưa chọn output âm thanh từ Step 1"
         previous = self.previous_result(step)
         if not previous:
             return "Đang chờ kết quả từ step trước"

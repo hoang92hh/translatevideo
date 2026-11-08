@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from video_translator.common.models import StepId, StepStatus
+from video_translator.config.step_defaults import default_value
 from video_translator.errors import UserFacingError
 from video_translator.steps.step2_transcription.csv_exchange import export_segments
 from video_translator.ui.transcript_timeline_dialog import TranscriptTimelineDialog
@@ -33,18 +34,17 @@ class SpeechToTextStepPage(StepPage):
         "SRT to Segments",
         "Step 1.5 tạo SRT; Step 2 chuyển SRT thành segment cho Step 3.",
         (
-            ProviderSpec("Stable Whisper", (
-                FieldSpec("model", "Model", "choice", "medium", ("small", "medium", "large-v3")),
+            ProviderSpec(default_value(StepId.STT, "provider"), (
+                FieldSpec("model", "Model", "choice", default_value(StepId.STT, "model"), ("small", "medium", "large-v3")),
                 DEVICE_FIELD,
-                FieldSpec("segmentation_mode", "Cơ chế tạo SRT (Step 1.5)", "choice", "Whisper", ("Hybrid", "VAD", "Whisper")),
-                FieldSpec("vad", "VAD hỗ trợ Recovery (Whisper)", "bool", True),
-                FieldSpec("segment_recovery", "Segment recovery (Whisper; Hybrid luôn bật)", "bool", False),
-                FieldSpec("diarization", "Speaker diarization (cơ chế Whisper)", "bool", False),
+                FieldSpec("segmentation_mode", "Cơ chế tạo SRT (Step 1.5)", "choice", default_value(StepId.STT, "segmentation_mode"), ("Whisper", "OCR", "Hybrid")),
+                FieldSpec("vad_recovery", "VAD + phục hồi segment (Whisper / Hybrid)", "bool", default_value(StepId.STT, "vad_recovery")),
+                FieldSpec("diarization", "Speaker diarization (Whisper / Hybrid)", "bool", default_value(StepId.STT, "diarization")),
                 FieldSpec(
                     "merge_contained_adjacent_segments",
-                    "Gộp segment liền kề",
+                    "Gộp segment liền kề (Whisper)",
                     "bool",
-                    False,
+                    default_value(StepId.STT, "merge_contained_adjacent_segments"),
                 ),
             )),
             ProviderSpec("Provider khác (sắp có)", available=False),

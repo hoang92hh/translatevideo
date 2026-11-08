@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from .installation import installation_settings
-from .tts import VIENEU_PROVIDER
+from ..common.models import StepId
+from .step_defaults import default_value
 
 
 DEFAULT_PROVIDER_SETTING = "tts/defaultProvider"
@@ -11,9 +12,9 @@ def default_tts_provider() -> str:
     return str(
         installation_settings().value(
             DEFAULT_PROVIDER_SETTING,
-            VIENEU_PROVIDER,
+            default_value(StepId.TTS, "provider"),
         )
-    ).strip() or VIENEU_PROVIDER
+    ).strip() or str(default_value(StepId.TTS, "provider"))
 
 
 def set_default_tts_provider(provider: str) -> None:

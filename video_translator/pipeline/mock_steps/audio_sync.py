@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from ...errors import UserFacingError
 from ...common.models import StepId, StepResult, SyncCandidate
+from ...config.step_defaults import with_defaults
 from ...steps.step5_alignment.service import AudioSyncService
 from ...steps.step5_alignment.alignment import build_video_timing_plan
 from ...state import ProjectState
@@ -43,6 +44,7 @@ def execute(
     settings: dict[str, Any],
     progress: Callable[[int, str], None] | None = None,
 ) -> StepResult:
+    settings = with_defaults(StepId.SYNC, settings)
     segments = previous_segments(state, StepId.SYNC)
     if not segments or any(
         item.duration > 0 and (not item.audio_file or not Path(item.audio_file).is_file())
@@ -53,13 +55,13 @@ def execute(
             "Step 5 cần một file audio còn tồn tại cho mọi segment có thời lượng lớn hơn 0.",
             "Chọn lại output Step 4 hợp lệ rồi chạy Step 5.",
         )
-    max_speed = max(1.0, float(settings.get("max_speed", 1.35)))
-    use_gap = bool(settings.get("use_gap", True))
-    trim_silence = bool(settings.get("trim_silence", False))
-    auto_extend_video = bool(settings.get("auto_extend_video", True))
-    video_extension_mode = str(settings.get("video_extension_mode", "Hybrid"))
-    min_video_speed = max(0.25, min(1.0, float(settings.get("min_video_speed", 0.85))))
-    max_freeze_duration = max(0.0, float(settings.get("max_freeze_duration", 1.5)))
+    max_speed = max(1.0, float(settings["max_speed"]))
+    use_gap = bool(settings["use_gap"])
+    trim_silence = bool(settings["trim_silence"])
+    auto_extend_video = bool(settings["auto_extend_video"])
+    video_extension_mode = str(settings["video_extension_mode"])
+    min_video_speed = max(0.25, min(1.0, float(settings["min_video_speed"])))
+    max_freeze_duration = max(0.0, float(settings["max_freeze_duration"]))
     now = datetime.now(timezone.utc)
     candidate_id = f"sync-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
     candidate_folder = Path(state.workspace_path("synchronized_audio", candidate_id))

@@ -19,3 +19,4 @@ tools/
 models/
 build_application/
 
+/api_keys.env.example

@@ -22,19 +22,22 @@ from ...config.speaker_profiles import (
     MINOR_UNKNOWN_PROFILE,
     speaker_profile_assignments,
 )
+from ...config.step_defaults import default_value, defaults_for
+from ...common.models import StepId
 
 
 def speed_control() -> QDoubleSpinBox:
     control = QDoubleSpinBox()
     control.setRange(0.25, 4.0)
     control.setSingleStep(0.05)
-    control.setValue(1.0)
+    control.setValue(float(default_value(StepId.TTS, "speed")))
     return control
 
 
 def device_control() -> QComboBox:
     control = QComboBox()
     control.addItems(("Auto", "CPU", "GPU"))
+    control.setCurrentText(str(default_value(StepId.TTS, "device")))
     return control
 
 
@@ -175,14 +178,14 @@ class ReferenceTtsComponentBase(TtsComponentBase):
     ) -> None:
         self.provider_name = provider_name
         self.voices = voices
-        self.default_voice = default_voice
+        self.default_voice = str(defaults_for(StepId.TTS, provider_name).get("voice", default_voice))
         self._profile_controls: dict[str, tuple[QComboBox, FilePicker]] = {}
         super().__init__(title, subtitle, license_note)
         form = QGridLayout()
         form.addWidget(QLabel(voice_label), 0, 0)
         self.voice = QComboBox()
         self.voice.addItems(voices)
-        self.voice.setCurrentText(default_voice)
+        self.voice.setCurrentText(self.default_voice)
         form.addWidget(self.voice, 0, 1)
         form.addWidget(QLabel("Tốc độ"), 1, 0)
         self.speed = speed_control()
@@ -191,6 +194,7 @@ class ReferenceTtsComponentBase(TtsComponentBase):
         self.device = device_control()
         form.addWidget(self.device, 2, 1)
         self.consent = QCheckBox("Tôi có quyền sử dụng giọng tham chiếu")
+        self.consent.setChecked(bool(default_value(StepId.TTS, "voice_consent")))
         form.addWidget(self.consent, 3, 0, 1, 2)
         self.settings_card.content_layout.addLayout(form)
 

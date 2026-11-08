@@ -11,10 +11,14 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ...common.models import Segment, StepId, StepResult, TranscriptCandidate
+from ...config.step_defaults import with_defaults
 from ...state import ProjectState
 from ...steps.step2_transcription.import_text import read_srt
 from ...steps.step2_transcription.service import (
-    SpeechToTextService, TranscriptSegment, assess_transcript_timeline,
+    SpeechToTextService, TranscriptSegment, Transcription, assess_transcript_timeline,
+)
+from ...steps.step2_transcription.ocr_subtitles import (
+    COLLAPSED_SEGMENT_TEXT, SubtitleOcrService, map_ocr_text,
 )
 
 
@@ -136,6 +140,7 @@ def execute(
     settings: dict[str, Any],
     progress: Callable[[int, str], None] | None = None,
 ) -> StepResult:
+    settings = with_defaults(StepId.STT, settings)
     if state.project is None:
         raise ValueError("Chưa mở project để xử lý SRT.")
     source_video = Path(state.input_video).resolve()
@@ -145,38 +150,75 @@ def execute(
             raise FileNotFoundError(f"Không tìm thấy SRT của video: {srt_path}. Hãy chạy Step 1.5 trước.")
         return _convert_srt(state, srt_path)
 
-    provider = str(settings.get("provider", "Stable Whisper"))
+    provider = str(settings["provider"])
     if provider not in {"Stable Whisper", "Faster Whisper"}:
         raise RuntimeError(f"{provider} hiện chưa được triển khai.")
 
     input_audio = Path(str(settings.get("input_audio", "")))
-    model_name = str(settings.get("model", "medium"))
-    requested_device = str(settings.get("device", "Auto"))
+    model_name = str(settings["model"])
+    requested_device = str(settings["device"])
     language_code = LANGUAGE_CODES.get(state.source_language)
     if language_code is None:
         raise ValueError(f"Ngôn ngữ nguồn của project chưa được hỗ trợ: {state.source_language}")
-    service = SpeechToTextService(
-        model_name=model_name,
-        device=requested_device,
-        language=language_code,
-        vad_filter=bool(settings.get("vad", True)),
-        segment_recovery=bool(settings.get("segment_recovery", False)),
-        diarization=bool(settings.get("diarization", False)),
-        segmentation_mode=str(settings.get("segmentation_mode", "Hybrid")),
-        batch_session=str(settings.get("_batch_model_session", "")),
-    )
-    transcription = service.transcribe(input_audio, progress)
-    segmentation_mode = str(settings.get("segmentation_mode", "Hybrid"))
-    vad_boundaries = segmentation_mode in {"VAD", "Hybrid"}
+    segmentation_mode = str(settings["segmentation_mode"])
+    if segmentation_mode not in {"Whisper", "OCR", "Hybrid"}:
+        raise ValueError(f"Cơ chế tạo SRT không hợp lệ: {segmentation_mode}. Hãy chọn lại trong thiết lập Step 2.")
+    batch_session = str(settings.get("_batch_model_session", ""))
+    matched_ocr = 0
+    ocr_cue_count = 0
+    if segmentation_mode in {"Whisper", "Hybrid"}:
+        vad_recovery = bool(settings["vad_recovery"])
+        service = SpeechToTextService(
+            model_name=model_name,
+            device=requested_device,
+            language=language_code,
+            vad_filter=vad_recovery,
+            segment_recovery=vad_recovery,
+            diarization=bool(settings["diarization"]),
+            segmentation_mode="Whisper",
+            batch_session=batch_session,
+        )
+        asr_progress = (
+            (lambda value, message: progress(round(value * 0.6), message))
+            if progress and segmentation_mode == "Hybrid" else progress
+        )
+        transcription = service.transcribe(input_audio, asr_progress)
+    if segmentation_mode in {"OCR", "Hybrid"}:
+        ocr = SubtitleOcrService(language_code, requested_device, batch_session)
+        ocr_progress = (
+            (lambda value, message: progress(60 + round(value * 0.4), message))
+            if progress and segmentation_mode == "Hybrid" else progress
+        )
+        ocr_result = ocr.extract(source_video, ocr_progress)
+        ocr_cue_count = len(ocr_result.segments)
+        if segmentation_mode == "OCR":
+            transcription = Transcription(
+                segments=ocr_result.segments, language=language_code,
+                language_probability=None, duration_seconds=ocr_result.duration_seconds,
+                requested_device=requested_device, actual_device=ocr_result.device,
+                compute_type="easyocr", device_selection_reason="",
+            )
+        else:
+            mapped, matched_ocr = map_ocr_text(
+                transcription.segments, ocr_result.segments, language_code,
+            )
+            transcription = replace(transcription, segments=mapped)
+    if not transcription.segments:
+        raise ValueError("Không nhận diện được phụ đề ở vùng phía dưới video.")
     segments = transcription.segments
-    if bool(settings.get("merge_contained_adjacent_segments", True)):
+    if segmentation_mode == "Whisper" and bool(settings["merge_contained_adjacent_segments"]):
         segments = _merge_contained_adjacent_segments(segments)
+    if segmentation_mode == "Hybrid":
+        segments = [
+            item for item in segments
+            if not (item.text == COLLAPSED_SEGMENT_TEXT and item.start == item.end)
+        ]
     cues: list[str] = []
     for index, item in enumerate(segments, start=1):
         cue_text = " ".join(item.text.split())
         if (not math.isfinite(item.start) or not math.isfinite(item.end)
                 or item.start < 0 or item.end <= item.start
-                or (not cue_text and not vad_boundaries)
+                or not cue_text
                 or round(item.end * 1000) <= round(item.start * 1000)):
             raise ValueError(f"Không thể ghi mục SRT {index}: thời gian hoặc nội dung không hợp lệ.")
         cues.append(
@@ -200,17 +242,10 @@ def execute(
     )
     summary = (
         f"Đã tạo SRT với {len(cues)} mục · ngôn ngữ {detected}{probability} · "
-        f"{model_name} · {transcription.actual_device}"
+        f"{model_name if segmentation_mode != 'OCR' else 'OCR'} · {transcription.actual_device}"
     )
     if segmentation_mode == "Hybrid":
-        merge = transcription.asr_recovery or {}
-        summary += (
-            f" · VAD {merge.get('vad_region_count', 0)}"
-            f" + mục mới {merge.get('new_segment_count', 0)}"
-        )
-        removed_empty_count = int(merge.get("removed_empty_region_count", 0))
-        if removed_empty_count:
-            summary += f" · bỏ {removed_empty_count} mục rỗng"
+        summary += f" · OCR {matched_ocr}/{ocr_cue_count} phụ đề đã ghép"
     metadata = {
         "srt_only": True,
         "input_candidate_id": state.selected_audio_candidate_id,
@@ -222,12 +257,12 @@ def execute(
         "duration_seconds": transcription.duration_seconds,
         "srt_cue_count": len(cues),
         "segmentation_mode": segmentation_mode,
+        "ocr_cue_count": ocr_cue_count,
+        "ocr_matched_count": matched_ocr,
         "merge_contained_adjacent_segments": bool(
-            settings.get("merge_contained_adjacent_segments", True)
+            segmentation_mode == "Whisper" and settings["merge_contained_adjacent_segments"]
         ),
-        "hybrid_merge": (
-            transcription.asr_recovery if segmentation_mode == "Hybrid" else None
-        ),
+        "hybrid_merge": None,
     }
     return StepResult(
         step=StepId.STT,

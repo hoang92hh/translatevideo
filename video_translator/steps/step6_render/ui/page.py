@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from video_translator.common.models import StepId, StepResult
+from video_translator.config.step_defaults import default_value
 from video_translator.ui.specs import ProviderSpec, StepSpec
 from video_translator.ui.steps.base import StepPage
 
@@ -26,7 +27,7 @@ class BuildAudioStepPage(StepPage):
         "06",
         "Build Audio",
         "Ghép các segment voice đã đồng bộ thành một track WAV dài bằng video gốc.",
-        (ProviderSpec("FFmpeg Voice Timeline", ()),),
+        (ProviderSpec(default_value(StepId.BUILD_AUDIO, "provider"), ()),),
     )
 
     def __init__(self, state) -> None:

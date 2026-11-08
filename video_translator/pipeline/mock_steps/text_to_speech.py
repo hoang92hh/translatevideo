@@ -15,6 +15,7 @@ from ...config.tts import (
     VIENEU_PROVIDER,
 )
 from ...config.speaker_profiles import resolve_speaker_profile
+from ...config.step_defaults import with_defaults
 from ...errors import UserFacingError
 from ...common.models import StepId, StepResult, TtsCandidate
 from ...steps.step4_tts.service import TextToSpeechService
@@ -27,9 +28,9 @@ def execute(
     settings: dict[str, Any],
     progress: Callable[[int, str], None] | None = None,
 ) -> StepResult:
-    settings = dict(settings)
+    settings = with_defaults(StepId.TTS, settings)
     batch_session_key = str(settings.pop("_batch_model_session", ""))
-    provider = str(settings.get("provider", VIENEU_PROVIDER))
+    provider = str(settings["provider"])
     if provider == VIENEU_PROVIDER and state.target_language != "Vietnamese":
         raise UserFacingError(
             "VieNeu-TTS không phù hợp ngôn ngữ đích",
@@ -42,12 +43,12 @@ def execute(
             f"MeloTTS không có model cho {state.target_language}.",
             "MeloTTS hỗ trợ English, Spanish, Chinese, Japanese và Korean.",
         )
-    reference = str(settings.get("reference_voice", "")).strip()
-    raw_profiles = settings.get("speaker_profiles", {})
+    reference = str(settings["reference_voice"]).strip()
+    raw_profiles = settings["speaker_profiles"]
     speaker_profiles = raw_profiles if isinstance(raw_profiles, dict) else {}
-    raw_shared_profile = settings.get("shared_speaker_profile", {})
+    raw_shared_profile = settings["shared_speaker_profile"]
     shared_profile = raw_shared_profile if isinstance(raw_shared_profile, dict) else {}
-    raw_group_profiles = settings.get("speaker_group_profiles", {})
+    raw_group_profiles = settings["speaker_group_profiles"]
     group_profiles = raw_group_profiles if isinstance(raw_group_profiles, dict) else {}
     references = [reference]
     references.extend(
@@ -69,7 +70,7 @@ def execute(
             missing_references[0],
             "Chọn lại file audio tham chiếu còn tồn tại.",
         )
-    if references and not bool(settings.get("voice_consent", False)):
+    if references and not bool(settings["voice_consent"]):
         raise UserFacingError(
             "Chưa xác nhận quyền sử dụng giọng",
             "Bạn phải xác nhận có quyền hoặc sự đồng ý của chủ giọng trước khi clone/chuyển giọng.",
@@ -124,7 +125,7 @@ def execute(
             )
     if (
         provider in {VIENEU_PROVIDER, MELO_OPENVOICE_PROVIDER}
-        and not bool(settings.get("single_voice", False))
+        and not bool(settings["single_voice"])
         and (
         speaker_profiles or group_profiles or shared_profile
         )
@@ -202,23 +203,23 @@ def execute(
                     resolved_profiles[speaker_id]["provider_settings"] = segment_result.settings
                     segment_provider_settings[segment.id] = segment_result.settings
         model = synthesis.model if synthesis else str(settings.get("model", provider))
-        voice = synthesis.voice if synthesis else str(settings.get("voice", "Default"))
-        requested_device = synthesis.requested_device if synthesis else str(settings.get("device", "Auto"))
+        voice = synthesis.voice if synthesis else str(settings["voice"])
+        requested_device = synthesis.requested_device if synthesis else str(settings["device"])
         actual_device = synthesis.actual_device if synthesis else ""
         metadata = {
             "provider": provider,
             "model": model,
             "voice": voice,
-            "speed": float(settings.get("speed", 1.0)),
-            "tts_auto_normalize": bool(settings.get("tts_auto_normalize", True)),
-            "tts_gain_db": float(settings.get("tts_gain_db", 2.0)),
+            "speed": float(settings["speed"]),
+            "tts_auto_normalize": bool(settings["tts_auto_normalize"]),
+            "tts_gain_db": float(settings["tts_gain_db"]),
             "requested_device": requested_device,
             "actual_device": actual_device,
             "reference_voice": reference,
             "speaker_profiles": resolved_profiles,
             "requested_speaker_profiles": speaker_profiles,
             "speaker_group_profiles": group_profiles,
-            "speaker_profile_assignments": dict(settings.get("speaker_profile_assignments", {})),
+            "speaker_profile_assignments": dict(settings["speaker_profile_assignments"]),
             "shared_speaker_profile": shared_profile,
             "provider_settings": {
                 key: settings[key]
@@ -231,7 +232,7 @@ def execute(
                 )
                 if key in settings
             },
-            "voice_rights_confirmed": bool(settings.get("voice_consent", False)),
+            "voice_rights_confirmed": bool(settings["voice_consent"]),
             "license_note": PROVIDER_LICENSE_NOTES.get(provider, ""),
             "source_translation_candidate_id": state.selected_translation_candidate_id,
             "tts_candidate_id": candidate_id,

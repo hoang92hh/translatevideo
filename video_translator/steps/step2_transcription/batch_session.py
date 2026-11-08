@@ -93,6 +93,7 @@ _LOCK = threading.Lock()
 _MODULES = {
     "mdx": "video_translator.steps.step1_separation.providers.mdx.worker",
     "stt": "video_translator.steps.step2_transcription.providers.faster_whisper.stable_worker",
+    "ocr": "video_translator.steps.step2_transcription.ocr_worker",
     "diarization": "video_translator.steps.step2_transcription.providers.faster_whisper.diarization_worker",
 }
 

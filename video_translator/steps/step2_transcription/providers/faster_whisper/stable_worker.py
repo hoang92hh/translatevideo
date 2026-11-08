@@ -8,6 +8,8 @@ import sys
 import traceback
 from typing import Any
 
+from video_translator.common.models import StepId
+from video_translator.config.step_defaults import default_value
 from .worker import _merge_hybrid_segments
 
 
@@ -141,18 +143,18 @@ def _recover(
 
 
 def run(request: dict[str, Any]) -> None:
-    requested = str(request.get("original_request", request.get("requested_device", "Auto")))
+    requested = str(request.get("original_request", request.get("requested_device", default_value(StepId.STT, "device"))))
     attempted_device = ""
     try:
         import stable_whisper
         from faster_whisper.audio import decode_audio
 
         _progress(2, "Đang kiểm tra Stable Whisper và thiết bị…")
-        device, actual_device, reason = _device(str(request.get("requested_device", "Auto")))
+        device, actual_device, reason = _device(str(request.get("requested_device", default_value(StepId.STT, "device"))))
         attempted_device = device
         if requested == "Auto" and device == "cpu" and request.get("fallback_reason"):
             reason = f"Auto chuyển sang CPU: {request['fallback_reason']}"
-        model_name = str(request.get("model_name", "medium"))
+        model_name = str(request.get("model_name", default_value(StepId.STT, "model")))
         model_key = (model_name, device, str(request["model_cache_dir"]))
         model = _BATCH_MODELS.get(model_key)
         if model is None:
@@ -174,7 +176,7 @@ def run(request: dict[str, Any]) -> None:
         sampling_rate = 16000
         audio = decode_audio(source, sampling_rate=sampling_rate)
         duration = len(audio) / sampling_rate
-        mode = str(request.get("segmentation_mode", "Hybrid"))
+        mode = str(request.get("segmentation_mode", default_value(StepId.STT, "segmentation_mode")))
         if mode not in {"VAD", "Hybrid", "Whisper"}:
             raise ValueError(f"Cơ chế tạo SRT không hợp lệ: {mode}")
         use_recovery = bool(request.get("segment_recovery")) and bool(request.get("vad_filter", True))

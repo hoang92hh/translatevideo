@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..common.models import StepId
+from ..config.step_defaults import default_value
 
 
 @dataclass(frozen=True)
@@ -32,4 +33,4 @@ class StepSpec:
     providers: tuple[ProviderSpec, ...] = field(default_factory=tuple)
 
 
-DEVICE_FIELD = FieldSpec("device", "Thiết bị", "choice", "Auto", ("Auto", "CPU", "GPU"))
+DEVICE_FIELD = FieldSpec("device", "Thiết bị", "choice", default_value(StepId.STT, "device"), ("Auto", "CPU", "GPU"))

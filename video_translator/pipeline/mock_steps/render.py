@@ -9,6 +9,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ...common.models import RenderCandidate, StepId, StepResult
+from ...config.step_defaults import with_defaults
 from ...steps.step7_export.service import VideoRenderService
 from ...state import ProjectState
 from .common import previous_segments
@@ -101,14 +102,15 @@ def execute(
     settings: dict[str, Any],
     progress: Callable[[int, str], None] | None = None,
 ) -> StepResult:
+    settings = with_defaults(StepId.RENDER, settings)
     segments = previous_segments(state, StepId.RENDER)
     build_candidate = state.build_audio_candidate(state.selected_build_audio_candidate_id)
     if build_candidate is None or not Path(build_candidate.audio_file).is_file():
         raise RuntimeError("Step 7 cần một voice track Step 6 hoàn chỉnh còn tồn tại.")
 
-    voice_volume = max(0.0, min(1.0, float(settings.get("voice_volume", 1.0))))
-    include_original_voice = bool(settings.get("include_original_voice", True))
-    include_background = bool(settings.get("include_background", True))
+    voice_volume = max(0.0, min(1.0, float(settings["voice_volume"])))
+    include_original_voice = bool(settings["include_original_voice"])
+    include_background = bool(settings["include_background"])
     audio_candidate = state.candidate(state.selected_audio_candidate_id)
     original_voice_value = audio_candidate.stem_path("voice") if audio_candidate else ""
     original_voice = Path(original_voice_value) if original_voice_value else None
@@ -116,15 +118,15 @@ def execute(
         original_voice = None
     original_voice_volume = max(
         0.0,
-        min(1.0, float(settings.get("original_voice_volume", 0.2))),
+        min(1.0, float(settings["original_voice_volume"])),
     )
     background_value = audio_candidate.stem_path("background") if audio_candidate else ""
     background = Path(background_value) if background_value else None
     if not background or not background.is_file() or not include_background:
         background = None
-    background_volume = max(0.0, min(1.0, float(settings.get("background_volume", 0.8))))
-    create_subtitle = bool(settings.get("subtitle", False))
-    burn_subtitle = create_subtitle and bool(settings.get("burn_subtitle", False))
+    background_volume = max(0.0, min(1.0, float(settings["background_volume"])))
+    create_subtitle = bool(settings["subtitle"])
+    burn_subtitle = create_subtitle and bool(settings["burn_subtitle"])
 
     now = datetime.now(timezone.utc)
     candidate_id = f"render-{now.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"

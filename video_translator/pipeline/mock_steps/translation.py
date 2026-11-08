@@ -7,16 +7,18 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
+from ...config.gemini import GEMINI_PROVIDER_NAME
 from ...config.deepseek import DEEPSEEK_PROVIDER_NAME
 from ...config.opencode_go import OPENCODE_GO_PROVIDER_NAME
-from ...config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
+from ...config.prompt_templates import load_prompt_template
 from ...config.batch_prompts import load_batch_prompt
-from ...config.translation import PROPER_NAME_MODE_AUTO, resolve_proper_name_policy
+from ...config.translation import resolve_proper_name_policy
 from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from ...common.models import StepId, StepResult, TranslationCandidate
+from ...config.step_defaults import default_value, with_defaults
 from ...errors import UserFacingError
 from ...steps.step3_translation.service import CONTEXT_SEGMENT_COUNT, TranslationWorkflow
+from ...steps.step3_translation.adjacent_cleanup import collapse_adjacent_translations
 from ...steps.step3_translation.quality import (
     GEMINI_REVIEW_ADVISORY_ISSUES, GEMINI_REVIEW_CONTEXTUAL_ISSUES,
     assess_gemini_segments, assess_segments, assess_manual_segments, gemini_translation_groups,
@@ -251,11 +253,10 @@ def execute(
     settings: dict[str, Any],
     progress: Callable[[int, str], None] | None = None,
 ) -> StepResult:
-    provider = str(settings.get("provider", GEMINI_PROVIDER_NAME))
-    model_name = str(settings.get("model", GEMINI_DEFAULT_MODEL))
-    prompt_template_id = str(
-        settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)
-    ).strip() or DEFAULT_PROMPT_TEMPLATE_ID
+    settings = with_defaults(StepId.TRANSLATE, settings)
+    provider = str(settings["provider"])
+    model_name = str(settings["model"])
+    prompt_template_id = str(settings["prompt_template"]).strip() or str(default_value(StepId.TRANSLATE, "prompt_template"))
     batch_context = settings.get("batch_prompt_context")
     video_prompt = (
         provider in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} and batch_context is not None
@@ -280,8 +281,8 @@ def execute(
                 for key in ("video_id", "video_order", "video_name", "video_filename")
             },
         }
-    configured_batch_size = max(1, int(settings.get("batch_size", 30)))
-    proper_name_mode = str(settings.get("proper_name_mode", PROPER_NAME_MODE_AUTO))
+    configured_batch_size = max(1, int(settings["batch_size"]))
+    proper_name_mode = str(settings["proper_name_mode"])
     proper_name_policy = resolve_proper_name_policy(
         state.source_language,
         state.target_language,
@@ -295,7 +296,7 @@ def execute(
     )
     uses_empty_groups = provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME}
     original_segments = deepcopy(segments) if uses_empty_groups else []
-    all_project_segments = bool(settings.get("all_project_segments", True))
+    all_project_segments = bool(settings["all_project_segments"])
     is_gemini_video_batch = video_prompt
     batch_size = (
         50 if is_gemini_video_batch and all_project_segments
@@ -368,6 +369,13 @@ def execute(
         review_batch_count = 1
     if not uses_empty_groups:
         _collapse_same_speaker_runs(segments)
+    auto_adjacent_cleanup = (
+        bool(settings["auto_adjacent_cleanup"])
+        and state.target_language == "Vietnamese"
+    )
+    adjacent_cleanup_count = (
+        collapse_adjacent_translations(segments) if auto_adjacent_cleanup else 0
+    )
     if not automatic_review_enabled:
         review_issues = assess_manual_segments(segments, state.target_language)
     skipped_translation_ids = [
@@ -393,10 +401,12 @@ def execute(
         "model": model_name,
         "prompt_template": prompt_template.template_id,
         "prompt_template_name": prompt_template.name,
-        "project_url": str(settings.get("project_url", "")),
+        "project_url": str(settings["project_url"]),
         "batch_size": batch_size,
         "configured_batch_size": configured_batch_size,
         "all_project_segments": all_project_segments,
+        "auto_adjacent_cleanup": auto_adjacent_cleanup,
+        "adjacent_cleanup_count": adjacent_cleanup_count,
         "translation_strategy": translation_strategy,
         **({"batch_summaries": response.batch_summaries} if is_gemini_step_batch else {}),
         "skipped_translation_ids": skipped_translation_ids,
@@ -435,7 +445,7 @@ def execute(
         "model": model_name,
         "prompt_template": prompt_template.template_id,
         "prompt_template_name": prompt_template.name,
-        "project_url": str(settings.get("project_url", "")),
+        "project_url": str(settings["project_url"]),
         "analysis_performed": False,
         "proper_name_policy": response.proper_name_policy,
         "dialogue_profile": response.dialogue_profile,
@@ -471,10 +481,12 @@ def execute(
         "model": model_name,
         "prompt_template": prompt_template.template_id,
         "prompt_template_name": prompt_template.name,
-        "project_url": str(settings.get("project_url", "")),
+        "project_url": str(settings["project_url"]),
         "batch_size": batch_size,
         "configured_batch_size": configured_batch_size,
         "all_project_segments": all_project_segments,
+        "auto_adjacent_cleanup": auto_adjacent_cleanup,
+        "adjacent_cleanup_count": adjacent_cleanup_count,
         "translation_strategy": translation_strategy,
         "skipped_translation_ids": skipped_translation_ids,
         "context_consistency": False,

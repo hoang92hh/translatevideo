@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from video_translator.config.speaker_profiles import resolve_speaker_profile
+from video_translator.config.step_defaults import with_defaults
+from video_translator.common.models import StepId
 from video_translator.steps.step4_tts.providers import provider_id, provider_value
 
 EDGE_TTS_PROVIDER = provider_id("edge")
@@ -101,6 +104,25 @@ def validate_wav(path: Path) -> tuple[str, list[str], float]:
         return "invalid_audio", [repr(exc)], 0.0
 
 
+def short_vieneu_babble(path: Path, text: str) -> tuple[bool, int, int]:
+    """Detect extra speech bursts in short Vietnamese TTS segments.
+
+    VieNeu's phoneme-based syllable counter can overcount Vietnamese tone
+    phonemes, so its built-in babble guard can accept a repeated short phrase.
+    """
+    if any(char.isdigit() for char in text):
+        return False, 0, 0
+    syllables = re.findall(r"[^\W\d_]+", text, flags=re.UNICODE)
+    if not 1 <= len(syllables) <= 3:
+        return False, len(syllables), 0
+    import soundfile as sf
+    from vieneu_utils.core_utils import count_speech_bursts
+
+    audio, sample_rate = sf.read(path, dtype="float32")
+    bursts = count_speech_bursts(audio, int(sample_rate))
+    return bursts > len(syllables), len(syllables), bursts
+
+
 def normalize_audio(source: Path, target: Path, speed: float = 1.0) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -172,10 +194,10 @@ def speaker_profile(settings: dict[str, Any], item: dict[str, Any]) -> dict[str,
             raw_profile.get("model_path")
             or raw_profile.get("voice")
             or settings.get("model_path")
-            or settings.get("voice", "Default")
+            or settings["voice"]
         ).strip(),
         "reference_voice": str(
-            raw_profile.get("reference_voice") or settings.get("reference_voice", "")
+            raw_profile.get("reference_voice") or settings["reference_voice"]
         ).strip(),
         "piper_speaker_id": raw_profile.get("piper_speaker_id"),
     }
@@ -203,7 +225,7 @@ def segment_result(
 
 
 def run_vieneu(settings: dict[str, Any], segments: list[dict[str, Any]], output: Path) -> dict[str, Any]:
-    requested = str(settings.get("device", "Auto"))
+    requested = str(settings["device"])
     if requested == "CPU":
         backend, actual = "onnx", "CPU (ONNX)"
     else:
@@ -225,8 +247,8 @@ def run_vieneu(settings: dict[str, Any], segments: list[dict[str, Any]], output:
         _VIENEU_MODELS[backend] = model
     files: list[str] = []
     segment_results: list[dict[str, Any]] = []
-    speed = float(settings.get("speed", 1.0))
-    deep_validation = bool(settings.get("deep_validation", False))
+    speed = float(settings["speed"])
+    deep_validation = bool(settings["deep_validation"])
     cache_root = output.parent.parent / "_cache" / "vieneu"
     cache_root.mkdir(parents=True, exist_ok=True)
     for index, item in enumerate(segments, start=1):
@@ -249,23 +271,43 @@ def run_vieneu(settings: dict[str, Any], segments: list[dict[str, Any]], output:
         cached = cache_root / f"{cache_key}.wav"
         cache_hit = cached.is_file() and validate_wav(cached)[0] == "valid"
         if cache_hit:
+            cache_hit = not short_vieneu_babble(cached, str(item["text"]))[0]
+        if cache_hit:
             shutil.copy2(cached, target)
         else:
-            audio = model.infer(**kwargs)
-            raw_status, raw_warnings, _ = validate_waveform(
-                audio, int(getattr(model, "sample_rate", 48000))
-            )
-            if raw_status in {"invalid_audio", "silent_audio"}:
-                raise RuntimeError(
-                    f"VieNeu waveform không hợp lệ: {raw_status} tại segment {item['id']} "
-                    f"({'; '.join(raw_warnings) or 'không có chi tiết'})"
+            for attempt in range(3):
+                audio = model.infer(**kwargs)
+                raw_status, raw_warnings, _ = validate_waveform(
+                    audio, int(getattr(model, "sample_rate", 48000))
                 )
-            sf.write(temporary, audio, int(getattr(model, "sample_rate", 48000)), subtype="PCM_16")
-            normalize_audio(temporary, target, speed)
-            final_status, final_warnings, _ = validate_wav(target)
-            if final_status in {"invalid_audio", "silent_audio"}:
+                if raw_status in {"invalid_audio", "silent_audio"}:
+                    raise RuntimeError(
+                        f"VieNeu waveform không hợp lệ: {raw_status} tại segment {item['id']} "
+                        f"({'; '.join(raw_warnings) or 'không có chi tiết'})"
+                    )
+                sf.write(temporary, audio, int(getattr(model, "sample_rate", 48000)), subtype="PCM_16")
+                normalize_audio(temporary, target, speed)
+                final_status, final_warnings, _ = validate_wav(target)
+                if final_status in {"invalid_audio", "silent_audio"}:
+                    target.unlink(missing_ok=True)
+                    raise RuntimeError(f"WAV chuẩn hóa không hợp lệ: {final_status} tại segment {item['id']}")
+                repeated, syllables, bursts = short_vieneu_babble(target, str(item["text"]))
+                if not repeated:
+                    break
                 target.unlink(missing_ok=True)
-                raise RuntimeError(f"WAV chuẩn hóa không hợp lệ: {final_status} tại segment {item['id']}")
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"VieNeu-TTS nghi nói lặp tại segment {item['id']} "
+                        f"({syllables} tiếng, {bursts} cụm âm); đã sinh lại 2 lần."
+                    )
+                emit({
+                    "type": "progress",
+                    "value": max(1, min(99, round(index / max(1, len(segments)) * 100))),
+                    "message": (
+                        f"VieNeu-TTS: segment {item['id']} nghi nói lặp, "
+                        f"đang sinh lại ({attempt + 1}/2)…"
+                    ),
+                })
             shutil.copy2(target, cached)
         files.append(str(target.resolve()))
         segment_results.append(
@@ -290,7 +332,7 @@ def run_vieneu(settings: dict[str, Any], segments: list[dict[str, Any]], output:
 async def run_edge_async(settings: dict[str, Any], segments: list[dict[str, Any]], output: Path) -> dict[str, Any]:
     import edge_tts
 
-    speed = float(settings.get("speed", 1.0))
+    speed = float(settings["speed"])
     rate = f"{round((speed - 1.0) * 100):+d}%"
     files: list[str] = []
     segment_results: list[dict[str, Any]] = []
@@ -322,11 +364,11 @@ def run_piper(settings: dict[str, Any], segments: list[dict[str, Any]], output: 
     from piper import PiperVoice, SynthesisConfig
 
     native_settings = {
-        "length_scale": float(settings.get("length_scale", 1.0)),
-        "noise_scale": float(settings.get("noise_scale", 0.667)),
-        "noise_w_scale": float(settings.get("noise_w_scale", 0.8)),
-        "volume": float(settings.get("volume", 1.0)),
-        "normalize_audio": bool(settings.get("normalize_audio", True)),
+        "length_scale": float(settings["length_scale"]),
+        "noise_scale": float(settings["noise_scale"]),
+        "noise_w_scale": float(settings["noise_w_scale"]),
+        "volume": float(settings["volume"]),
+        "normalize_audio": bool(settings["normalize_audio"]),
     }
     files: list[str] = []
     segment_results: list[dict[str, Any]] = []
@@ -386,7 +428,7 @@ def run_melo(settings: dict[str, Any], segments: list[dict[str, Any]], output: P
     language = MELO_LANGUAGE_CODES.get(target_language)
     if not language:
         raise RuntimeError(f"MeloTTS không hỗ trợ ngôn ngữ đích {target_language}.")
-    requested = str(settings.get("device", "Auto"))
+    requested = str(settings["device"])
     device, actual = select_torch_device(requested)
     from melo.api import TTS
 
@@ -396,7 +438,7 @@ def run_melo(settings: dict[str, Any], segments: list[dict[str, Any]], output: P
         model = TTS(language=language, device=device)
         _MELO_MODELS[model_key] = model
     speakers = model.hps.data.spk2id
-    speed = float(settings.get("speed", 1.0))
+    speed = float(settings["speed"])
     profiles = [speaker_profile(settings, item) for item in segments]
     converter = None
     if any(profile["reference_voice"] for profile in profiles):
@@ -482,9 +524,9 @@ def run_melo(settings: dict[str, Any], segments: list[dict[str, Any]], output: P
 
 def preload_models(request: dict[str, Any]) -> None:
     provider = str(request["provider"])
-    settings = dict(request.get("settings", {}))
+    settings = with_defaults(StepId.TTS, {**dict(request.get("settings", {})), "provider": provider})
     if provider == VIENEU_PROVIDER:
-        requested = str(settings.get("device", "Auto"))
+        requested = str(settings["device"])
         if requested == "CPU":
             backend = "onnx"
         else:
@@ -518,7 +560,7 @@ def preload_models(request: dict[str, Any]) -> None:
         language = MELO_LANGUAGE_CODES.get(str(request.get("target_language", "")))
         if not language:
             raise RuntimeError("Ngôn ngữ đích không được MeloTTS hỗ trợ.")
-        device, _ = select_torch_device(str(settings.get("device", "Auto")))
+        device, _ = select_torch_device(str(settings["device"]))
         from melo.api import TTS
         key = (language, device)
         if key not in _MELO_MODELS:
@@ -548,29 +590,29 @@ def handle_request(request: dict[str, Any]) -> None:
             preload_models(request)
             return
         provider = str(request["provider"])
-        settings = dict(request.get("settings", {}))
+        settings = with_defaults(StepId.TTS, {**dict(request.get("settings", {})), "provider": provider})
         segments = list(request.get("segments", []))
         output = Path(request["output_folder"])
         output.mkdir(parents=True, exist_ok=True)
         if provider == VIENEU_PROVIDER:
             result = run_vieneu(settings, segments, output)
         elif provider == PIPER_PROVIDER:
-            if str(settings.get("device", "CPU")) not in {"CPU", "Auto", ""}:
+            if str(settings["device"]) not in {"CPU", "Auto", ""}:
                 raise RuntimeError("Piper TTS hiện chỉ hỗ trợ CPU (ONNX).")
             result = run_piper(settings, segments, output)
         elif provider == EDGE_TTS_PROVIDER:
-            if str(settings.get("device", "Auto")) not in {"Auto", ""}:
+            if str(settings["device"]) not in {"Auto", ""}:
                 raise RuntimeError("Edge TTS xử lý online nên không hỗ trợ lựa chọn CPU/GPU.")
             result = asyncio.run(run_edge_async(settings, segments, output))
         elif provider == MELO_OPENVOICE_PROVIDER:
             result = run_melo(settings, segments, output, str(request.get("target_language", "")), Path(request["repo_root"]))
         else:
             raise RuntimeError(f"Provider chưa được triển khai: {provider}")
-        if bool(settings.get("tts_auto_normalize", True)):
-            gain_db = float(settings.get("tts_gain_db", 2.0))
+        if bool(settings["tts_auto_normalize"]):
+            gain_db = float(settings["tts_gain_db"])
             for audio_file in result["files"]:
                 auto_normalize_voice(Path(audio_file), gain_db)
-        emit({"type": "result", "requested_device": str(settings.get("device", "Auto")), **result})
+        emit({"type": "result", "requested_device": str(settings["device"]), **result})
     except Exception as exc:
         message = str(exc)
         suggestion = "Kiểm tra cài đặt provider, model, thiết bị và file giọng tham chiếu rồi thử lại."

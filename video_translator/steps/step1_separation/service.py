@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Callable
 
 from ...errors import UserFacingError
+from ...common.models import StepId
+from ...config.step_defaults import default_value, with_defaults
 from ..step2_transcription.batch_session import run_batch_worker
 
 ProgressCallback = Callable[[int, str], None]
@@ -37,8 +39,8 @@ class AudioSeparatorService:
         self,
         model_name: str,
         output_dir: str | Path,
-        ffmpeg_path: str = "Auto",
-        device: str = "Auto",
+        ffmpeg_path: str = default_value(StepId.EXTRACT, "ffmpeg_path"),
+        device: str = default_value(StepId.EXTRACT, "device"),
         batch_session: str = "",
     ) -> None:
         self.model_name = model_name
@@ -49,14 +51,15 @@ class AudioSeparatorService:
 
     @classmethod
     def preload_batch_model(cls, session_key: str, settings: dict[str, object]) -> None:
-        if str(settings.get("provider", "")) != "MDX-Net — Audio Separator":
+        settings = with_defaults(StepId.EXTRACT, settings)
+        if str(settings["provider"]) != default_value(StepId.EXTRACT, "provider"):
             return
         request: dict[str, object] = {
             "type": "preload",
             "batch_session": True,
-            "model_name": str(settings.get("model", "UVR-MDX-NET-Inst_HQ_4.onnx")),
+            "model_name": str(settings["model"]),
             "model_cache_dir": str(cls.model_cache_dir()),
-            "requested_device": str(settings.get("device", "Auto")),
+            "requested_device": str(settings["device"]),
             "batch_output_root": str(settings.get("_batch_output_root", "")),
         }
         result, error, stderr, _ = run_batch_worker(session_key, "mdx", request)

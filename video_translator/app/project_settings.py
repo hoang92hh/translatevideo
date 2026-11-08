@@ -31,8 +31,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..batch_project import BatchProject, BatchProjectService, InputVideo
-from ..config.gemini import GEMINI_PROVIDER_NAME
-from ..config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template
+from ..config.step_defaults import default_value, with_defaults
+from ..config.prompt_templates import load_prompt_template
 from ..steps.step4_tts.providers import provider_id, provider_value, load_provider_symbol
 from ..common.models import StepId
 from ..ui.components import Card, FilePicker, ProviderPanel
@@ -94,6 +94,7 @@ class SingleVoiceTtsSettings(QWidget):
         )
         self.provider = QComboBox()
         self.provider.addItems((VIENEU_PROVIDER, PIPER_PROVIDER, MELO_OPENVOICE_PROVIDER, EDGE_TTS_PROVIDER))
+        self.provider.setCurrentText(str(default_value(StepId.TTS, "provider")))
         card.content_layout.addWidget(self.provider)
         self.stack = QStackedWidget()
         self.reference_pages: dict[str, dict[str, QWidget]] = {}
@@ -103,14 +104,14 @@ class SingleVoiceTtsSettings(QWidget):
         self._add_edge_page()
         card.content_layout.addWidget(self.stack)
         self.deep_validation = QCheckBox("Deep Validation (kiểm tra WAV nghi vấn bằng Faster-Whisper)")
-        self.deep_validation.setChecked(False)
+        self.deep_validation.setChecked(bool(default_value(StepId.TTS, "deep_validation")))
         self.deep_validation.setToolTip(
             "Mặc định tắt để giữ tốc độ. Chỉ nhận dạng lại các segment bị Fast Validation đánh dấu nghi vấn."
         )
         card.content_layout.addWidget(self.deep_validation)
         gain_form = QFormLayout()
         self.tts_auto_normalize = QCheckBox("Auto Normalize (chống vỡ tiếng)")
-        self.tts_auto_normalize.setChecked(True)
+        self.tts_auto_normalize.setChecked(bool(default_value(StepId.TTS, "tts_auto_normalize")))
         gain_control = QWidget()
         gain_layout = QHBoxLayout(gain_control)
         gain_layout.setContentsMargins(0, 0, 0, 0)
@@ -118,14 +119,14 @@ class SingleVoiceTtsSettings(QWidget):
         self.tts_gain_slider.setRange(-20, 20)
         self.tts_gain_slider.setSingleStep(1)
         self.tts_gain_slider.setPageStep(2)
-        self.tts_gain_slider.setValue(4)
+        self.tts_gain_slider.setValue(round(float(default_value(StepId.TTS, "tts_gain_db")) * 2))
         self.tts_gain_label = QLabel()
         self.tts_gain_label.setMinimumWidth(65)
         self.tts_gain_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.tts_gain_slider.valueChanged.connect(
             lambda value: self.tts_gain_label.setText(f"{value / 2:+.1f} dB")
         )
-        self.tts_gain_label.setText("+2.0 dB")
+        self.tts_gain_label.setText(f"{float(default_value(StepId.TTS, 'tts_gain_db')):+.1f} dB")
         gain_layout.addWidget(self.tts_gain_slider, 1)
         gain_layout.addWidget(self.tts_gain_label)
         self.tts_auto_normalize.toggled.connect(gain_control.setEnabled)
@@ -140,11 +141,12 @@ class SingleVoiceTtsSettings(QWidget):
         form = QFormLayout(page)
         voice = QComboBox()
         voice.addItems(voices)
+        voice.setCurrentText(str(default_value(StepId.TTS, "voice", provider)))
         speed = speed_control()
         device = device_control()
         reference = FilePicker()
         consent = QCheckBox("Tôi có quyền sử dụng giọng tham chiếu")
-        consent.setChecked(True)
+        consent.setChecked(bool(default_value(StepId.TTS, "voice_consent")))
         form.addRow(label, voice)
         form.addRow("Tốc độ", speed)
         form.addRow("Thiết bị", device)
@@ -163,14 +165,16 @@ class SingleVoiceTtsSettings(QWidget):
         page = QWidget()
         form = QFormLayout(page)
         self.piper_model = PiperModelPicker()
+        self.piper_model.field.setText(str(default_value(StepId.TTS, "model_path", PIPER_PROVIDER)))
         self.piper_speaker = QSpinBox()
         self.piper_speaker.setRange(0, 999)
-        self.piper_length = native_parameter(0.1, 4.0, 1.0)
-        self.piper_noise = native_parameter(0.0, 2.0, 0.667)
-        self.piper_noise_w = native_parameter(0.0, 2.0, 0.8)
-        self.piper_volume = native_parameter(0.0, 4.0, 1.0)
+        self.piper_speaker.setValue(int(default_value(StepId.TTS, "piper_speaker_id", PIPER_PROVIDER)))
+        self.piper_length = native_parameter(0.1, 4.0, default_value(StepId.TTS, "length_scale", PIPER_PROVIDER))
+        self.piper_noise = native_parameter(0.0, 2.0, default_value(StepId.TTS, "noise_scale", PIPER_PROVIDER))
+        self.piper_noise_w = native_parameter(0.0, 2.0, default_value(StepId.TTS, "noise_w_scale", PIPER_PROVIDER))
+        self.piper_volume = native_parameter(0.0, 4.0, default_value(StepId.TTS, "volume", PIPER_PROVIDER))
         self.piper_normalize = QCheckBox("Chuẩn hóa biên độ đầu ra")
-        self.piper_normalize.setChecked(True)
+        self.piper_normalize.setChecked(bool(default_value(StepId.TTS, "normalize_audio", PIPER_PROVIDER)))
         form.addRow("Voice model Piper (.onnx)", self.piper_model)
         form.addRow("Speaker ID trong model", self.piper_speaker)
         form.addRow("Độ dài âm vị", self.piper_length)
@@ -185,6 +189,7 @@ class SingleVoiceTtsSettings(QWidget):
         form = QFormLayout(page)
         self.edge_voice = QComboBox()
         self.edge_voice.addItems(EDGE_VOICES)
+        self.edge_voice.setCurrentText(str(default_value(StepId.TTS, "voice", EDGE_TTS_PROVIDER)))
         self.edge_speed = speed_control()
         form.addRow("Giọng online", self.edge_voice)
         form.addRow("Tốc độ", self.edge_speed)
@@ -194,7 +199,7 @@ class SingleVoiceTtsSettings(QWidget):
         provider = self.provider.currentText()
         base: dict[str, Any] = {
             "provider": provider,
-            "single_voice": True,
+                "single_voice": default_value(StepId.TTS, "single_voice"),
             "deep_validation": self.deep_validation.isChecked(),
             "tts_auto_normalize": self.tts_auto_normalize.isChecked(),
             "tts_gain_db": self.tts_gain_slider.value() / 2,
@@ -223,8 +228,8 @@ class SingleVoiceTtsSettings(QWidget):
                 **base,
                 "voice": model,
                 "model_path": model,
-                "speed": 1.0,
-                "device": "CPU",
+                "speed": default_value(StepId.TTS, "speed"),
+                "device": default_value(StepId.TTS, "device", PIPER_PROVIDER),
                 "length_scale": self.piper_length.value(),
                 "noise_scale": self.piper_noise.value(),
                 "noise_w_scale": self.piper_noise_w.value(),
@@ -245,10 +250,11 @@ class SingleVoiceTtsSettings(QWidget):
         }
 
     def set_values(self, values: dict[str, Any]) -> None:
-        self.deep_validation.setChecked(bool(values.get("deep_validation", False)))
-        self.tts_auto_normalize.setChecked(bool(values.get("tts_auto_normalize", True)))
-        self.tts_gain_slider.setValue(round(float(values.get("tts_gain_db", 2.0)) * 2))
-        provider = str(values.get("provider", VIENEU_PROVIDER))
+        provider = str(values.get("provider", default_value(StepId.TTS, "provider")))
+        values = with_defaults(StepId.TTS, values)
+        self.deep_validation.setChecked(bool(values["deep_validation"]))
+        self.tts_auto_normalize.setChecked(bool(values["tts_auto_normalize"]))
+        self.tts_gain_slider.setValue(round(float(values["tts_gain_db"]) * 2))
         index = self.provider.findText(provider)
         self.provider.setCurrentIndex(index if index >= 0 else 0)
         profile = values.get("shared_speaker_profile", {})
@@ -256,23 +262,23 @@ class SingleVoiceTtsSettings(QWidget):
         if provider in self.reference_pages:
             controls = self.reference_pages[provider]
             controls["voice"].setCurrentText(str(values.get("voice", profile.get("voice", ""))))
-            controls["speed"].setValue(float(values.get("speed", 1.0)))
-            controls["device"].setCurrentText(str(values.get("device", "Auto")))
+            controls["speed"].setValue(float(values["speed"]))
+            controls["device"].setCurrentText(str(values["device"]))
             controls["reference"].field.setText(
                 str(values.get("reference_voice", profile.get("reference_voice", "")))
             )
-            controls["consent"].setChecked(bool(values.get("voice_consent", True)))
+            controls["consent"].setChecked(bool(values["voice_consent"]))
         elif provider == PIPER_PROVIDER:
             self.piper_model.field.setText(str(values.get("model_path", profile.get("model_path", ""))))
-            self.piper_speaker.setValue(int(profile.get("piper_speaker_id", 0) or 0))
-            self.piper_length.setValue(float(values.get("length_scale", 1.0)))
-            self.piper_noise.setValue(float(values.get("noise_scale", 0.667)))
-            self.piper_noise_w.setValue(float(values.get("noise_w_scale", 0.8)))
-            self.piper_volume.setValue(float(values.get("volume", 1.0)))
-            self.piper_normalize.setChecked(bool(values.get("normalize_audio", True)))
+            self.piper_speaker.setValue(int(profile.get("piper_speaker_id", values["piper_speaker_id"]) or 0))
+            self.piper_length.setValue(float(values["length_scale"]))
+            self.piper_noise.setValue(float(values["noise_scale"]))
+            self.piper_noise_w.setValue(float(values["noise_w_scale"]))
+            self.piper_volume.setValue(float(values["volume"]))
+            self.piper_normalize.setChecked(bool(values["normalize_audio"]))
         elif provider == EDGE_TTS_PROVIDER:
             self.edge_voice.setCurrentText(str(values.get("voice", profile.get("voice", ""))))
-            self.edge_speed.setValue(float(values.get("speed", 1.0)))
+            self.edge_speed.setValue(float(values["speed"]))
 
 
 class RenderSettings(QWidget):
@@ -282,15 +288,23 @@ class RenderSettings(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         card = Card("Thành phần video", "Thiết lập chung áp dụng cho mọi output trong batch.")
         form = QFormLayout()
-        voice_volume_control, self.voice_volume = self._volume_control(100)
+        voice_volume_control, self.voice_volume = self._volume_control(
+            round(float(default_value(StepId.RENDER, "voice_volume")) * 100)
+        )
         self.original_voice = QCheckBox("Trộn voice gốc nếu Step 1 có tách Voice")
-        self.original_voice.setChecked(True)
-        original_voice_volume_control, self.original_voice_volume = self._volume_control(20)
+        self.original_voice.setChecked(bool(default_value(StepId.RENDER, "include_original_voice")))
+        original_voice_volume_control, self.original_voice_volume = self._volume_control(
+            round(float(default_value(StepId.RENDER, "original_voice_volume")) * 100)
+        )
         self.background = QCheckBox("Trộn background nếu Step 1 có tách Background")
-        self.background.setChecked(True)
-        background_volume_control, self.background_volume = self._volume_control(80)
+        self.background.setChecked(bool(default_value(StepId.RENDER, "include_background")))
+        background_volume_control, self.background_volume = self._volume_control(
+            round(float(default_value(StepId.RENDER, "background_volume")) * 100)
+        )
         self.subtitle = QCheckBox("Tạo subtitle SRT")
         self.burn_subtitle = QCheckBox("Burn subtitle vào video")
+        self.subtitle.setChecked(bool(default_value(StepId.RENDER, "subtitle")))
+        self.burn_subtitle.setChecked(bool(default_value(StepId.RENDER, "burn_subtitle")))
         self.subtitle.toggled.connect(self.burn_subtitle.setEnabled)
         self.burn_subtitle.setEnabled(False)
         form.addRow("Âm lượng voice mới", voice_volume_control)
@@ -321,9 +335,9 @@ class RenderSettings(QWidget):
 
     def values(self) -> dict[str, Any]:
         return {
-            "provider": "FFmpeg Renderer",
-            "include_video": True,
-            "include_voice": True,
+            "provider": default_value(StepId.RENDER, "provider"),
+            "include_video": default_value(StepId.RENDER, "include_video"),
+            "include_voice": default_value(StepId.RENDER, "include_voice"),
             "voice_volume": self.voice_volume.value() / 100,
             "include_original_voice": self.original_voice.isChecked(),
             "original_voice_volume": self.original_voice_volume.value() / 100,
@@ -334,13 +348,14 @@ class RenderSettings(QWidget):
         }
 
     def set_values(self, values: dict[str, Any]) -> None:
-        self.voice_volume.setValue(round(float(values.get("voice_volume", 1.0)) * 100))
-        self.original_voice.setChecked(bool(values.get("include_original_voice", True)))
-        self.original_voice_volume.setValue(round(float(values.get("original_voice_volume", 0.2)) * 100))
-        self.background.setChecked(bool(values.get("include_background", True)))
-        self.background_volume.setValue(round(float(values.get("background_volume", 0.8)) * 100))
-        self.subtitle.setChecked(bool(values.get("subtitle", False)))
-        self.burn_subtitle.setChecked(bool(values.get("burn_subtitle", False)))
+        values = with_defaults(StepId.RENDER, values)
+        self.voice_volume.setValue(round(float(values["voice_volume"]) * 100))
+        self.original_voice.setChecked(bool(values["include_original_voice"]))
+        self.original_voice_volume.setValue(round(float(values["original_voice_volume"]) * 100))
+        self.background.setChecked(bool(values["include_background"]))
+        self.background_volume.setValue(round(float(values["background_volume"]) * 100))
+        self.subtitle.setChecked(bool(values["subtitle"]))
+        self.burn_subtitle.setChecked(bool(values["burn_subtitle"]))
 
 
 class ProjectSettingsDialog(QDialog):
@@ -685,26 +700,30 @@ class ProjectSettingsDialog(QDialog):
         self.render.set_values(dict(settings.get(StepId.RENDER.value, {})))
 
     def _set_translation_values(self, values: dict[str, Any]) -> None:
-        provider = str(values.get("provider", GEMINI_PROVIDER_NAME))
+        values = with_defaults(StepId.TRANSLATE, values)
+        provider = str(values["provider"])
         component = self.translation.set_default_provider(provider)
         for key in ("model", "proper_name_mode"):
             control = getattr(component, key, None)
             if isinstance(control, QComboBox):
-                control.setCurrentText(str(values.get(key, control.currentText())))
+                control.setCurrentText(str(values[key]))
         for key in ("batch_size",):
             control = getattr(component, key, None)
             if isinstance(control, QSpinBox):
-                control.setValue(int(values.get(key, control.value())))
+                control.setValue(int(values[key]))
         all_project_segments = getattr(component, "all_project_segments", None)
         if isinstance(all_project_segments, QCheckBox):
             all_project_segments.setChecked(
-                bool(values.get("all_project_segments", True))
+                bool(values["all_project_segments"])
             )
+        auto_adjacent_cleanup = getattr(component, "auto_adjacent_cleanup", None)
+        if isinstance(auto_adjacent_cleanup, QCheckBox):
+            auto_adjacent_cleanup.setChecked(bool(values["auto_adjacent_cleanup"]))
         project_url = getattr(component, "project_url", None)
         if isinstance(project_url, QLineEdit):
-            project_url.setText(str(values.get("project_url", "")))
+            project_url.setText(str(values["project_url"]))
         self.translation.set_prompt_template(
-            str(values.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID))
+            str(values["prompt_template"])
         )
 
     def _validate_and_accept(self) -> None:
@@ -731,8 +750,8 @@ class ProjectSettingsDialog(QDialog):
         translation = self._translation_values()
         try:
             load_prompt_template(
-                str(translation.get("provider", GEMINI_PROVIDER_NAME)),
-                str(translation.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
+                str(translation.get("provider", default_value(StepId.TRANSLATE, "provider"))),
+                str(translation.get("prompt_template", default_value(StepId.TRANSLATE, "prompt_template"))),
             )
         except (OSError, ValueError) as exc:
             self.navigation.setCurrentRow(3)

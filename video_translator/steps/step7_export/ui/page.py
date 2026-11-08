@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from video_translator.common.models import StepId, StepResult
+from video_translator.config.step_defaults import default_value
 from video_translator.ui.components import Card
 from video_translator.ui.specs import ProviderSpec, StepSpec
 from video_translator.ui.steps.base import StepPage
@@ -25,7 +26,7 @@ class RenderStepPage(StepPage):
         "07",
         "Render & Export",
         "Ghép hình ảnh gốc, voice mới, voice gốc, background và subtitle tùy chọn.",
-        (ProviderSpec("FFmpeg Renderer", ()),),
+        (ProviderSpec(default_value(StepId.RENDER, "provider"), ()),),
     )
 
     def __init__(self, state) -> None:

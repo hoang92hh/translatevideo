@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from video_translator.common.models import StepId, StepResult
+from video_translator.config.step_defaults import default_value
 from video_translator.ui.components import Card
 from video_translator.ui.specs import FieldSpec, ProviderSpec, StepSpec
 from video_translator.ui.steps.base import StepPage
@@ -29,27 +30,27 @@ class ExtractStepPage(StepPage):
         "Audio Preparation",
         "Tạo Original Mix hoặc tách Voice + Background thành nhiều candidate để so sánh.",
         (
-            ProviderSpec("MDX-Net — Audio Separator", (
-                FieldSpec("ffmpeg_path", "FFmpeg executable", "file", "Auto"),
-                FieldSpec("model", "MDX model", "choice", "UVR-MDX-NET-Inst_HQ_4.onnx", (
+            ProviderSpec(default_value(StepId.EXTRACT, "provider"), (
+                FieldSpec("ffmpeg_path", "FFmpeg executable", "file", default_value(StepId.EXTRACT, "ffmpeg_path")),
+                FieldSpec("model", "MDX model", "choice", default_value(StepId.EXTRACT, "model"), (
                     "UVR-MDX-NET-Inst_HQ_4.onnx",
                     "UVR-MDX-NET-Voc_FT.onnx",
                     "Kim_Vocal_2.onnx",
                 )),
-                FieldSpec("sample_rate", "Working sample rate", "choice", "44.1 kHz", ("44.1 kHz", "48 kHz")),
-                FieldSpec("channels", "Audio channels", "choice", "Stereo", ("Stereo", "Mono")),
+                FieldSpec("sample_rate", "Working sample rate", "choice", default_value(StepId.EXTRACT, "sample_rate"), ("44.1 kHz", "48 kHz")),
+                FieldSpec("channels", "Audio channels", "choice", default_value(StepId.EXTRACT, "channels"), ("Stereo", "Mono")),
                 FieldSpec(
                     "device",
                     "Thiết bị",
                     "choice",
-                    "Auto",
+                    default_value(StepId.EXTRACT, "device"),
                     ("Auto", "CPU", "NVIDIA GPU (CUDA)"),
                 ),
             )),
             ProviderSpec("Original Audio — FFmpeg", (
-                FieldSpec("ffmpeg_path", "FFmpeg executable", "file", "Auto"),
-                FieldSpec("sample_rate", "Sample rate", "choice", "44.1 kHz", ("16 kHz", "44.1 kHz", "48 kHz")),
-                FieldSpec("channels", "Audio channels", "choice", "Stereo", ("Stereo", "Mono")),
+                FieldSpec("ffmpeg_path", "FFmpeg executable", "file", default_value(StepId.EXTRACT, "ffmpeg_path")),
+                FieldSpec("sample_rate", "Sample rate", "choice", default_value(StepId.EXTRACT, "sample_rate"), ("16 kHz", "44.1 kHz", "48 kHz")),
+                FieldSpec("channels", "Audio channels", "choice", default_value(StepId.EXTRACT, "channels"), ("Stereo", "Mono")),
             )),
             ProviderSpec("Demucs — Chưa triển khai", available=False),
             ProviderSpec("RoFormer — Chưa triển khai", available=False),

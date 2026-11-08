@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 from ..common.models import Segment
+from ..steps.step3_translation.adjacent_cleanup import collapse_adjacent_translations
 from ..steps.step3_translation.quality import assess_manual_segments, MANUAL_ISSUE_LABELS
 
 
@@ -221,8 +222,12 @@ class TranslationEditorDialog(QDialog):
             self.show_all.toggled.connect(self._refresh_manual_issues)
             refresh_button = QPushButton("Đánh giá lại")
             refresh_button.clicked.connect(self._refresh_manual_issues)
+            cleanup_button = QPushButton("Tự động xử lý trùng lặp")
+            cleanup_button.setEnabled(self.model.editable and target_language == "Vietnamese")
+            cleanup_button.clicked.connect(self._auto_cleanup_adjacent)
             options.addWidget(self.show_all)
             options.addWidget(refresh_button)
+            options.addWidget(cleanup_button)
             options.addStretch()
             root.addLayout(options)
             hint = QLabel(
@@ -319,6 +324,33 @@ class TranslationEditorDialog(QDialog):
         if self.manual_check:
             self._refresh_manual_issues()
         self.status_label.setText("Đã lưu thay đổi.")
+        self.status_label.setVisible(True)
+
+    def _auto_cleanup_adjacent(self) -> None:
+        if not self.model.editable or self.target_language != "Vietnamese":
+            return
+        self.table.clearFocus()
+        segments = [
+            Segment(**{key: value for key, value in item.items() if key != "issue_label"})
+            for item in self.model.segments
+        ]
+        count = collapse_adjacent_translations(segments)
+        if count:
+            for row, segment in enumerate(segments):
+                item = self.model.segments[row]
+                item["start"] = segment.start
+                item["end"] = segment.end
+                item["translated_text"] = segment.translated_text
+            self.model.dirty = True
+            self.model.dataChanged.emit(
+                self.model.index(0, 2), self.model.index(len(segments) - 1, 5),
+                [Qt.ItemDataRole.DisplayRole],
+            )
+            self._refresh_manual_issues()
+        self.status_label.setText(
+            f"Đã xử lý {count} cặp liền kề; bấm Lưu thay đổi để ghi file."
+            if count else "Không tìm thấy cặp liền kề cần xử lý."
+        )
         self.status_label.setVisible(True)
 
     def _refresh_manual_issues(self, *_args) -> None:

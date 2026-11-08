@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
 )
 
 from .....config.tts import PIPER_PROVIDER, PROVIDER_LICENSE_NOTES
+from .....config.step_defaults import default_value
+from .....common.models import StepId
 from video_translator.ui.tts_components.base import TtsComponentBase
 
 
@@ -86,15 +88,15 @@ class PiperTtsComponent(TtsComponentBase):
             PROVIDER_LICENSE_NOTES[PIPER_PROVIDER],
         )
         form = QGridLayout()
-        self.length_scale = native_parameter(0.1, 4.0, 1.0)
+        self.length_scale = native_parameter(0.1, 4.0, default_value(StepId.TTS, "length_scale", PIPER_PROVIDER))
         self.length_scale.setToolTip("Nhỏ hơn 1 nói nhanh hơn; lớn hơn 1 nói chậm hơn.")
-        self.noise_scale = native_parameter(0.0, 2.0, 0.667)
+        self.noise_scale = native_parameter(0.0, 2.0, default_value(StepId.TTS, "noise_scale", PIPER_PROVIDER))
         self.noise_scale.setToolTip("Độ biến thiên của bộ sinh âm thanh.")
-        self.noise_w_scale = native_parameter(0.0, 2.0, 0.8)
+        self.noise_w_scale = native_parameter(0.0, 2.0, default_value(StepId.TTS, "noise_w_scale", PIPER_PROVIDER))
         self.noise_w_scale.setToolTip("Độ biến thiên trường độ âm vị.")
-        self.volume = native_parameter(0.0, 4.0, 1.0)
+        self.volume = native_parameter(0.0, 4.0, default_value(StepId.TTS, "volume", PIPER_PROVIDER))
         self.normalize_audio = QCheckBox("Chuẩn hóa biên độ đầu ra")
-        self.normalize_audio.setChecked(True)
+        self.normalize_audio.setChecked(bool(default_value(StepId.TTS, "normalize_audio", PIPER_PROVIDER)))
         controls = (
             ("Độ dài âm vị (length scale)", self.length_scale),
             ("Độ biến thiên (noise scale)", self.noise_scale),

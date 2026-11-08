@@ -7,13 +7,14 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ...common.models import AudioCandidate, StepId, StepResult
+from ...config.step_defaults import default_value, with_defaults
 from ...steps.step1_separation.service import AudioSeparatorService
 from ...common.services.ffmpeg_service import FFmpegService
 from ...state import ProjectState
 
 
 ORIGINAL_PROVIDER = "Original Audio — FFmpeg"
-MDX_PROVIDER = "MDX-Net — Audio Separator"
+MDX_PROVIDER = default_value(StepId.EXTRACT, "provider")
 
 
 def _sample_rate(value: str) -> int:
@@ -30,7 +31,8 @@ def execute(
     settings: dict[str, Any],
     progress: Callable[[int, str], None] | None = None,
 ) -> StepResult:
-    provider = str(settings.get("provider", ORIGINAL_PROVIDER))
+    settings = with_defaults(StepId.EXTRACT, settings)
+    provider = str(settings["provider"])
     if provider not in {ORIGINAL_PROVIDER, MDX_PROVIDER}:
         raise RuntimeError(f"{provider} hiện chưa được triển khai.")
 
@@ -42,8 +44,8 @@ def execute(
         else f"{stem}_source_audio.wav"
     )
     source_path = state.workspace_path("extracted", source_name)
-    channels = 1 if settings.get("channels", "Stereo") == "Mono" else 2
-    requested_rate = _sample_rate(str(settings.get("sample_rate", "44.1 kHz")))
+    channels = 1 if settings["channels"] == "Mono" else 2
+    requested_rate = _sample_rate(str(settings["sample_rate"]))
     existing = state.candidate("original-mix")
     reuse_original = (
         not force_new_output
@@ -61,14 +63,14 @@ def execute(
         audio_path = existing.stem_path("original")
         duration_seconds = existing.metadata.get("duration_seconds")
         file_size = Path(audio_path).stat().st_size
-        configured_ffmpeg = str(settings.get("ffmpeg_path", "Auto")).strip()
+        configured_ffmpeg = str(settings["ffmpeg_path"]).strip()
         ffmpeg_path = (
             configured_ffmpeg
             if configured_ffmpeg and configured_ffmpeg.lower() != "auto"
             else str(existing.metadata.get("ffmpeg_path", "Auto"))
         )
     else:
-        service = FFmpegService(str(settings.get("ffmpeg_path", "Auto")))
+        service = FFmpegService(str(settings["ffmpeg_path"]))
         ffmpeg_progress = progress
         if provider == MDX_PROVIDER and progress:
             ffmpeg_progress = lambda value, message: progress(round(value * 0.2), message)
@@ -110,10 +112,10 @@ def execute(
         candidate_id = f"mdx-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
         candidate_dir = state.workspace_path("audio_separation", candidate_id)
         separated = AudioSeparatorService(
-            str(settings.get("model", "UVR-MDX-NET-Inst_HQ_4.onnx")),
+            str(settings["model"]),
             candidate_dir,
             ffmpeg_path,
-            str(settings.get("device", "Auto")),
+            str(settings["device"]),
             str(settings.get("_batch_model_session", "")),
         ).separate(
             audio_path,
@@ -121,7 +123,7 @@ def execute(
         )
         recommended = AudioCandidate(
             id=candidate_id,
-            label=f"MDX · {settings.get('model', 'Default model')} · {separated.actual_device}",
+            label=f"MDX · {settings['model']} · {separated.actual_device}",
             provider="Audio Separator",
             model_family="MDX",
             model_name=separated.model_name,

@@ -12,6 +12,8 @@ from typing import Callable
 from uuid import uuid4
 
 from ...errors import UserFacingError
+from ...common.models import StepId
+from ...config.step_defaults import with_defaults
 from .providers import get_manifest
 
 ProgressCallback = Callable[[int, str], None]
@@ -260,7 +262,7 @@ class SynthesisResult:
 class TextToSpeechService:
     def __init__(self, provider: str, settings: dict[str, object]) -> None:
         self.provider = provider
-        self.settings = settings
+        self.settings = with_defaults(StepId.TTS, {**settings, "provider": provider})
 
     @staticmethod
     def _repo_root() -> Path:
@@ -432,7 +434,7 @@ class TextToSpeechService:
                     "provider": self.provider,
                     "model": result.get("model", ""),
                     "voice": result.get("voice", ""),
-                    "reference_voice": self.settings.get("reference_voice", ""),
+                    "reference_voice": self.settings["reference_voice"],
                     "actual_device": result.get("actual_device", ""),
                     "settings": {},
                 }
@@ -458,7 +460,7 @@ class TextToSpeechService:
         ]
         return SynthesisResult(
             files=files,
-            requested_device=str(result.get("requested_device", self.settings.get("device", "Auto"))),
+            requested_device=str(result.get("requested_device", self.settings["device"])),
             actual_device=str(result.get("actual_device", "")),
             model=str(result.get("model", "")),
             voice=str(result.get("voice", "")),

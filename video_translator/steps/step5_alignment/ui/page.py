@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from video_translator.common.models import StepId, StepResult
+from video_translator.config.step_defaults import default_value
 from video_translator.steps.step4_tts.service import release_tts_session
 from video_translator.steps.step4_tts.providers import provider_id
 from video_translator.ui.sync_repair_dialog import SyncRepairDialog
@@ -35,40 +36,40 @@ class AudioSyncStepPage(StepPage):
         "Căn thời lượng audio mới vào timestamp của video gốc.",
         (
             ProviderSpec(
-                "FFmpeg — Duration Sync",
+                default_value(StepId.SYNC, "provider"),
                 (
-                    FieldSpec("max_speed", "Tốc độ tối đa", "float", 1.5),
-                    FieldSpec("use_gap", "Tận dụng khoảng trống kế tiếp", "bool", True),
+                    FieldSpec("max_speed", "Tốc độ tối đa", "float", default_value(StepId.SYNC, "max_speed")),
+                    FieldSpec("use_gap", "Tận dụng khoảng trống kế tiếp", "bool", default_value(StepId.SYNC, "use_gap")),
                     FieldSpec(
                         "trim_silence",
                         "Tự động cắt silence dư khi audio vượt khung",
                         "bool",
-                        False,
+                        default_value(StepId.SYNC, "trim_silence"),
                     ),
                     FieldSpec(
                         "auto_extend_video",
                         "Auto Extend Video to Match TTS",
                         "bool",
-                        True,
+                        default_value(StepId.SYNC, "auto_extend_video"),
                     ),
                     FieldSpec(
                         "video_extension_mode",
                         "Chế độ kéo dài hình ảnh",
                         "choice",
-                        "Hybrid",
+                        default_value(StepId.SYNC, "video_extension_mode"),
                         ("Freeze Frame", "Slow Motion", "Hybrid"),
                     ),
                     FieldSpec(
                         "min_video_speed",
                         "Tốc độ video tối thiểu",
                         "float",
-                        0.8,
+                        default_value(StepId.SYNC, "min_video_speed"),
                     ),
                     FieldSpec(
                         "max_freeze_duration",
                         "Freeze tối đa mỗi segment (giây)",
                         "float",
-                        0.2,
+                        default_value(StepId.SYNC, "max_freeze_duration"),
                         minimum=0.0,
                     ),
                 ),

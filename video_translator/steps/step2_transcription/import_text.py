@@ -47,6 +47,7 @@ def read_srt(path: Path) -> list[dict[str, Any]]:
     if not blocks or not blocks[0].strip():
         raise ValueError("SRT không có mục phụ đề nào.")
     segments: list[dict[str, Any]] = []
+    previous_timed_end: float | None = None
     for cue_number, block in enumerate(blocks, start=1):
         lines = [line.strip() for line in block.splitlines()]
         if lines and lines[0].isdigit():
@@ -56,13 +57,16 @@ def read_srt(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"Mục SRT {cue_number}: thiếu mốc thời gian 'HH:MM:SS,mmm --> HH:MM:SS,mmm'.")
         start = _seconds(match.groups()[:4])
         end = _seconds(match.groups()[4:])
-        if end <= start:
-            raise ValueError(f"Mục SRT {cue_number}: End phải lớn hơn Start.")
-        if segments and start < segments[-1]["end"]:
-            raise ValueError(f"Mục SRT {cue_number}: thời gian chồng lên mục trước hoặc sai thứ tự.")
         text = " ".join(line for line in lines[1:] if line)
-        if not text:
+        empty_point = not text and end == start
+        if end <= start and not empty_point:
+            raise ValueError(f"Mục SRT {cue_number}: End phải lớn hơn Start.")
+        if not text and not empty_point:
             raise ValueError(f"Mục SRT {cue_number}: nội dung text đang trống.")
+        if not empty_point:
+            if previous_timed_end is not None and start < previous_timed_end:
+                raise ValueError(f"Mục SRT {cue_number}: thời gian chồng lên mục trước hoặc sai thứ tự.")
+            previous_timed_end = end
         segments.append({
             "id": cue_number,
             "start": start,

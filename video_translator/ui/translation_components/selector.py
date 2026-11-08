@@ -20,19 +20,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_MODEL_IDS, GEMINI_PROVIDER_NAME, gemini_model_note
+from ...config.gemini import GEMINI_MODEL_IDS, GEMINI_PROVIDER_NAME, gemini_model_note
+from ...config.step_defaults import default_value
+from ...common.models import StepId
 from ...config.deepseek import DEEPSEEK_MODEL, DEEPSEEK_PROVIDER_NAME
 from ...config.opencode_go import OPENCODE_GO_MODEL, OPENCODE_GO_PROVIDER_NAME
 from ...config.prompt_templates import (
-    DEFAULT_PROMPT_TEMPLATE_ID,
     GEMINI_LEGACY_TEMPLATE_IDS,
     list_prompt_templates,
 )
-from ...config.translation import PROPER_NAME_MODE_AUTO, PROPER_NAME_MODES
+from ...config.translation import PROPER_NAME_MODES
 from ...config.web_translation import (
     CHATGPT_WEB_PROVIDER_NAME,
     CLAUDE_WEB_PROVIDER_NAME,
-    WEB_CURRENT_MODEL,
     project_url_error,
 )
 from ...errors import UserFacingError
@@ -62,19 +62,24 @@ class _CommonTranslationComponent(_ProviderComponent):
     def _add_common_controls(self, form: QFormLayout) -> None:
         self.batch_size = QSpinBox()
         self.batch_size.setRange(1, 1000)
-        self.batch_size.setValue(250)
+        self.batch_size.setValue(int(default_value(StepId.TRANSLATE, "batch_size")))
         form.addRow("Segments / batch", self.batch_size)
         self.proper_name_mode = QComboBox()
         self.proper_name_mode.addItems(PROPER_NAME_MODES)
-        self.proper_name_mode.setCurrentText(PROPER_NAME_MODE_AUTO)
+        self.proper_name_mode.setCurrentText(str(default_value(StepId.TRANSLATE, "proper_name_mode")))
         form.addRow("Quy tắc tên riêng", self.proper_name_mode)
         self.all_project_segments = QCheckBox(
             "Dịch toàn bộ segment của project trong một lượt"
         )
-        self.all_project_segments.setChecked(True)
+        self.all_project_segments.setChecked(bool(default_value(StepId.TRANSLATE, "all_project_segments")))
         self.all_project_segments.toggled.connect(self.batch_size.setDisabled)
         form.addRow("Phạm vi dịch", self.all_project_segments)
         self.batch_size.setDisabled(self.all_project_segments.isChecked())
+        self.auto_adjacent_cleanup = QCheckBox("Tự động xử lý segment liền kề")
+        self.auto_adjacent_cleanup.setChecked(
+            bool(default_value(StepId.TRANSLATE, "auto_adjacent_cleanup"))
+        )
+        form.addRow("Sau khi dịch", self.auto_adjacent_cleanup)
 
     def _common_settings(self) -> dict[str, Any]:
         return {
@@ -82,6 +87,7 @@ class _CommonTranslationComponent(_ProviderComponent):
             "batch_size": self.batch_size.value(),
             "proper_name_mode": self.proper_name_mode.currentText(),
             "all_project_segments": self.all_project_segments.isChecked(),
+            "auto_adjacent_cleanup": self.auto_adjacent_cleanup.isChecked(),
         }
 
 
@@ -105,7 +111,7 @@ class _GeminiComponent(_CommonTranslationComponent):
         form = QFormLayout()
         self.model = QComboBox()
         self.model.addItems(GEMINI_MODEL_IDS)
-        self.model.setCurrentText(GEMINI_DEFAULT_MODEL)
+        self.model.setCurrentText(str(default_value(StepId.TRANSLATE, "model")))
         self.model.currentTextChanged.connect(self._update_note)
         form.addRow("Model", self.model)
         self._add_common_controls(form)
@@ -269,9 +275,10 @@ class _WebComponent(_CommonTranslationComponent):
         card.content_layout.addWidget(self.status)
         form = QFormLayout()
         self.model = QComboBox()
-        self.model.addItem(WEB_CURRENT_MODEL)
+        self.model.addItem(default_value(StepId.TRANSLATE, "model", provider_name))
         form.addRow("Model", self.model)
         self.project_url = QLineEdit()
+        self.project_url.setText(str(default_value(StepId.TRANSLATE, "project_url")))
         self.project_url.setPlaceholderText(f"URL Project trên {website}")
         form.addRow("Project URL", self.project_url)
         self._add_common_controls(form)
@@ -333,9 +340,9 @@ class TranslationProviderSelector(QWidget):
         self.components[0].credentials_changed.connect(self.credentials_changed.emit)
         self.components[1].credentials_changed.connect(self.credentials_changed.emit)
         self.components[2].credentials_changed.connect(self.credentials_changed.emit)
-        self._default_provider = GEMINI_PROVIDER_NAME
+        self._default_provider = str(default_value(StepId.TRANSLATE, "provider"))
         self._prompt_by_provider: dict[str, str] = {
-            provider: DEFAULT_PROMPT_TEMPLATE_ID
+            provider: default_value(StepId.TRANSLATE, "prompt_template")
             for provider in (
                 GEMINI_PROVIDER_NAME,
                 DEEPSEEK_PROVIDER_NAME,
@@ -353,6 +360,9 @@ class TranslationProviderSelector(QWidget):
         self.button_group.setExclusive(True)
         self.stack = QStackedWidget()
         for index, component in enumerate(self.components):
+            component.auto_adjacent_cleanup.toggled.connect(
+                self._sync_auto_adjacent_cleanup
+            )
             button = QPushButton()
             button.setCheckable(True)
             button.clicked.connect(lambda _checked=False, target=index: self.select_index(target))
@@ -396,6 +406,14 @@ class TranslationProviderSelector(QWidget):
         self.status_timer.setInterval(2000)
         self.status_timer.timeout.connect(self._poll_status)
         self.status_timer.start()
+
+    def _sync_auto_adjacent_cleanup(self, checked: bool) -> None:
+        for component in self.components:
+            control = component.auto_adjacent_cleanup
+            if control.isChecked() != checked:
+                was_blocked = control.blockSignals(True)
+                control.setChecked(checked)
+                control.blockSignals(was_blocked)
 
     def select_index(self, index: int) -> None:
         if index < 0 or index >= len(self.components):
@@ -442,7 +460,7 @@ class TranslationProviderSelector(QWidget):
             **component.settings(),
             "prompt_template": self._prompt_by_provider.get(
                 self._default_provider,
-                DEFAULT_PROMPT_TEMPLATE_ID,
+                default_value(StepId.TRANSLATE, "prompt_template"),
             ),
         }
 
@@ -463,7 +481,7 @@ class TranslationProviderSelector(QWidget):
     def set_prompt_template(self, template_id: str) -> None:
         provider = self.current_component().provider_name
         self._prompt_by_provider[provider] = (
-            template_id.strip() or DEFAULT_PROMPT_TEMPLATE_ID
+            template_id.strip() or default_value(StepId.TRANSLATE, "prompt_template")
         )
         self._reload_prompt_templates()
 
@@ -480,7 +498,7 @@ class TranslationProviderSelector(QWidget):
         provider = self.current_component().provider_name
         selected = self._prompt_by_provider.get(
             provider,
-            DEFAULT_PROMPT_TEMPLATE_ID,
+            default_value(StepId.TRANSLATE, "prompt_template"),
         )
         if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}:
             selected = GEMINI_LEGACY_TEMPLATE_IDS.get(selected, selected)

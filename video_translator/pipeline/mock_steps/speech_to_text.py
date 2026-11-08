@@ -18,7 +18,7 @@ from ...steps.step2_transcription.service import (
     SpeechToTextService, TranscriptSegment, Transcription, assess_transcript_timeline,
 )
 from ...steps.step2_transcription.ocr_subtitles import (
-    COLLAPSED_SEGMENT_TEXT, SubtitleOcrService, map_ocr_text,
+    COLLAPSED_SEGMENT_TEXT, SubtitleOcrService, align_hybrid_text,
 )
 
 
@@ -189,7 +189,10 @@ def execute(
             (lambda value, message: progress(60 + round(value * 0.4), message))
             if progress and segmentation_mode == "Hybrid" else progress
         )
-        ocr_result = ocr.extract(source_video, ocr_progress)
+        ocr_result = ocr.extract(
+            source_video, ocr_progress,
+            transcription.segments if segmentation_mode == "Hybrid" else None,
+        )
         ocr_cue_count = len(ocr_result.segments)
         if segmentation_mode == "OCR":
             transcription = Transcription(
@@ -199,10 +202,11 @@ def execute(
                 compute_type="easyocr", device_selection_reason="",
             )
         else:
-            mapped, matched_ocr = map_ocr_text(
-                transcription.segments, ocr_result.segments, language_code,
-            )
-            transcription = replace(transcription, segments=mapped)
+            if ocr_result.stable_subtitle:
+                mapped, matched_ocr = align_hybrid_text(
+                    transcription.segments, ocr_result.segments, language_code,
+                )
+                transcription = replace(transcription, segments=mapped)
     if not transcription.segments:
         raise ValueError("Không nhận diện được phụ đề ở vùng phía dưới video.")
     segments = transcription.segments
@@ -246,6 +250,8 @@ def execute(
     )
     if segmentation_mode == "Hybrid":
         summary += f" · OCR {matched_ocr}/{ocr_cue_count} phụ đề đã ghép"
+        if not ocr_result.stable_subtitle:
+            summary += f" · {ocr_result.reason}"
     metadata = {
         "srt_only": True,
         "input_candidate_id": state.selected_audio_candidate_id,
@@ -259,6 +265,10 @@ def execute(
         "segmentation_mode": segmentation_mode,
         "ocr_cue_count": ocr_cue_count,
         "ocr_matched_count": matched_ocr,
+        "ocr_stable_subtitle": (
+            ocr_result.stable_subtitle if segmentation_mode == "Hybrid" else None
+        ),
+        "ocr_reason": ocr_result.reason if segmentation_mode == "Hybrid" else "",
         "merge_contained_adjacent_segments": bool(
             segmentation_mode == "Whisper" and settings["merge_contained_adjacent_segments"]
         ),

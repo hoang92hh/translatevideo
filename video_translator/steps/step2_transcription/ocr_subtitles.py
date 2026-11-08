@@ -27,6 +27,8 @@ class OcrResult:
     segments: list[TranscriptSegment]
     duration_seconds: float
     device: str
+    stable_subtitle: bool = True
+    reason: str = ""
 
 
 class SubtitleOcrService:
@@ -40,6 +42,7 @@ class SubtitleOcrService:
     def extract(
         self, video: str | Path,
         progress: Callable[[int, str], None] | None = None,
+        whisper: list[TranscriptSegment] | None = None,
     ) -> OcrResult:
         source = Path(video)
         if not source.is_file():
@@ -49,6 +52,11 @@ class SubtitleOcrService:
             "language": LANGUAGES[self.language],
             "requested_device": self.device,
         }
+        if whisper is not None:
+            request["hybrid"] = True
+            request["whisper_intervals"] = [
+                {"start": item.start, "end": item.end} for item in whisper
+            ]
         if self.batch_session:
             result, error, stderr, code = run_batch_worker(
                 self.batch_session, "ocr", request, progress,
@@ -63,6 +71,7 @@ class SubtitleOcrService:
             TranscriptSegment(
                 start=float(item["start"]), end=float(item["end"]),
                 text=str(item["text"]),
+                confidence=(float(item["confidence"]) if item.get("confidence") is not None else None),
             )
             for item in result["segments"]
         ]
@@ -71,6 +80,8 @@ class SubtitleOcrService:
             segments=segments,
             duration_seconds=float(result["duration_seconds"]),
             device=str(result["actual_device"]),
+            stable_subtitle=bool(result.get("stable_subtitle", True)),
+            reason=str(result.get("reason", "")),
         )
 
     @staticmethod
@@ -171,6 +182,104 @@ def map_ocr_text(
     return mapped, matched_count
 
 
+def _ordered_common_length(left: str, right: str) -> int:
+    """Length of the longest ordered (possibly noncontiguous) common sequence."""
+    previous = [0] * (len(right) + 1)
+    for char in left:
+        current = [0] * (len(right) + 1)
+        for index, other in enumerate(right, start=1):
+            current[index] = previous[index - 1] + 1 if char == other else max(
+                previous[index], current[index - 1],
+            )
+        previous = current
+    return previous[-1]
+
+
+def _ocr_blocks(text: str) -> list[str]:
+    return [
+        part.strip() for part in _OCR_BLOCK_DELIMITERS.split(text)
+        if _comparison_text(part)
+    ]
+
+
+def _script_family(text: str) -> str:
+    letters = [char for char in text if char.isalpha()]
+    if not letters:
+        return ""
+    cjk = sum("\u3400" <= char <= "\u9fff" for char in letters)
+    kana = sum("\u3040" <= char <= "\u30ff" for char in letters)
+    hangul = sum("\uac00" <= char <= "\ud7af" for char in letters)
+    if cjk + kana + hangul > len(letters) / 2:
+        return "east_asian"
+    return "latin"
+
+
+def align_hybrid_text(
+    whisper: list[TranscriptSegment], ocr: list[TranscriptSegment], language: str,
+) -> tuple[list[TranscriptSegment], int]:
+    """Align cleaned OCR cues to Whisper time without concatenating old dialogue."""
+    cleaned = _prepare_ocr_cues(ocr, language)
+    mapped = list(whisper)
+    used: set[int] = set()
+    matched = 0
+    for cue in cleaned:
+        overlaps = [
+            index for index, item in enumerate(whisper)
+            if min(item.end, cue.end) > max(item.start, cue.start)
+        ]
+        if not overlaps:
+            continue
+        voice_text = "".join(whisper[index].text for index in overlaps)
+        voice_key = _comparison_text(voice_text)
+        unreliable_voice = all(
+            whisper[index].confidence is not None and whisper[index].confidence < 0.2
+            for index in overlaps
+        )
+        language_mismatch = bool(
+            _script_family(voice_text) and _script_family(cue.text)
+            and _script_family(voice_text) != _script_family(cue.text)
+        )
+        scored = [
+            (block, _ordered_common_length(_comparison_text(block), voice_key))
+            for block in _ocr_blocks(cue.text)
+        ]
+        suitable = [
+            block for block, common in scored
+            if _comparison_text(block) and common / len(_comparison_text(block)) >= 0.6
+        ]
+        if not suitable and not (unreliable_voice or language_mismatch):
+            continue
+        selected = max(suitable or _ocr_blocks(cue.text), key=lambda block: (
+            _ordered_common_length(_comparison_text(block), voice_key),
+            len(_comparison_text(block)),
+        ))
+        if (cue.confidence or 0.0) < 0.62 or (
+            not (unreliable_voice or language_mismatch)
+            and len(voice_key) > len(_comparison_text(selected))
+        ):
+            continue
+        first = overlaps[0]
+        start = min(whisper[index].start for index in overlaps)
+        end = max(whisper[index].end for index in overlaps)
+        mapped[first] = replace(mapped[first], start=start, end=end, text=selected)
+        for index in overlaps[1:]:
+            mapped[index] = replace(mapped[index], start=end, end=end,
+                                    text=COLLAPSED_SEGMENT_TEXT)
+        used.update(overlaps)
+        matched += 1
+    for index, item in enumerate(mapped):
+        if index in used or item.text == COLLAPSED_SEGMENT_TEXT:
+            continue
+        key = _comparison_text(item.text)
+        if not any(char.isalpha() for char in item.text) or (
+            item.confidence is not None and item.confidence < 0.2
+        ):
+            mapped[index] = replace(item, start=item.end, text=COLLAPSED_SEGMENT_TEXT)
+    mapped.sort(key=lambda item: (item.start, item.end))
+    _collapse_adjacent_mapped_duplicates(mapped, "" if language in {"zh", "ja", "ko"} else " ")
+    return mapped, matched
+
+
 COLLAPSED_SEGMENT_TEXT = " "
 _SENTENCE_PUNCTUATION = frozenset(",.!?;:'\"，。！？；：、…—–-“”‘’")
 _TRAILING_OCR_NUMBER = re.compile(
@@ -181,7 +290,21 @@ _TRAILING_OCR_NUMBER = re.compile(
 def _prepare_ocr_cues(
     cues: list[TranscriptSegment], language: str,
 ) -> list[TranscriptSegment]:
-    merged = _deduplicate_adjacent_ocr_cues(_clean_ocr_cues(cues), language)
+    cleaned = _clean_ocr_cues(cues)
+    for index, cue in enumerate(cleaned):
+        if cue.confidence is None or cue.confidence >= 0.75:
+            continue
+        clearer = [
+            other for other in cleaned
+            if other is not cue and other.confidence is not None
+            and other.confidence >= 0.75
+            and min(abs(other.start - cue.end), abs(cue.start - other.end)) <= 6.0
+            and _text_similarity(cue.text, other.text) >= 0.7
+        ]
+        if clearer:
+            best = max(clearer, key=lambda other: other.confidence or 0.0)
+            cleaned[index] = replace(cue, text=best.text, confidence=best.confidence)
+    merged = _deduplicate_adjacent_ocr_cues(cleaned, language)
     return [replace(cue, text=_clean_internal_ocr_blocks(cue.text)) for cue in merged]
 
 
@@ -189,7 +312,7 @@ def _clean_ocr_cues(cues: list[TranscriptSegment]) -> list[TranscriptSegment]:
     cleaned: list[TranscriptSegment] = []
     for cue in cues:
         text = _clean_ocr_text(cue.text)
-        if any(char.isalnum() for char in text):
+        if any(char.isalpha() for char in text):
             cleaned.append(replace(cue, text=text))
     return cleaned
 
@@ -297,6 +420,11 @@ def _deduplicate_adjacent_ocr_cues(
         current = cue
         while result:
             previous = result[-1]
+            gap = current.start - previous.end
+            if gap > 0.6:
+                break
+            if current.end - previous.start > 6.5:
+                break
             left = _comparison_text(previous.text)
             right = _comparison_text(current.text)
             if not left or not right:

@@ -76,6 +76,7 @@ class TranscriptSegment:
     text: str
     speaker_id: str = ""
     merge_parts: tuple[dict[str, object], ...] = ()
+    confidence: float | None = None
 
 
 TIMELINE_ISSUE_LABELS = {
@@ -345,6 +346,20 @@ class SpeechToTextService:
                 normalized,
                 turns,
             )
+            confident_segments = []
+            for segment in segments:
+                probabilities = [
+                    float(word.get("probability") or 0.0)
+                    for source in normalized
+                    for word in source["words"]
+                    if float(word.get("start", 0.0)) < segment.end
+                    and float(word.get("end", 0.0)) > segment.start
+                ]
+                confident_segments.append(replace(
+                    segment,
+                    confidence=sum(probabilities) / len(probabilities) if probabilities else None,
+                ))
+            segments = confident_segments
             diarization_model = str(diarization_result.get("model", ""))
             diarization_device = str(diarization_result.get("actual_device", ""))
             diarization_turns = tuple(dict(turn) for turn in turns)
@@ -354,6 +369,11 @@ class SpeechToTextService:
                     start=float(item["start"]),
                     end=float(item["end"]),
                     text=str(item["text"]),
+                    confidence=(
+                        sum(float(word.get("probability") or 0.0) for word in item["words"])
+                        / len(item["words"])
+                        if item["words"] else None
+                    ),
                 )
                 for item in normalized
             ]

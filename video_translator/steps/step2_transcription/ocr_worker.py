@@ -33,15 +33,147 @@ def _same_subtitle(left: str, right: str) -> bool:
     return bool(a and b) and difflib.SequenceMatcher(None, a, b).ratio() >= 0.82
 
 
-def _read_text(reader: Any, image: Any) -> tuple[str, float]:
+def _read_text(reader: Any, image: Any, centered: bool = False) -> tuple[str, float]:
     lines = [
         (box, str(value).strip(), float(confidence))
         for box, value, confidence in reader.readtext(image, detail=1, paragraph=False)
         if str(value).strip() and float(confidence) >= MIN_CONFIDENCE
+        and (not centered or 0.22 <= sum(point[0] for point in box) / (4 * image.shape[1]) <= 0.78)
     ]
     lines.sort(key=lambda row: (sum(point[1] for point in row[0]) / 4,
                                 min(point[0] for point in row[0])))
-    return " ".join(row[1] for row in lines), sum(row[2] for row in lines)
+    score = sum(row[2] for row in lines)
+    return " ".join(row[1] for row in lines), (
+        score / len(lines) if centered and lines else score
+    )
+
+
+def _subtitle_rows(reader: Any, image: Any) -> list[tuple[int, str, float]]:
+    bands: dict[int, list[tuple[float, str, float]]] = {}
+    for box, value, confidence in reader.readtext(image, detail=1, paragraph=False):
+        center_x = sum(point[0] for point in box) / (4 * image.shape[1])
+        center_y = sum(point[1] for point in box) / (4 * image.shape[0])
+        if not (0.22 <= center_x <= 0.78) or float(confidence) < MIN_CONFIDENCE:
+            continue
+        text = str(value).strip()
+        if not text or not any(char.isalpha() for char in text):
+            continue
+        band = round(center_y * 8)
+        bands.setdefault(band, []).append((center_x, text, float(confidence)))
+    return [
+        (band, " ".join(text for _, text, _ in sorted(rows)),
+         sum(confidence for _, _, confidence in rows) / len(rows))
+        for band, rows in bands.items()
+    ]
+
+
+def _overlaps(start: float, end: float, intervals: list[tuple[float, float]]) -> bool:
+    return any(start < right and end > left for left, right in intervals)
+
+
+def _merge_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _scan(
+    video: str, reader: Any, sample_times: list[float] | None,
+    intervals: list[tuple[float, float]] | None,
+    sample_seconds: float,
+) -> tuple[list[dict[str, object]], float]:
+    import av
+
+    observations: list[dict[str, object]] = []
+    duration = 0.0
+    target = 0
+    next_sample = 0.0
+    with av.open(video) as container:
+        stream = container.streams.video[0]
+        duration = float(stream.duration * stream.time_base) if stream.duration is not None else (
+            container.duration / av.time_base if container.duration is not None else 0.0
+        )
+        scan_ranges = _merge_intervals(
+            [(max(0.0, instant - 0.03), instant + 0.7) for instant in sample_times]
+            if sample_times is not None else (intervals or [])
+        )
+        for range_start, range_end in scan_ranges:
+            # Seek to the preceding keyframe, then use decoded frame timestamps
+            # for the same sampling decisions as the sequential scanner.
+            container.seek(
+                max(0, int(range_start / float(stream.time_base))),
+                stream=stream, backward=True, any_frame=False,
+            )
+            for frame in container.decode(stream):
+                instant = float(frame.time) if frame.time is not None else (
+                    float(frame.pts * stream.time_base) if frame.pts is not None else next_sample
+                )
+                if not math.isfinite(instant) or instant < range_start - 0.001:
+                    continue
+                if instant > range_end + 0.001:
+                    break
+                duration = max(duration, instant)
+                if sample_times is not None:
+                    while target < len(sample_times) and instant >= sample_times[target] - 0.03:
+                        target += 1
+                        if instant > sample_times[target - 1] + 0.7:
+                            continue
+                        break
+                    else:
+                        continue
+                else:
+                    if instant + 0.001 < next_sample or not _overlaps(
+                        instant, instant + 0.001, intervals or [],
+                    ):
+                        continue
+                    next_sample = instant + sample_seconds
+                image = frame.to_ndarray(format="rgb24")
+                height = image.shape[0]
+                for band, text, confidence in _subtitle_rows(reader, image[int(height * 0.65):]):
+                    observations.append({"start": instant, "end": instant + sample_seconds,
+                                         "text": text, "confidence": confidence, "band": band})
+    by_band: dict[int, list[dict[str, object]]] = {}
+    for row in observations:
+        by_band.setdefault(int(row["band"]), []).append(row)
+    candidates = [
+        rows for rows in by_band.values()
+        if len({_comparison(str(row["text"])) for row in rows}) >= 2
+    ]
+    observations = max(candidates, key=len) if candidates else []
+    return observations, duration
+
+
+def _cues(observations: list[dict[str, object]], gap: float) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for row in sorted(observations, key=lambda item: float(item["start"])):
+        if result and float(row["start"]) - float(result[-1]["end"]) <= gap and _same_subtitle(
+            str(result[-1]["text"]), str(row["text"])
+        ):
+            result[-1]["end"] = max(float(result[-1]["end"]), float(row["end"]))
+            if float(row["confidence"]) > float(result[-1]["confidence"]):
+                result[-1]["text"] = row["text"]
+                result[-1]["confidence"] = row["confidence"]
+        else:
+            result.append(dict(row))
+    return result
+
+
+def _stable_subtitle(
+    observations: list[dict[str, object]], speech: list[tuple[float, float]],
+) -> bool:
+    letters = [row for row in observations if any(char.isalpha() for char in str(row["text"]))]
+    if not letters:
+        return False
+    # A permanently repeated overlay is a logo, not a changing subtitle row.
+    unique = {_comparison(str(row["text"])) for row in letters}
+    if len(unique) < 2:
+        return False
+    aligned = [row for row in letters if _overlaps(float(row["start"]), float(row["end"]), speech)]
+    return len(aligned) >= 2 and len(aligned) / len(letters) >= 0.35
 
 
 def _reader(language: str, device: str) -> tuple[Any, str]:
@@ -79,6 +211,38 @@ def run(request: dict[str, Any]) -> None:
             raise ValueError(f"Ngôn ngữ OCR không được hỗ trợ: {language}")
         _emit({"type": "progress", "value": 2, "message": "Đang nạp model OCR…"})
         reader, actual_device = _reader(language, str(request["requested_device"]))
+        if request.get("hybrid"):
+            with av.open(str(request["input_video"])) as container:
+                stream = container.streams.video[0]
+                duration_hint = float(stream.duration * stream.time_base) if stream.duration is not None else (
+                    container.duration / av.time_base if container.duration is not None else 0.0
+                )
+            speech = [
+                (float(row["start"]), float(row["end"]))
+                for row in request.get("whisper_intervals", [])
+                if float(row["end"]) > float(row["start"])
+            ]
+            sample_times = [duration_hint * index / 48 for index in range(48)] if duration_hint > 0 else [float(index * 5) for index in range(48)]
+            _emit({"type": "progress", "value": 8, "message": "Đang quét thưa tối đa 48 khung hình…"})
+            sparse, duration = _scan(str(request["input_video"]), reader, sample_times, None, 0.5)
+            if not _stable_subtitle(sparse, speech):
+                _emit({"type": "result", "segments": [], "duration_seconds": duration,
+                       "actual_device": actual_device, "stable_subtitle": False,
+                       "reason": "không thấy hàng phụ đề cháy ổn định"})
+                return
+            intervals = [(max(0.0, start - 0.5), end) for start, end in speech]
+            _emit({"type": "progress", "value": 35, "message": "Đang quét dày trong khoảng lời Whisper…"})
+            dense, duration = _scan(str(request["input_video"]), reader, None,
+                                    _merge_intervals(intervals), 0.5)
+            if not _stable_subtitle(dense, speech):
+                _emit({"type": "result", "segments": [], "duration_seconds": duration,
+                       "actual_device": actual_device, "stable_subtitle": False,
+                       "reason": "không thấy hàng phụ đề cháy ổn định"})
+                return
+            _emit({"type": "result", "segments": _cues(dense, 0.6),
+                   "duration_seconds": duration, "actual_device": actual_device,
+                   "stable_subtitle": True})
+            return
         cues: list[dict[str, object]] = []
         active: dict[str, object] | None = None
         next_sample = 0.0

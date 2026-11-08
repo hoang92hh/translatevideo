@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import shutil
 from datetime import datetime, timezone
@@ -11,6 +12,9 @@ from uuid import uuid4
 from ...common.models import RenderCandidate, StepId, StepResult
 from ...config.step_defaults import with_defaults
 from ...steps.step7_export.service import VideoRenderService
+from ...steps.step7_export.subtitle_style import (
+    split_readable_cue, subtitle_dimensions, write_styled_ass,
+)
 from ...state import ProjectState
 from .common import previous_segments
 
@@ -51,10 +55,21 @@ def _split_text_by_ratio(text: str, ratios: list[float]) -> list[str]:
 
 
 def _subtitle_cues(segment, timing: dict[str, object] | None) -> list[tuple[float, float, str]]:
-    parts = [part for part in segment.merge_parts if isinstance(part, dict)]
     text = segment.translated_text.strip()
+    if not text:
+        return []
+    if timing is None:
+        raise RuntimeError(f"Segment {segment.id} thiếu thời gian đồng bộ Step 5 để tạo phụ đề.")
+    try:
+        start = float(timing["adjusted_start"])
+        duration = float(timing["play_duration"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"Segment {segment.id} có thời gian đồng bộ Step 5 không hợp lệ.") from exc
+    if not math.isfinite(start) or not math.isfinite(duration) or start < 0 or duration <= 0:
+        raise RuntimeError(f"Segment {segment.id} có thời gian đồng bộ Step 5 không hợp lệ.")
+    parts = [part for part in segment.merge_parts if isinstance(part, dict)]
     if not parts:
-        return [(segment.start, max(segment.end, segment.start + 0.05), text)]
+        return [(start, start + max(duration, 0.05), text)]
     ratios = [max(0.0, float(part.get("ratio", 0.0))) for part in parts]
     ratio_total = sum(ratios)
     if ratio_total <= 0:
@@ -62,8 +77,6 @@ def _subtitle_cues(segment, timing: dict[str, object] | None) -> list[tuple[floa
     else:
         ratios = [value / ratio_total for value in ratios]
     chunks = _split_text_by_ratio(text, ratios)
-    start = float((timing or {}).get("adjusted_start", segment.start))
-    duration = float((timing or {}).get("play_duration", segment.duration))
     duration = max(0.05, duration)
     cues: list[tuple[float, float, str]] = []
     cursor = start
@@ -80,21 +93,28 @@ def _subtitle_cues(segment, timing: dict[str, object] | None) -> list[tuple[floa
 def _write_subtitle(
     path: Path,
     segments,
-    timings: dict[int, dict[str, object]] | None = None,
-) -> None:
+    timings: dict[int, dict[str, object]],
+    *, width: int, font_size: int, max_lines: int,
+) -> list[tuple[float, float, str]]:
     blocks: list[str] = []
+    cues: list[tuple[float, float, str]] = []
     subtitle_index = 1
     for segment in segments:
-        for start, end, text in _subtitle_cues(segment, (timings or {}).get(segment.id)):
-            if not text:
-                continue
-            blocks.append(
-                f"{subtitle_index}\n{_srt_timestamp(start)} --> {_srt_timestamp(end)}\n{text}"
-            )
-            subtitle_index += 1
+        for start, end, text in _subtitle_cues(segment, timings.get(segment.id)):
+            for cue_start, cue_end, cue_text in split_readable_cue(
+                start, end, text, width=width, font_size=font_size, max_lines=max_lines,
+            ):
+                if not cue_text:
+                    continue
+                blocks.append(
+                    f"{subtitle_index}\n{_srt_timestamp(cue_start)} --> {_srt_timestamp(cue_end)}\n{cue_text}"
+                )
+                cues.append((cue_start, cue_end, cue_text))
+                subtitle_index += 1
     if not blocks:
         raise RuntimeError("Không có nội dung bản dịch để tạo subtitle.")
     path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8-sig")
+    return cues
 
 
 def execute(
@@ -133,9 +153,11 @@ def execute(
     candidate_folder = Path(state.workspace_path("output", candidate_id))
     video_output = candidate_folder / f"{Path(state.input_video).stem}.mp4"
     subtitle_output = candidate_folder / "translated.srt"
+    styled_subtitle_output = candidate_folder / "translated.ass"
     manifest = candidate_folder / "manifest.json"
     candidate_folder.mkdir(parents=True, exist_ok=False)
     try:
+        renderer = VideoRenderService()
         sync_payload: dict[str, Any] = {}
         sync_id = build_candidate.source_sync_candidate_id
         sync_candidate = state.sync_candidate(sync_id)
@@ -144,6 +166,8 @@ def execute(
             if isinstance(loaded_sync_payload, dict):
                 sync_payload = loaded_sync_payload
         if create_subtitle:
+            video_width, video_height = renderer.probe_video_size(state.input_video)
+            font_size, _, _, _ = subtitle_dimensions(settings, video_width, video_height)
             timings: dict[int, dict[str, object]] = {}
             if sync_payload:
                 timings = {
@@ -151,8 +175,16 @@ def execute(
                     for item in sync_payload.get("segments", [])
                     if isinstance(item, dict)
                 }
-            _write_subtitle(subtitle_output, segments, timings)
-        result = VideoRenderService().render(
+            cues = _write_subtitle(
+                subtitle_output, segments, timings,
+                width=video_width, font_size=font_size,
+                max_lines=max(1, int(settings["subtitle_max_lines"])),
+            )
+            if burn_subtitle:
+                write_styled_ass(
+                    styled_subtitle_output, cues, settings, video_width, video_height,
+                )
+        result = renderer.render(
             source_video_path=state.input_video,
             voice_track_path=build_candidate.audio_file,
             output_path=video_output,
@@ -161,7 +193,9 @@ def execute(
             original_voice_volume=original_voice_volume,
             background_path=background,
             background_volume=background_volume,
-            subtitle_path=subtitle_output if create_subtitle else None,
+            subtitle_path=(
+                styled_subtitle_output if burn_subtitle else subtitle_output if create_subtitle else None
+            ),
             burn_subtitle=burn_subtitle,
             video_timing_plan=(
                 sync_payload.get("video_timing_plan")
@@ -182,6 +216,10 @@ def execute(
             "original_voice_volume": original_voice_volume if original_voice else 0.0,
             "background_file": str(background) if background else "",
             "subtitle_file": str(subtitle_output) if create_subtitle else "",
+            "styled_subtitle_file": str(styled_subtitle_output) if burn_subtitle else "",
+            "subtitle_settings": {
+                key: settings[key] for key in settings if key.startswith("subtitle_")
+            } if create_subtitle else {},
             "source_sync_candidate_id": sync_id,
             **result,
         }

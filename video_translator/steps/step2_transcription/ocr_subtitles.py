@@ -19,6 +19,7 @@ from .service import TranscriptSegment
 
 
 LANGUAGES = {"zh": "ch_sim", "en": "en", "vi": "vi", "ja": "ja", "ko": "ko"}
+HAN_TEXT_MATCH_RATIO = 0.8
 _WORKER = "video_translator.steps.step2_transcription.ocr_worker"
 
 
@@ -202,22 +203,24 @@ def _ocr_blocks(text: str) -> list[str]:
     ]
 
 
-def _script_family(text: str) -> str:
-    letters = [char for char in text if char.isalpha()]
-    if not letters:
-        return ""
-    cjk = sum("\u3400" <= char <= "\u9fff" for char in letters)
-    kana = sum("\u3040" <= char <= "\u30ff" for char in letters)
-    hangul = sum("\uac00" <= char <= "\ud7af" for char in letters)
-    if cjk + kana + hangul > len(letters) / 2:
-        return "east_asian"
-    return "latin"
+def _contains_han(text: str) -> bool:
+    return any("\u3400" <= char <= "\u9fff" for char in text)
 
 
 def align_hybrid_text(
     whisper: list[TranscriptSegment], ocr: list[TranscriptSegment], language: str,
 ) -> tuple[list[TranscriptSegment], int]:
-    """Align cleaned OCR cues to Whisper time without concatenating old dialogue."""
+    """Replace Whisper text with OCR text; never move Whisper time.
+
+    Every cue keeps the start/end produced by Whisper; only ``text`` changes.
+    A Hán Whisper cue is replaced only by a block that matches it at least
+    80% (measured on the longer string), so the OCR text is a reference rather
+    than a replacement for merely similar wording. A non-Hán cue (Latin,
+    digits, symbols) is replaced by the block of the OCR line that shares its
+    timeline, because the two scripts cannot be compared character by
+    character. The existing rule still drops Whisper-only cues that are numeric
+    or symbol-only, or whose ASR confidence is very low.
+    """
     cleaned = _prepare_ocr_cues(ocr, language)
     mapped = list(whisper)
     used: set[int] = set()
@@ -229,42 +232,40 @@ def align_hybrid_text(
         ]
         if not overlaps:
             continue
-        voice_text = "".join(whisper[index].text for index in overlaps)
-        voice_key = _comparison_text(voice_text)
-        unreliable_voice = all(
-            whisper[index].confidence is not None and whisper[index].confidence < 0.2
-            for index in overlaps
-        )
-        language_mismatch = bool(
-            _script_family(voice_text) and _script_family(cue.text)
-            and _script_family(voice_text) != _script_family(cue.text)
-        )
-        scored = [
-            (block, _ordered_common_length(_comparison_text(block), voice_key))
-            for block in _ocr_blocks(cue.text)
-        ]
-        suitable = [
-            block for block, common in scored
-            if _comparison_text(block) and common / len(_comparison_text(block)) >= 0.6
-        ]
-        if not suitable and not (unreliable_voice or language_mismatch):
+        if (cue.confidence or 0.0) < 0.62:
             continue
-        selected = max(suitable or _ocr_blocks(cue.text), key=lambda block: (
-            _ordered_common_length(_comparison_text(block), voice_key),
-            len(_comparison_text(block)),
-        ))
-        if (cue.confidence or 0.0) < 0.62 or (
-            not (unreliable_voice or language_mismatch)
-            and len(voice_key) > len(_comparison_text(selected))
-        ):
+        blocks = _ocr_blocks(cue.text)
+        if not blocks:
             continue
-        first = overlaps[0]
-        start = min(whisper[index].start for index in overlaps)
-        end = max(whisper[index].end for index in overlaps)
-        mapped[first] = replace(mapped[first], start=start, end=end, text=selected)
-        for index in overlaps[1:]:
-            mapped[index] = replace(mapped[index], start=end, end=end,
-                                    text=COLLAPSED_SEGMENT_TEXT)
+        target = max(
+            overlaps,
+            key=lambda index: min(whisper[index].end, cue.end)
+            - max(whisper[index].start, cue.start),
+        )
+        item = whisper[target]
+        if _contains_han(item.text):
+            # Hán: block phải giống text Whisper >= 80%, tính trên chuỗi dài hơn.
+            voice_key = _comparison_text(item.text)
+            best: tuple[float, str] | None = None
+            for block in blocks:
+                block_key = _comparison_text(block)
+                if not block_key:
+                    continue
+                ratio = _ordered_common_length(block_key, voice_key) / max(
+                    1, len(block_key), len(voice_key),
+                )
+                if best is None or ratio > best[0]:
+                    best = (ratio, block)
+            if best is None or best[0] < HAN_TEXT_MATCH_RATIO:
+                continue
+            selected = best[1]
+        else:
+            # Không phải chữ Hán (Latin, số, ký hiệu): thay theo timeline mapping.
+            selected = max(blocks, key=len)
+        # Whisper owns the timeline: only the text of the target cue changes.
+        # The interval is never expanded and no overlapping cue is absorbed,
+        # so start/end stay exactly as produced by Whisper.
+        mapped[target] = replace(mapped[target], text=selected)
         used.update(overlaps)
         matched += 1
     for index, item in enumerate(mapped):
@@ -276,7 +277,6 @@ def align_hybrid_text(
         ):
             mapped[index] = replace(item, start=item.end, text=COLLAPSED_SEGMENT_TEXT)
     mapped.sort(key=lambda item: (item.start, item.end))
-    _collapse_adjacent_mapped_duplicates(mapped, "" if language in {"zh", "ja", "ko"} else " ")
     return mapped, matched
 
 

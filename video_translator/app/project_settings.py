@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -317,6 +318,61 @@ class RenderSettings(QWidget):
         card.content_layout.addLayout(form)
         root.addWidget(card)
 
+        subtitle_card = Card(
+            "Kiểu phụ đề Step 7",
+            "Áp dụng khi burn vào video; SRT chỉ lưu chữ và thời gian. Font cần được cài trên máy render.",
+        )
+        subtitle_form = QFormLayout()
+        self.subtitle_font = QLineEdit(str(default_value(StepId.RENDER, "subtitle_font")))
+        self.subtitle_auto_size = QCheckBox("Tự động theo độ phân giải (52 px tại 1080p)")
+        self.subtitle_auto_size.setChecked(bool(default_value(StepId.RENDER, "subtitle_auto_size")))
+        self.subtitle_font_size = QSpinBox()
+        self.subtitle_font_size.setRange(12, 240)
+        self.subtitle_font_size.setSuffix(" px")
+        self.subtitle_font_size.setValue(int(default_value(StepId.RENDER, "subtitle_font_size")))
+        self.subtitle_auto_size.toggled.connect(self.subtitle_font_size.setDisabled)
+        self.subtitle_font_size.setDisabled(self.subtitle_auto_size.isChecked())
+        self.subtitle_text_color = QLineEdit(str(default_value(StepId.RENDER, "subtitle_text_color")))
+        self.subtitle_outline_color = QLineEdit(str(default_value(StepId.RENDER, "subtitle_outline_color")))
+        self.subtitle_outline_size = QSpinBox()
+        self.subtitle_outline_size.setRange(0, 12)
+        self.subtitle_outline_size.setSuffix(" px tại 1080p")
+        self.subtitle_outline_size.setValue(int(default_value(StepId.RENDER, "subtitle_outline_size")))
+        self.subtitle_shadow_color = QLineEdit(str(default_value(StepId.RENDER, "subtitle_shadow_color")))
+        self.subtitle_shadow_size = QSpinBox()
+        self.subtitle_shadow_size.setRange(0, 12)
+        self.subtitle_shadow_size.setSuffix(" px tại 1080p")
+        self.subtitle_shadow_size.setValue(int(default_value(StepId.RENDER, "subtitle_shadow_size")))
+        self.subtitle_position = QComboBox()
+        for label, value in (
+            ("Dưới giữa", "bottom_center"), ("Dưới trái", "bottom_left"),
+            ("Dưới phải", "bottom_right"), ("Giữa", "middle_center"),
+            ("Trên giữa", "top_center"),
+        ):
+            self.subtitle_position.addItem(label, value)
+        self.subtitle_margin = QSpinBox()
+        self.subtitle_margin.setRange(0, 300)
+        self.subtitle_margin.setSuffix(" px tại 1080p")
+        self.subtitle_margin.setValue(int(default_value(StepId.RENDER, "subtitle_margin")))
+        self.subtitle_max_lines = QSpinBox()
+        self.subtitle_max_lines.setRange(1, 3)
+        self.subtitle_max_lines.setValue(int(default_value(StepId.RENDER, "subtitle_max_lines")))
+        for label, control in (
+            ("Font", self.subtitle_font), ("Cỡ tự động", self.subtitle_auto_size),
+            ("Cỡ chữ cố định", self.subtitle_font_size),
+            ("Màu chữ", self.subtitle_text_color),
+            ("Màu viền", self.subtitle_outline_color),
+            ("Độ dày viền", self.subtitle_outline_size),
+            ("Màu bóng", self.subtitle_shadow_color),
+            ("Độ lệch bóng", self.subtitle_shadow_size),
+            ("Vị trí", self.subtitle_position),
+            ("Khoảng cách mép", self.subtitle_margin),
+            ("Số dòng tối đa", self.subtitle_max_lines),
+        ):
+            subtitle_form.addRow(label, control)
+        subtitle_card.content_layout.addLayout(subtitle_form)
+        root.addWidget(subtitle_card)
+
     @staticmethod
     def _volume_control(value: int) -> tuple[QWidget, QSlider]:
         container = QWidget()
@@ -345,6 +401,17 @@ class RenderSettings(QWidget):
             "background_volume": self.background_volume.value() / 100,
             "subtitle": self.subtitle.isChecked(),
             "burn_subtitle": self.subtitle.isChecked() and self.burn_subtitle.isChecked(),
+            "subtitle_font": self.subtitle_font.text().strip(),
+            "subtitle_auto_size": self.subtitle_auto_size.isChecked(),
+            "subtitle_font_size": self.subtitle_font_size.value(),
+            "subtitle_text_color": self.subtitle_text_color.text().strip(),
+            "subtitle_outline_color": self.subtitle_outline_color.text().strip(),
+            "subtitle_outline_size": self.subtitle_outline_size.value(),
+            "subtitle_shadow_color": self.subtitle_shadow_color.text().strip(),
+            "subtitle_shadow_size": self.subtitle_shadow_size.value(),
+            "subtitle_position": self.subtitle_position.currentData(),
+            "subtitle_margin": self.subtitle_margin.value(),
+            "subtitle_max_lines": self.subtitle_max_lines.value(),
         }
 
     def set_values(self, values: dict[str, Any]) -> None:
@@ -356,6 +423,18 @@ class RenderSettings(QWidget):
         self.background_volume.setValue(round(float(values["background_volume"]) * 100))
         self.subtitle.setChecked(bool(values["subtitle"]))
         self.burn_subtitle.setChecked(bool(values["burn_subtitle"]))
+        self.subtitle_font.setText(str(values["subtitle_font"]))
+        self.subtitle_auto_size.setChecked(bool(values["subtitle_auto_size"]))
+        self.subtitle_font_size.setValue(int(values["subtitle_font_size"]))
+        self.subtitle_text_color.setText(str(values["subtitle_text_color"]))
+        self.subtitle_outline_color.setText(str(values["subtitle_outline_color"]))
+        self.subtitle_outline_size.setValue(int(values["subtitle_outline_size"]))
+        self.subtitle_shadow_color.setText(str(values["subtitle_shadow_color"]))
+        self.subtitle_shadow_size.setValue(int(values["subtitle_shadow_size"]))
+        position_index = self.subtitle_position.findData(str(values["subtitle_position"]))
+        self.subtitle_position.setCurrentIndex(max(0, position_index))
+        self.subtitle_margin.setValue(int(values["subtitle_margin"]))
+        self.subtitle_max_lines.setValue(int(values["subtitle_max_lines"]))
 
 
 class ProjectSettingsDialog(QDialog):
@@ -766,6 +845,20 @@ class ProjectSettingsDialog(QDialog):
             self.navigation.setCurrentRow(4)
             QMessageBox.warning(self, "Chưa xác nhận quyền giọng", "Hãy xác nhận quyền sử dụng giọng tham chiếu.")
             return
+        font = self.render.subtitle_font.text().strip()
+        if not re.fullmatch(r"[\w .-]{1,80}", font, flags=re.UNICODE):
+            self.navigation.setCurrentRow(self.navigation.count() - 1)
+            QMessageBox.warning(self, "Font phụ đề không hợp lệ", "Hãy nhập tên font bằng chữ, số, dấu cách, dấu chấm hoặc gạch nối.")
+            return
+        for control in (
+            self.render.subtitle_text_color,
+            self.render.subtitle_outline_color,
+            self.render.subtitle_shadow_color,
+        ):
+            if not re.fullmatch(r"#[0-9A-Fa-f]{6}", control.text().strip()):
+                self.navigation.setCurrentRow(self.navigation.count() - 1)
+                QMessageBox.warning(self, "Màu phụ đề không hợp lệ", "Hãy nhập màu theo dạng #RRGGBB, ví dụ #FFFFFF.")
+                return
         self.accept()
 
 

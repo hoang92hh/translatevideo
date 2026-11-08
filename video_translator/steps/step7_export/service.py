@@ -27,6 +27,23 @@ class VideoRenderService:
                 "Cài FFmpeg và bảo đảm ffmpeg/ffprobe có trong PATH rồi chạy lại Step 7.",
             ) from exc
 
+    def probe_video_size(self, video: str | Path) -> tuple[int, int]:
+        if not self.ffmpeg.ffprobe_path:
+            raise VideoRenderError("Thiếu FFprobe", "Không thể xác định độ phân giải để tạo phụ đề.")
+        completed = subprocess.run(
+            [self.ffmpeg.ffprobe_path, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(video)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False,
+        )
+        try:
+            width, height = (int(value) for value in completed.stdout.strip().split("x"))
+            if completed.returncode != 0 or width <= 0 or height <= 0:
+                raise ValueError
+        except ValueError as exc:
+            raise VideoRenderError("Không đọc được độ phân giải video", str(video)) from exc
+        return width, height
+
     @staticmethod
     def _timing_edits(plan: dict[str, Any] | None, duration: float) -> list[dict[str, float | str]]:
         if not isinstance(plan, dict) or not bool(plan.get("enabled", False)):
@@ -351,6 +368,7 @@ class VideoRenderService:
                 "Thiếu subtitle",
                 "Đã chọn burn subtitle nhưng file SRT không tồn tại.",
             )
+        subtitle_filter = f"subtitles=filename={subtitle.name}:charenc=UTF-8" if burn_subtitle else ""
 
         duration = self.ffmpeg.probe_duration(source_video)
         if not duration or duration <= 0:
@@ -396,7 +414,7 @@ class VideoRenderService:
             filter_parts.extend(video_filters)
         if burn_subtitle and subtitle is not None and edits:
             filter_parts.append(
-                f"[{video_label}]subtitles=filename={subtitle.name}:charenc=UTF-8[video]"
+                f"[{video_label}]{subtitle_filter}[video]"
             )
             video_label = "video"
 
@@ -437,7 +455,7 @@ class VideoRenderService:
             command.extend(["-filter_complex", audio_filter])
         command.extend(["-map", video_map, "-map", "[audio]"])
         if burn_subtitle and subtitle is not None and not edits:
-            command.extend(["-vf", f"subtitles=filename={subtitle.name}:charenc=UTF-8"])
+            command.extend(["-vf", subtitle_filter])
         fallback_reason = ""
         if smart_copy:
             video_codec = "copy"

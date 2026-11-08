@@ -61,6 +61,13 @@ STEP_DEFAULTS: Mapping[StepId, Mapping[str, Any]] = {
         "include_original_voice": True, "original_voice_volume": 0.2,
         "include_background": True, "background_volume": 0.8,
         "subtitle": False, "burn_subtitle": False,
+        "subtitle_font": "Be Vietnam Pro SemiBold",
+        "subtitle_auto_size": True, "subtitle_font_size": 52,
+        "subtitle_text_color": "#FFFFFF",
+        "subtitle_outline_color": "#000000", "subtitle_outline_size": 3,
+        "subtitle_shadow_color": "#000000", "subtitle_shadow_size": 2,
+        "subtitle_position": "bottom_center", "subtitle_margin": 72,
+        "subtitle_max_lines": 2,
     },
 }
 

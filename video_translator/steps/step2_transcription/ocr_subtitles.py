@@ -191,16 +191,20 @@ def map_selective_ocr_text(
     """Use cleaned OCR on selected cues; retain empty cues as timeline points."""
     cleaned = _prepare_ocr_cues(ocr, language)
     assigned: dict[int, list[TranscriptSegment]] = {index: [] for index in target_indices}
+    unmatched: list[TranscriptSegment] = []
     for cue in cleaned:
         overlaps = [
-            (min(whisper[index].end + 0.2, cue.end)
-             - max(0.0, whisper[index].start - 0.2, cue.start), index)
+            (min(whisper[index].end, cue.end) - max(whisper[index].start, cue.start), index)
             for index in target_indices
         ]
         if overlaps:
             overlap, index = max(overlaps)
             if overlap > 0:
                 assigned[index].append(cue)
+            else:
+                unmatched.append(cue)
+        else:
+            unmatched.append(cue)
     mapped = list(whisper)
     matched = 0
     separator = "" if language in {"zh", "ja", "ko"} else " "
@@ -218,6 +222,16 @@ def map_selective_ocr_text(
             matched += 1
         else:
             mapped[index] = replace(mapped[index], start=mapped[index].end, text="")
+    ordered_whisper = sorted(whisper, key=lambda item: (item.start, item.end))
+    for previous, current in zip(ordered_whisper, ordered_whisper[1:]):
+        gap_start, gap_end = previous.end, current.start
+        if gap_end <= gap_start:
+            continue
+        mapped.extend(
+            cue for cue in unmatched
+            if cue.start >= gap_start and cue.end <= gap_end and cue.text.strip()
+        )
+    mapped.sort(key=lambda item: (item.start, item.end))
     return mapped, matched
 
 
@@ -241,75 +255,97 @@ def _ocr_blocks(text: str) -> list[str]:
     ]
 
 
-def _contains_han(text: str) -> bool:
-    return any("\u3400" <= char <= "\u9fff" for char in text)
-
-
 def align_hybrid_text(
     whisper: list[TranscriptSegment], ocr: list[TranscriptSegment], language: str,
 ) -> tuple[list[TranscriptSegment], int]:
-    """Replace Whisper text with OCR text; never move Whisper time.
+    """Map cleaned OCR blocks to Whisper cues and add cues found in Whisper gaps."""
+    if not whisper:
+        return [], 0
 
-    Every cue keeps the start/end produced by Whisper; only ``text`` changes.
-    A Hán Whisper cue is replaced only by a block that matches it at least
-    80% (measured on the longer string), so the OCR text is a reference rather
-    than a replacement for merely similar wording. A non-Hán cue (Latin,
-    digits, symbols) is replaced by the block of the OCR line that shares its
-    timeline, because the two scripts cannot be compared character by
-    character. The existing rule still drops Whisper-only cues that are numeric
-    or symbol-only, or whose ASR confidence is very low.
-    """
     cleaned = _prepare_ocr_cues(ocr, language)
-    mapped = list(whisper)
-    used: set[int] = set()
-    matched = 0
+    ordered_whisper = sorted(enumerate(whisper), key=lambda pair: (pair[1].start, pair[1].end))
+    assigned: dict[int, list[TranscriptSegment]] = {index: [] for index in range(len(whisper))}
+    unmatched: list[TranscriptSegment] = []
     for cue in cleaned:
         overlaps = [
-            index for index, item in enumerate(whisper)
-            if min(item.end, cue.end) > max(item.start, cue.start)
+            (min(item.end, cue.end) - max(item.start, cue.start), index)
+            for index, item in enumerate(whisper)
         ]
-        if not overlaps:
-            continue
-        if (cue.confidence or 0.0) < 0.62:
-            continue
-        blocks = _ocr_blocks(cue.text)
-        if not blocks:
-            continue
-        target = max(
-            overlaps,
-            key=lambda index: min(whisper[index].end, cue.end)
-            - max(whisper[index].start, cue.start),
-        )
-        item = whisper[target]
-        if _contains_han(item.text):
-            # Hán: block phải giống text Whisper >= 80%, tính trên chuỗi dài hơn.
-            voice_key = _comparison_text(item.text)
-            best: tuple[float, str] | None = None
-            for block in blocks:
-                block_key = _comparison_text(block)
-                if not block_key:
-                    continue
-                ratio = _ordered_common_length(block_key, voice_key) / max(
-                    1, len(block_key), len(voice_key),
-                )
-                if best is None or ratio > best[0]:
-                    best = (ratio, block)
-            if best is None or best[0] < HAN_TEXT_MATCH_RATIO:
-                continue
-            selected = best[1]
+        overlap, target = max(overlaps, default=(0.0, -1))
+        if overlap > 0:
+            if (cue.confidence or 0.0) >= 0.62:
+                assigned[target].append(cue)
         else:
-            # Không phải chữ Hán (Latin, số, ký hiệu): thay theo timeline mapping.
-            selected = max(blocks, key=len)
-        # Whisper owns the timeline: only the text of the target cue changes.
-        # The interval is never expanded and no overlapping cue is absorbed,
-        # so start/end stay exactly as produced by Whisper.
-        mapped[target] = replace(mapped[target], text=selected)
-        used.update(overlaps)
-        matched += 1
-    for index, item in enumerate(mapped):
+            unmatched.append(cue)
+
+    separator = "" if language in {"zh", "ja", "ko"} else " "
+    mapped = list(whisper)
+    matched = 0
+    used: set[int] = set()
+
+    def similarity(first: str, second: str) -> float:
+        left, right = _comparison_text(first), _comparison_text(second)
+        return _ordered_common_length(left, right) / max(1, len(left), len(right))
+
+    for index, cues in assigned.items():
+        if not cues:
+            continue
+        cues.sort(key=lambda cue: (cue.start, cue.end))
+        used.add(index)
+        source_text = whisper[index].text
+        single_blocks = [
+            block for cue in cues for block in _ocr_blocks(cue.text)
+            if _comparison_text(block)
+        ]
+        if len(cues) == 1:
+            best = max(single_blocks, key=lambda block: similarity(block, source_text), default="")
+            if best and similarity(best, source_text) >= HAN_TEXT_MATCH_RATIO:
+                mapped[index] = replace(mapped[index], text=best)
+                matched += 1
+            continue
+
+        best_single_score = max(
+            (similarity(block, source_text) for block in single_blocks), default=0.0,
+        )
+        best_combined: tuple[float, str] | None = None
+        for block_start in range(len(cues)):
+            parts: list[str] = []
+            for block_end in range(block_start, len(cues)):
+                parts.append(cues[block_end].text)
+                if block_end == block_start:
+                    continue
+                block = separator.join(parts)
+                score = similarity(block, source_text)
+                if best_combined is None or score > best_combined[0]:
+                    best_combined = (score, block)
+        if (best_combined is not None
+                and best_combined[0] >= HAN_TEXT_MATCH_RATIO
+                and best_combined[0] > best_single_score):
+            mapped[index] = replace(
+                mapped[index], text=_clean_internal_ocr_blocks(best_combined[1]),
+            )
+            matched += 1
+
+    # OCR cues that fall entirely between two original Whisper cues become
+    # supplemental SRT cues. Their OCR timestamps stay within the Whisper gap.
+    supplements: list[TranscriptSegment] = []
+    for previous_pair, current_pair in zip(ordered_whisper, ordered_whisper[1:]):
+        previous, current = previous_pair[1], current_pair[1]
+        gap_start, gap_end = previous.end, current.start
+        if gap_end <= gap_start:
+            continue
+        for cue in unmatched:
+            if ((cue.confidence or 0.0) < 0.62
+                    or cue.start < gap_start or cue.end > gap_end
+                    or not cue.text.strip()):
+                continue
+            supplements.append(cue)
+            matched += 1
+
+    mapped.extend(supplements)
+    for index, item in enumerate(mapped[:len(whisper)]):
         if index in used or item.text == COLLAPSED_SEGMENT_TEXT:
             continue
-        key = _comparison_text(item.text)
         if not any(char.isalpha() for char in item.text) or (
             item.confidence is not None and item.confidence < 0.2
         ):
@@ -543,12 +579,14 @@ def _collapse_adjacent_mapped_duplicates(
     """Join matching boundaries while preserving short, repeated utterances."""
     active: list[int] = []
     for index in range(len(mapped)):
+        if not _comparison_text(mapped[index].text):
+            continue
         while active:
             previous_index = active[-1]
             previous, current = mapped[previous_index], mapped[index]
             left, right = _comparison_text(previous.text), _comparison_text(current.text)
             if left == right:
-                if len(left) <= 3:
+                if len(left) <= 4:
                     break
                 keep_previous = True
                 merged_text = previous.text
@@ -587,6 +625,19 @@ def _collapse_adjacent_mapped_duplicates(
 
         if mapped[index].text != COLLAPSED_SEGMENT_TEXT:
             active.append(index)
+
+
+def collapse_srt_segments(
+    segments: list[TranscriptSegment], language: str,
+) -> list[TranscriptSegment]:
+    """Collapse adjacent duplicate text across Whisper, OCR, and Hybrid SRTs."""
+    separator = "" if language in {"zh", "ja", "ko"} else " "
+    mapped = sorted(segments, key=lambda item: (item.start, item.end))
+    _collapse_adjacent_mapped_duplicates(mapped, separator)
+    return [
+        replace(item, text="") if item.text == COLLAPSED_SEGMENT_TEXT else item
+        for item in mapped
+    ]
 
 
 def _contiguous_ocr_blocks(cues: list[TranscriptSegment], separator: str) -> list[str]:

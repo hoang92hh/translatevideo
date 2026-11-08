@@ -18,7 +18,7 @@ from ...steps.step2_transcription.service import (
     SpeechToTextService, TranscriptSegment, assess_transcript_timeline,
 )
 from ...steps.step2_transcription.ocr_subtitles import (
-    COLLAPSED_SEGMENT_TEXT, SubtitleOcrService, align_hybrid_text,
+    SubtitleOcrService, align_hybrid_text, collapse_srt_segments,
     map_selective_ocr_text,
 )
 
@@ -38,11 +38,6 @@ def _srt_timestamp(seconds: float) -> str:
     minutes, remainder = divmod(remainder, 60_000)
     secs, millis = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
-
-
-def _needs_ocr_recovery(item: TranscriptSegment) -> bool:
-    text = item.text.strip()
-    return not text or (item.confidence is not None and item.confidence < 0.2)
 
 
 def _comparison_text(value: str) -> str:
@@ -189,12 +184,8 @@ def execute(
             if progress and segmentation_mode in {"OCR", "Hybrid"} else progress
         )
         transcription = service.transcribe(input_audio, asr_progress)
-    target_indices = (
-        {index for index, item in enumerate(transcription.segments)
-         if _needs_ocr_recovery(item)}
-        if segmentation_mode == "OCR" else set()
-    )
-    if segmentation_mode == "Hybrid" or target_indices:
+    target_indices = set(range(len(transcription.segments))) if segmentation_mode == "OCR" else set()
+    if segmentation_mode in {"OCR", "Hybrid"}:
         ocr = SubtitleOcrService(language_code, requested_device, batch_session)
         ocr_progress = (
             (lambda value, message: progress(60 + round(value * 0.4), message))
@@ -202,8 +193,7 @@ def execute(
         )
         ocr_result = ocr.extract(
             source_video, ocr_progress,
-            ([transcription.segments[index] for index in sorted(target_indices)]
-             if segmentation_mode == "OCR" else transcription.segments),
+            transcription.segments,
             selective=segmentation_mode == "OCR",
         )
         ocr_cue_count = len(ocr_result.segments)
@@ -223,15 +213,11 @@ def execute(
     segments = transcription.segments
     if segmentation_mode == "Whisper" and bool(settings["merge_contained_adjacent_segments"]):
         segments = _merge_contained_adjacent_segments(segments)
-    if segmentation_mode == "Hybrid":
-        segments = [
-            item for item in segments
-            if not (item.text == COLLAPSED_SEGMENT_TEXT and item.start == item.end)
-        ]
+    segments = collapse_srt_segments(segments, language_code)
     cues: list[str] = []
     for index, item in enumerate(segments, start=1):
         cue_text = " ".join(item.text.split())
-        empty_point = segmentation_mode == "OCR" and not cue_text and item.start == item.end
+        empty_point = not cue_text and item.start == item.end
         if (not math.isfinite(item.start) or not math.isfinite(item.end)
                 or item.start < 0
                 or (not empty_point and (item.end <= item.start or not cue_text
@@ -260,7 +246,7 @@ def execute(
         f"Đã tạo SRT với {len(cues)} mục · ngôn ngữ {detected}{probability} · "
         f"{model_name} · {transcription.actual_device}"
     )
-    if segmentation_mode == "Hybrid" or target_indices:
+    if segmentation_mode in {"OCR", "Hybrid"}:
         summary += f" · OCR {matched_ocr}/{ocr_cue_count} phụ đề đã ghép"
         if not ocr_result.stable_subtitle:
             summary += f" · {ocr_result.reason}"
@@ -278,9 +264,9 @@ def execute(
         "ocr_cue_count": ocr_cue_count,
         "ocr_matched_count": matched_ocr,
         "ocr_stable_subtitle": (
-            ocr_result.stable_subtitle if segmentation_mode == "Hybrid" or target_indices else None
+            ocr_result.stable_subtitle if segmentation_mode in {"OCR", "Hybrid"} else None
         ),
-        "ocr_reason": ocr_result.reason if segmentation_mode == "Hybrid" or target_indices else "",
+        "ocr_reason": ocr_result.reason if segmentation_mode in {"OCR", "Hybrid"} else "",
         "merge_contained_adjacent_segments": bool(
             segmentation_mode == "Whisper" and settings["merge_contained_adjacent_segments"]
         ),

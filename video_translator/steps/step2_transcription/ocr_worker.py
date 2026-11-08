@@ -218,14 +218,20 @@ def run(request: dict[str, Any]) -> None:
             _emit({"type": "result", "actual_device": actual_device})
             return
         if request.get("selective"):
-            intervals = [
+            ordered_intervals = sorted(
                 (max(0.0, float(row["start"]) - 0.2), float(row["end"]) + 0.2)
                 for row in request.get("whisper_intervals", [])
                 if float(row["end"]) > float(row["start"])
-            ]
+            )
+            intervals = list(ordered_intervals)
+            intervals.extend(
+                (previous[1], current[0])
+                for previous, current in zip(ordered_intervals, ordered_intervals[1:])
+                if current[0] > previous[1]
+            )
             dense, duration = _scan(
                 str(request["input_video"]), reader, None,
-                _merge_intervals(intervals), 0.5, False,
+                _merge_intervals(intervals), 0.2, False,
             )
             _emit({"type": "result", "segments": _cues(dense, 0.6),
                    "duration_seconds": duration, "actual_device": actual_device,
@@ -251,10 +257,19 @@ def run(request: dict[str, Any]) -> None:
                        "actual_device": actual_device, "stable_subtitle": False,
                        "reason": "không thấy hàng phụ đề cháy ổn định"})
                 return
-            intervals = [(max(0.0, start - 0.5), end) for start, end in speech]
-            _emit({"type": "progress", "value": 35, "message": "Đang quét dày trong khoảng lời Whisper…"})
+            ordered_speech = sorted(speech)
+            intervals = [
+                (max(0.0, start - 0.2), end + 0.2)
+                for start, end in ordered_speech
+            ]
+            intervals.extend(
+                (previous[1], current[0])
+                for previous, current in zip(ordered_speech, ordered_speech[1:])
+                if current[0] > previous[1]
+            )
+            _emit({"type": "progress", "value": 35, "message": "Đang quét OCR mỗi 0,2 giây trên timeline Whisper và khoảng trống giữa các segment…"})
             dense, duration = _scan(str(request["input_video"]), reader, None,
-                                    _merge_intervals(intervals), 0.5)
+                                    _merge_intervals(intervals), 0.2)
             if not _stable_subtitle(dense, speech):
                 _emit({"type": "result", "segments": [], "duration_seconds": duration,
                        "actual_device": actual_device, "stable_subtitle": False,

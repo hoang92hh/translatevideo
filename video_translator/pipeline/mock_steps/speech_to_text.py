@@ -15,10 +15,11 @@ from ...config.step_defaults import with_defaults
 from ...state import ProjectState
 from ...steps.step2_transcription.import_text import read_srt
 from ...steps.step2_transcription.service import (
-    SpeechToTextService, TranscriptSegment, Transcription, assess_transcript_timeline,
+    SpeechToTextService, TranscriptSegment, assess_transcript_timeline,
 )
 from ...steps.step2_transcription.ocr_subtitles import (
     COLLAPSED_SEGMENT_TEXT, SubtitleOcrService, align_hybrid_text,
+    map_selective_ocr_text,
 )
 
 
@@ -37,6 +38,11 @@ def _srt_timestamp(seconds: float) -> str:
     minutes, remainder = divmod(remainder, 60_000)
     secs, millis = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _needs_ocr_recovery(item: TranscriptSegment) -> bool:
+    text = item.text.strip()
+    return not text or (item.confidence is not None and item.confidence < 0.2)
 
 
 def _comparison_text(value: str) -> str:
@@ -166,7 +172,7 @@ def execute(
     batch_session = str(settings.get("_batch_model_session", ""))
     matched_ocr = 0
     ocr_cue_count = 0
-    if segmentation_mode in {"Whisper", "Hybrid"}:
+    if segmentation_mode in {"Whisper", "OCR", "Hybrid"}:
         vad_recovery = bool(settings["vad_recovery"])
         service = SpeechToTextService(
             model_name=model_name,
@@ -180,27 +186,32 @@ def execute(
         )
         asr_progress = (
             (lambda value, message: progress(round(value * 0.6), message))
-            if progress and segmentation_mode == "Hybrid" else progress
+            if progress and segmentation_mode in {"OCR", "Hybrid"} else progress
         )
         transcription = service.transcribe(input_audio, asr_progress)
-    if segmentation_mode in {"OCR", "Hybrid"}:
+    target_indices = (
+        {index for index, item in enumerate(transcription.segments)
+         if _needs_ocr_recovery(item)}
+        if segmentation_mode == "OCR" else set()
+    )
+    if segmentation_mode == "Hybrid" or target_indices:
         ocr = SubtitleOcrService(language_code, requested_device, batch_session)
         ocr_progress = (
             (lambda value, message: progress(60 + round(value * 0.4), message))
-            if progress and segmentation_mode == "Hybrid" else progress
+            if progress and segmentation_mode in {"OCR", "Hybrid"} else progress
         )
         ocr_result = ocr.extract(
             source_video, ocr_progress,
-            transcription.segments if segmentation_mode == "Hybrid" else None,
+            ([transcription.segments[index] for index in sorted(target_indices)]
+             if segmentation_mode == "OCR" else transcription.segments),
+            selective=segmentation_mode == "OCR",
         )
         ocr_cue_count = len(ocr_result.segments)
         if segmentation_mode == "OCR":
-            transcription = Transcription(
-                segments=ocr_result.segments, language=language_code,
-                language_probability=None, duration_seconds=ocr_result.duration_seconds,
-                requested_device=requested_device, actual_device=ocr_result.device,
-                compute_type="easyocr", device_selection_reason="",
+            mapped, matched_ocr = map_selective_ocr_text(
+                transcription.segments, ocr_result.segments, target_indices, language_code,
             )
+            transcription = replace(transcription, segments=mapped)
         else:
             if ocr_result.stable_subtitle:
                 mapped, matched_ocr = align_hybrid_text(
@@ -220,10 +231,11 @@ def execute(
     cues: list[str] = []
     for index, item in enumerate(segments, start=1):
         cue_text = " ".join(item.text.split())
+        empty_point = segmentation_mode == "OCR" and not cue_text and item.start == item.end
         if (not math.isfinite(item.start) or not math.isfinite(item.end)
-                or item.start < 0 or item.end <= item.start
-                or not cue_text
-                or round(item.end * 1000) <= round(item.start * 1000)):
+                or item.start < 0
+                or (not empty_point and (item.end <= item.start or not cue_text
+                    or round(item.end * 1000) <= round(item.start * 1000)))):
             raise ValueError(f"Không thể ghi mục SRT {index}: thời gian hoặc nội dung không hợp lệ.")
         cues.append(
             f"{index}\n{_srt_timestamp(item.start)} --> {_srt_timestamp(item.end)}"
@@ -246,9 +258,9 @@ def execute(
     )
     summary = (
         f"Đã tạo SRT với {len(cues)} mục · ngôn ngữ {detected}{probability} · "
-        f"{model_name if segmentation_mode != 'OCR' else 'OCR'} · {transcription.actual_device}"
+        f"{model_name} · {transcription.actual_device}"
     )
-    if segmentation_mode == "Hybrid":
+    if segmentation_mode == "Hybrid" or target_indices:
         summary += f" · OCR {matched_ocr}/{ocr_cue_count} phụ đề đã ghép"
         if not ocr_result.stable_subtitle:
             summary += f" · {ocr_result.reason}"
@@ -266,9 +278,9 @@ def execute(
         "ocr_cue_count": ocr_cue_count,
         "ocr_matched_count": matched_ocr,
         "ocr_stable_subtitle": (
-            ocr_result.stable_subtitle if segmentation_mode == "Hybrid" else None
+            ocr_result.stable_subtitle if segmentation_mode == "Hybrid" or target_indices else None
         ),
-        "ocr_reason": ocr_result.reason if segmentation_mode == "Hybrid" else "",
+        "ocr_reason": ocr_result.reason if segmentation_mode == "Hybrid" or target_indices else "",
         "merge_contained_adjacent_segments": bool(
             segmentation_mode == "Whisper" and settings["merge_contained_adjacent_segments"]
         ),

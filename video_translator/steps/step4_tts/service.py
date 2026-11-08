@@ -291,7 +291,10 @@ class TextToSpeechService:
             f"Chạy {setup_script}, hoặc đặt {environment_name} tới Python của runtime đã cài.",
         )
 
-    def preload(self, session_key: str, target_language: str) -> None:
+    def preload(
+        self, session_key: str, target_language: str,
+        progress: ProgressCallback | None = None,
+    ) -> None:
         environment = os.environ.copy()
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONPATH"] = os.pathsep.join(
@@ -306,7 +309,7 @@ class TextToSpeechService:
         result, error, stderr = worker.execute(
             {"provider": self.provider, "settings": self.settings,
              "target_language": target_language, "repo_root": str(self._repo_root())},
-            None, kind="preload",
+            progress, kind="preload",
         )
         if error or result is None:
             raise TextToSpeechError(

@@ -508,12 +508,13 @@ class MainWindow(QMainWindow):
         if (preload_step1 or (step == StepId.STT and srt_only) or step == StepId.TTS) and video_ids and step not in dialog.loaded_model_steps:
             preloader = BatchModelPreloader(
                 dialog.model_session_key, step, settings, self.batch_project.target_language,
+                self.batch_project.source_language,
             )
             self.batch_running = True
             dialog.set_batch_busy(True, number)
             dialog.update_batch_progress(0, f"Đang nạp model Step {number}…")
             self._refresh_header()
-            preloader.progress_changed.connect(lambda message: dialog.update_batch_progress(0, message))
+            preloader.progress_changed.connect(dialog.update_batch_progress)
 
             def models_loaded(errors: list[str]) -> None:
                 preloader.wait()

@@ -44,6 +44,7 @@ class SubtitleOcrService:
         self, video: str | Path,
         progress: Callable[[int, str], None] | None = None,
         whisper: list[TranscriptSegment] | None = None,
+        selective: bool = False,
     ) -> OcrResult:
         source = Path(video)
         if not source.is_file():
@@ -54,7 +55,7 @@ class SubtitleOcrService:
             "requested_device": self.device,
         }
         if whisper is not None:
-            request["hybrid"] = True
+            request["selective" if selective else "hybrid"] = True
             request["whisper_intervals"] = [
                 {"start": item.start, "end": item.end} for item in whisper
             ]
@@ -181,6 +182,43 @@ def map_ocr_text(
     _collapse_adjacent_mapped_duplicates(mapped, separator)
 
     return mapped, matched_count
+
+
+def map_selective_ocr_text(
+    whisper: list[TranscriptSegment], ocr: list[TranscriptSegment],
+    target_indices: set[int], language: str,
+) -> tuple[list[TranscriptSegment], int]:
+    """Use cleaned OCR on selected cues; retain empty cues as timeline points."""
+    cleaned = _prepare_ocr_cues(ocr, language)
+    assigned: dict[int, list[TranscriptSegment]] = {index: [] for index in target_indices}
+    for cue in cleaned:
+        overlaps = [
+            (min(whisper[index].end + 0.2, cue.end)
+             - max(0.0, whisper[index].start - 0.2, cue.start), index)
+            for index in target_indices
+        ]
+        if overlaps:
+            overlap, index = max(overlaps)
+            if overlap > 0:
+                assigned[index].append(cue)
+    mapped = list(whisper)
+    matched = 0
+    separator = "" if language in {"zh", "ja", "ko"} else " "
+    for index, cues in assigned.items():
+        selected = ""
+        if cues:
+            cues.sort(key=lambda cue: (cue.start, cue.end))
+            blocks = _contiguous_ocr_blocks(cues, separator)
+            if blocks:
+                selected = _clean_internal_ocr_blocks(max(
+                    blocks, key=lambda block: (len(_comparison_text(block)), block),
+                ))
+        if selected:
+            mapped[index] = replace(mapped[index], text=selected)
+            matched += 1
+        else:
+            mapped[index] = replace(mapped[index], start=mapped[index].end, text="")
+    return mapped, matched
 
 
 def _ordered_common_length(left: str, right: str) -> int:

@@ -32,8 +32,6 @@ def preload_batch_models(session_key: str, settings: dict[str, object]) -> None:
     if not settings:
         return
     settings = with_defaults(StepId.STT, settings)
-    if str(settings["segmentation_mode"]) == "OCR":
-        return
     request: dict[str, object] = {
         "type": "preload",
         "batch_session": True,
@@ -51,6 +49,24 @@ def preload_batch_models(session_key: str, settings: dict[str, object]) -> None:
             "Không thể nạp model Step 1.5", str((error or {}).get("message", "Worker không trả về kết quả.")),
             "Kiểm tra model và thiết bị đã cấu hình.", stderr,
         )
+    if str(settings["segmentation_mode"]) == "OCR":
+        from .ocr_subtitles import LANGUAGES
+
+        language = str(settings.get("_source_language", ""))
+        language_code = {"Chinese": "zh", "English": "en", "Vietnamese": "vi", "Japanese": "ja", "Korean": "ko"}.get(language, language)
+        if language_code not in LANGUAGES:
+            raise SpeechToTextError("Không thể nạp model OCR", f"Ngôn ngữ nguồn không được hỗ trợ: {language}")
+        ocr_request = {
+            "type": "preload", "language": LANGUAGES[language_code],
+            "requested_device": str(settings["device"]),
+        }
+        ocr_result, ocr_error, ocr_stderr, _ = run_batch_worker(session_key, "ocr", ocr_request)
+        if ocr_error or ocr_result is None:
+            raise SpeechToTextError(
+                "Không thể nạp model OCR",
+                str((ocr_error or {}).get("message", "Worker không trả về kết quả.")),
+                "Kiểm tra model OCR và thiết bị đã cấu hình.", ocr_stderr,
+            )
     if bool(settings["diarization"]):
         model_path = configured_model_path().resolve()
         device = "GPU" if "GPU" in str(result.get("actual_device", "")) else "CPU"

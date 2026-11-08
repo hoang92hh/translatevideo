@@ -85,6 +85,7 @@ def _scan(
     video: str, reader: Any, sample_times: list[float] | None,
     intervals: list[tuple[float, float]] | None,
     sample_seconds: float,
+    require_variation: bool = True,
 ) -> tuple[list[dict[str, object]], float]:
     import av
 
@@ -143,7 +144,9 @@ def _scan(
         rows for rows in by_band.values()
         if len({_comparison(str(row["text"])) for row in rows}) >= 2
     ]
-    observations = max(candidates, key=len) if candidates else []
+    observations = max(candidates, key=len) if candidates else (
+        max(by_band.values(), key=len) if by_band and not require_variation else []
+    )
     return observations, duration
 
 
@@ -211,6 +214,24 @@ def run(request: dict[str, Any]) -> None:
             raise ValueError(f"Ngôn ngữ OCR không được hỗ trợ: {language}")
         _emit({"type": "progress", "value": 2, "message": "Đang nạp model OCR…"})
         reader, actual_device = _reader(language, str(request["requested_device"]))
+        if request.get("type") == "preload":
+            _emit({"type": "result", "actual_device": actual_device})
+            return
+        if request.get("selective"):
+            intervals = [
+                (max(0.0, float(row["start"]) - 0.2), float(row["end"]) + 0.2)
+                for row in request.get("whisper_intervals", [])
+                if float(row["end"]) > float(row["start"])
+            ]
+            dense, duration = _scan(
+                str(request["input_video"]), reader, None,
+                _merge_intervals(intervals), 0.5, False,
+            )
+            _emit({"type": "result", "segments": _cues(dense, 0.6),
+                   "duration_seconds": duration, "actual_device": actual_device,
+                   "stable_subtitle": bool(dense),
+                   "reason": "không đọc được phụ đề trong khoảng cần cứu" if not dense else ""})
+            return
         if request.get("hybrid"):
             with av.open(str(request["input_video"])) as container:
                 stream = container.streams.video[0]

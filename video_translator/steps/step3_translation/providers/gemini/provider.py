@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .....config.gemini import GEMINI_PROVIDER_NAME, GEMINI_RECOMMENDED_MODEL_IDS
 from .....config.batch_prompts import prepare_translation_prompt
+from .....config.timing_rewrite_prompt import load_timing_rewrite_prompt
 from .....config.prompt_templates import (
     DEFAULT_PROMPT_TEMPLATE_ID,
     step3_batch_filenames,
@@ -1017,19 +1018,7 @@ class GoogleTranslationService:
                     model=self.model_name,
                     contents=content,
                     config=types.GenerateContentConfig(
-                        system_instruction=(
-                            "You are revising existing audiovisual translations so their synthesized speech "
-                            "fits a measured time window. For every item, rewrite current_translation in "
-                            f"{self.target_language}; use source_text only to protect meaning and context. "
-                            "The fields measured_tts_seconds, allowed_seconds, current_required_speed, "
-                            "target_speed, and requested_reduction_ratio describe the real TTS result. "
-                            "Make the sentence concise enough to fit at or below target_speed, using the "
-                            "requested reduction as a practical minimum. Prefer natural spoken phrasing and "
-                            "remove repetition, filler, and optional wording. Preserve essential meaning, "
-                            "negation, speaker intent, proper names, numbers, and cause-and-effect. Do not add "
-                            "facts, explanations, labels, or alternatives. Return every input ID exactly once "
-                            "and do not merge, split, or omit IDs."
-                        ),
+                        system_instruction=load_timing_rewrite_prompt(self.target_language),
                         response_mime_type="application/json",
                         response_schema=list[TranslationItem],
                         temperature=0.1,

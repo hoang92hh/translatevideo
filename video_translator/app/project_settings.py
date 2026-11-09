@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from ..batch_project import BatchProject, BatchProjectService, InputVideo
 from ..config.step_defaults import default_value, with_defaults
+from ..config.tts_reference import DEFAULT_VIENEU_REFERENCE_VOICE
 from ..config.prompt_templates import load_prompt_template
 from ..steps.step4_tts.providers import provider_id, provider_value, load_provider_symbol
 from ..common.models import StepId
@@ -145,7 +146,7 @@ class SingleVoiceTtsSettings(QWidget):
         voice.setCurrentText(str(default_value(StepId.TTS, "voice", provider)))
         speed = speed_control()
         device = device_control()
-        reference = FilePicker()
+        reference = FilePicker(DEFAULT_VIENEU_REFERENCE_VOICE if provider == VIENEU_PROVIDER else "")
         consent = QCheckBox("Tôi có quyền sử dụng giọng tham chiếu")
         consent.setChecked(bool(default_value(StepId.TTS, "voice_consent")))
         form.addRow(label, voice)

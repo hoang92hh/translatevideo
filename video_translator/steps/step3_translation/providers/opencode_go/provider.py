@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, ValidationError, TypeAdapter
 
 from .....config.opencode_go import OPENCODE_GO_API_URL, OPENCODE_GO_MODEL, OPENCODE_GO_PROVIDER_NAME
 from .....config.batch_prompts import prepare_translation_prompt
+from .....config.timing_rewrite_prompt import load_timing_rewrite_prompt
 from .....config.prompt_templates import (
     DEFAULT_PROMPT_TEMPLATE_ID,
     step3_batch_filenames,
@@ -815,8 +816,7 @@ class OpenCodeGoTranslationService:
         for index, batch in enumerate(batches, start=1):
             if progress:
                 progress(5 + int((index - 1) / len(batches) * 88), f"Rewriting batch {index}/{len(batches)}")
-            prompt = (f"Rewrite current_translation in {self.target_language} to fit allowed_seconds. "
-                      "Preserve meaning, names, numbers and negation. Return every ID once.")
+            prompt = load_timing_rewrite_prompt(self.target_language)
             parsed, source = self._generate_structured(batch, prompt, list[TranslationItem], 0.1,
                 f"timing-{index}.json", f"timing-{index}-result.json")
             result = {item.id: item.translated_text.strip() for item in parsed}

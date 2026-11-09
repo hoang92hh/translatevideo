@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from video_translator.config.speaker_profiles import resolve_speaker_profile
+from video_translator.config.tts_reference import resolve_reference_voice
 from video_translator.config.step_defaults import with_defaults
 from video_translator.common.models import StepId
 from video_translator.steps.step4_tts.providers import provider_id, provider_value
@@ -176,9 +177,11 @@ def speaker_profile(settings: dict[str, Any], item: dict[str, Any]) -> dict[str,
             or settings.get("model_path")
             or settings["voice"]
         ).strip(),
-        "reference_voice": str(
-            raw_profile.get("reference_voice") or settings["reference_voice"]
-        ).strip(),
+        "reference_voice": (
+            str(resolve_reference_voice(reference))
+            if (reference := str(raw_profile.get("reference_voice") or settings["reference_voice"]).strip())
+            else ""
+        ),
         "piper_speaker_id": raw_profile.get("piper_speaker_id"),
     }
 

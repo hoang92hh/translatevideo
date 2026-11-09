@@ -19,6 +19,7 @@ from ...config.step_defaults import with_defaults
 from ...errors import UserFacingError
 from ...common.models import StepId, StepResult, TtsCandidate
 from ...steps.step4_tts.service import TextToSpeechService
+from ...config.tts_reference import resolve_reference_voice
 from ...state import ProjectState
 from .common import previous_segments
 
@@ -63,7 +64,7 @@ def execute(
     )
     references.append(str(shared_profile.get("reference_voice", "")).strip())
     references = [item for item in references if item]
-    missing_references = [item for item in references if not Path(item).is_file()]
+    missing_references = [item for item in references if not resolve_reference_voice(item).is_file()]
     if missing_references:
         raise UserFacingError(
             "Không tìm thấy file giọng tham chiếu",

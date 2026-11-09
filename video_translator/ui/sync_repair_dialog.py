@@ -25,6 +25,8 @@ class SyncRepairDialog(QDialog):
     process_requested = Signal(object)
     borrow_requested = Signal()
     drafts_changed = Signal(object)
+    video_changed = Signal(str)
+    model_toggle_requested = Signal()
 
     SELECT_COLUMN = 0
     STATUS_COLUMN = 1
@@ -49,6 +51,8 @@ class SyncRepairDialog(QDialog):
         *,
         show_all: bool = False,
         target_language: str = "",
+        videos: list[tuple[str, str]] | None = None,
+        video_id: str = "",
     ) -> None:
         super().__init__(parent)
         self.candidate_id = candidate_id
@@ -57,6 +61,8 @@ class SyncRepairDialog(QDialog):
         self.target_language = target_language
         self._default_visible_indexes: set[int] = set()
         self._row_by_segment_id: dict[int, int] = {}
+        self._row_cache: dict[int, dict[str, object]] = {}
+        self._model_available = False
         self.setWindowTitle("Xử lý segment quá thời lượng")
         screen = QGuiApplication.screenAt(self.mapToGlobal(self.rect().center()))
         screen = screen or QGuiApplication.primaryScreen()
@@ -70,10 +76,23 @@ class SyncRepairDialog(QDialog):
             self.resize(1280, 720)
 
         layout = QVBoxLayout(self)
+        if videos is not None and not show_all:
+            selectors = QHBoxLayout()
+            selectors.addWidget(QLabel("Video"))
+            self.video_combo = QComboBox()
+            for name, item_id in videos:
+                self.video_combo.addItem(name, item_id)
+            self.video_combo.setCurrentIndex(self.video_combo.findData(video_id))
+            self.video_combo.currentIndexChanged.connect(self._video_changed)
+            selectors.addWidget(self.video_combo, 1)
+            selectors.addWidget(QLabel("Lỗi"))
+            self.error_combo = QComboBox()
+            self.error_combo.currentIndexChanged.connect(self._error_changed)
+            selectors.addWidget(self.error_combo, 1)
+            layout.addLayout(selectors)
         description = QLabel(
             "Popup hiển thị segment từng lỗi cùng segment liền trước/sau. Checkbox dùng cho cả AI và tạo voice. "
-            "Bạn có thể đổi Start, End, Speaker và sửa cột “Nội dung hiện tại”; nút tạo voice chỉ xử lý các row đã chọn. "
-            "Nút vay thời gian xử lý riêng các segment vẫn chưa đạt mà không gọi TTS."
+            "Bạn có thể đổi Start, End, Speaker và sửa cột “Nội dung hiện tại”; nút tạo voice chỉ xử lý các row đã chọn."
         )
         description.setWordWrap(True)
         layout.addWidget(description)
@@ -141,22 +160,75 @@ class SyncRepairDialog(QDialog):
         layout.addWidget(self.summary)
 
         actions = QHBoxLayout()
+        self.model_button = QPushButton("Nạp model Step 4")
+        self.model_button.clicked.connect(self.model_toggle_requested.emit)
+        actions.addWidget(self.model_button)
         self.ai_button = QPushButton("AI chỉnh sửa các segment đã chọn")
         self.ai_button.clicked.connect(self._request_ai)
         self.process_button = QPushButton("Tạo lại voice và đồng bộ")
         self.process_button.setObjectName("primaryButton")
         self.process_button.clicked.connect(self._request_process)
-        self.borrow_button = QPushButton("Vay thời gian lân cận")
-        self.borrow_button.clicked.connect(self._request_borrow)
         close_button = QPushButton("Đóng")
         close_button.clicked.connect(self.close)
         actions.addWidget(self.ai_button)
         actions.addWidget(self.process_button)
-        actions.addWidget(self.borrow_button)
         actions.addStretch()
         actions.addWidget(close_button)
         layout.addLayout(actions)
         self.load_payload(payload)
+
+    def _video_changed(self, _index: int) -> None:
+        if not self._busy:
+            self.drafts_changed.emit(self.edited_texts())
+            self.video_changed.emit(str(self.video_combo.currentData() or ""))
+
+    def _error_changed(self, _index: int) -> None:
+        if hasattr(self, "error_combo"):
+            self.drafts_changed.emit(self.edited_texts())
+            self.load_payload(self._payload)
+
+    def set_candidate(self, candidate_id: str, payload: dict[str, Any], video_id: str) -> None:
+        self.candidate_id = candidate_id
+        self._row_cache.clear()
+        self.table.setRowCount(0)
+        if hasattr(self, "video_combo"):
+            self.video_combo.blockSignals(True)
+            self.video_combo.setCurrentIndex(self.video_combo.findData(video_id))
+            self.video_combo.blockSignals(False)
+        self.search_input.clear()
+        if hasattr(self, "error_combo"):
+            self.error_combo.blockSignals(True)
+            self.error_combo.clear()
+            self.error_combo.blockSignals(False)
+        self.load_payload(payload)
+
+    def set_videos(self, videos: list[tuple[str, str]]) -> None:
+        if not hasattr(self, "video_combo"):
+            return
+        previous = self.video_combo.currentData()
+        self.video_combo.blockSignals(True)
+        self.video_combo.clear()
+        for name, video_id in videos:
+            self.video_combo.addItem(name, video_id)
+        index = self.video_combo.findData(previous)
+        self.video_combo.setCurrentIndex(index if index >= 0 else (0 if videos else -1))
+        selected = self.video_combo.currentData()
+        self.video_combo.blockSignals(False)
+        if selected != previous:
+            if selected:
+                self._video_changed(self.video_combo.currentIndex())
+            else:
+                self.set_candidate("", {"segments": []}, "")
+
+    def set_model_state(self, loaded: bool, loading: bool, enabled: bool) -> None:
+        self._model_available = enabled
+        self.model_button.setText(
+            "Đang nạp model Step 4…" if loading else
+            "Đóng model Step 4" if loaded else "Nạp model Step 4"
+        )
+        self.model_button.setEnabled(enabled and not loading and not self._busy)
+        if hasattr(self, "video_combo"):
+            self.video_combo.setEnabled(not loading and not self._busy)
 
     @staticmethod
     def _status_text(item: dict[str, Any], is_context: bool = False) -> str:
@@ -172,7 +244,9 @@ class SyncRepairDialog(QDialog):
         }.get(status, "Đã xử lý" if item.get("status") == "ready" else "Chưa chỉnh sửa")
 
     def load_payload(self, payload: dict[str, Any]) -> None:
-        preserved = self._capture_row_state()
+        self._payload = payload
+        self._row_cache.update(self._capture_row_state())
+        preserved = self._row_cache
         self.table.blockSignals(True)
         self.table.setUpdatesEnabled(False)
         raw = payload.get("segments", [])
@@ -191,6 +265,25 @@ class SyncRepairDialog(QDialog):
         error_indexes = {
             index for index, item in enumerate(all_segments) if item.get("status") != "ready"
         }
+        if hasattr(self, "error_combo"):
+            chosen = self.error_combo.currentData()
+            self.error_combo.blockSignals(True)
+            self.error_combo.clear()
+            self.error_combo.addItem("All — toàn bộ lỗi", None)
+            for index in sorted(error_indexes):
+                item = all_segments[index]
+                detail = str(item.get("error", "")).replace("\n", " ").strip()
+                label = f"#{int(item.get('id', index + 1)):04d} · {self._status_text(item)}"
+                if detail:
+                    label += f" · {detail[:80]}"
+                self.error_combo.addItem(
+                    label, index
+                )
+            selected = self.error_combo.findData(chosen)
+            self.error_combo.setCurrentIndex(max(0, selected))
+            self.error_combo.blockSignals(False)
+            if self.error_combo.currentData() is not None:
+                error_indexes = {int(self.error_combo.currentData())}
         visible_indexes = set(error_indexes)
         for index in error_indexes:
             if index > 0:
@@ -363,14 +456,8 @@ class SyncRepairDialog(QDialog):
 
     def _refresh_actions(self) -> None:
         has_selectable_rows = self.table.rowCount() > 0
-        has_errors = any(
-            not bool(self.table.item(row, self.SELECT_COLUMN).data(self.RESOLVED_ROLE))
-            for row in range(self.table.rowCount())
-            if self.table.item(row, self.SELECT_COLUMN)
-        )
         self.select_all_button.setEnabled(has_selectable_rows and not self._busy)
         self.clear_all_button.setEnabled(has_selectable_rows and not self._busy)
-        self.borrow_button.setEnabled(has_errors and not self._busy)
         self._update_summary()
 
     def _time_input(self, value: float, row: int) -> QDoubleSpinBox:
@@ -569,10 +656,6 @@ class SyncRepairDialog(QDialog):
         self.drafts_changed.emit(self.edited_texts())
         self.process_requested.emit(selected_updates)
 
-    def _request_borrow(self) -> None:
-        self.drafts_changed.emit(self.edited_texts())
-        self.borrow_requested.emit()
-
     def apply_ai_results(self, translations: dict[int, str]) -> None:
         self.table.blockSignals(True)
         try:
@@ -598,18 +681,16 @@ class SyncRepairDialog(QDialog):
         self._busy = busy
         self.table.setEnabled(not busy)
         has_selectable_rows = self.table.rowCount() > 0
-        has_errors = any(
-            not bool(self.table.item(row, self.SELECT_COLUMN).data(self.RESOLVED_ROLE))
-            for row in range(self.table.rowCount())
-            if self.table.item(row, self.SELECT_COLUMN)
-        )
         self.select_all_button.setEnabled(not busy and has_selectable_rows)
         self.clear_all_button.setEnabled(not busy and has_selectable_rows)
         self.search_input.setEnabled(not busy)
         self.search_button.setEnabled(not busy)
         self.ai_button.setEnabled(not busy)
         self.process_button.setEnabled(not busy)
-        self.borrow_button.setEnabled(not busy and has_errors)
+        if hasattr(self, "video_combo"):
+            self.video_combo.setEnabled(not busy)
+            self.error_combo.setEnabled(not busy)
+        self.model_button.setEnabled(not busy and self._model_available)
         if message:
             self.summary.setText(message)
         else:
@@ -643,3 +724,14 @@ class SyncRepairDialog(QDialog):
             return
         self.drafts_changed.emit(self.edited_texts())
         super().closeEvent(event)
+
+
+class SyncAllSegmentsDialog(SyncRepairDialog):
+    """Editor for all segments of the current Step 5 output."""
+
+    def __init__(self, candidate_id: str, payload: dict[str, Any], parent=None, *, target_language: str = "") -> None:
+        super().__init__(
+            candidate_id, payload, parent, show_all=True,
+            target_language=target_language,
+        )
+        self.setWindowTitle("Sửa voice/speaker segment khác")

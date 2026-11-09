@@ -18,7 +18,7 @@ from video_translator.common.models import StepId, StepResult
 from video_translator.config.step_defaults import default_value
 from video_translator.steps.step4_tts.service import release_tts_session
 from video_translator.steps.step4_tts.providers import provider_id
-from video_translator.ui.sync_repair_dialog import SyncRepairDialog
+from video_translator.ui.sync_repair_dialog import SyncAllSegmentsDialog, SyncRepairDialog
 from video_translator.ui.specs import FieldSpec, ProviderSpec, StepSpec
 from video_translator.ui.steps.base import StepPage
 
@@ -28,6 +28,8 @@ class AudioSyncStepPage(StepPage):
     batch_repair_requested = Signal(str, object)
     neighbor_borrow_requested = Signal(str)
     tts_model_toggle_requested = Signal()
+    repair_video_requested = Signal(str)
+    repair_list_refresh_requested = Signal()
 
     SPEC = StepSpec(
         StepId.SYNC,
@@ -84,6 +86,7 @@ class AudioSyncStepPage(StepPage):
         self._repair_dialog: SyncRepairDialog | None = None
         self._tts_model_loaded = False
         self._tts_model_loading = False
+        self._repair_videos: list[tuple[str, str]] = []
         super().__init__(state)
 
     def build_result_extra(self) -> QWidget:
@@ -113,12 +116,6 @@ class AudioSyncStepPage(StepPage):
         self.error_info.setObjectName("muted")
         self.error_info.setWordWrap(True)
         layout.addWidget(self.error_info)
-        self.tts_model_button = QPushButton("Nạp model Step 4")
-        self.tts_model_button.clicked.connect(lambda: self.tts_model_toggle_requested.emit())
-        self.tts_model_info = QLabel("Nạp model trước khi sửa voice để dùng lại khi mở popup hoặc đổi video.")
-        self.tts_model_info.setObjectName("muted")
-        layout.addWidget(self.tts_model_button)
-        layout.addWidget(self.tts_model_info)
         self.repair_button = QPushButton("Mở danh sách xử lý segment")
         self.repair_button.clicked.connect(lambda: self._open_repair_dialog(show_all=False))
         layout.addWidget(self.repair_button)
@@ -156,6 +153,7 @@ class AudioSyncStepPage(StepPage):
             self._refresh_candidates(prefer_current=True)
 
     def _refresh_candidates(self, prefer_current: bool = False) -> None:
+        previous_id = self.sync_combo.currentData() if prefer_current else None
         self.sync_combo.blockSignals(True)
         self.sync_combo.clear()
         for candidate in self.newest_candidates(self.state.sync_candidates.values()):
@@ -163,7 +161,8 @@ class AudioSyncStepPage(StepPage):
             if candidate.error_count:
                 suffix += f"  [Cần sửa: {candidate.error_count}]"
             self.sync_combo.addItem(f"{candidate.label}{suffix}", candidate.id)
-        self.sync_combo.setCurrentIndex(0 if self.sync_combo.count() else -1)
+        previous_index = self.sync_combo.findData(previous_id) if previous_id else -1
+        self.sync_combo.setCurrentIndex(previous_index if previous_index >= 0 else (0 if self.sync_combo.count() else -1))
         self.sync_combo.blockSignals(False)
         self._candidate_changed()
 
@@ -235,10 +234,10 @@ class AudioSyncStepPage(StepPage):
                 f"{len(errors)} segment đang lỗi. "
                 "Mở popup để AI chỉnh sửa theo checkbox hoặc sửa nội dung thủ công."
             )
-            self.repair_button.setEnabled(not self._repairing)
+            self.repair_button.setEnabled(self._current_video_has_repair() and not self._repairing)
         else:
             self.error_info.setText("Không có segment đang lỗi.")
-            self.repair_button.setEnabled(False)
+            self.repair_button.setEnabled(self._current_video_has_repair() and not self._repairing)
         self.edit_segments_button.setEnabled(bool(valid) and not self._repairing)
 
     def _segments(self) -> list[dict[str, object]]:
@@ -246,18 +245,23 @@ class AudioSyncStepPage(StepPage):
         return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
     def _open_repair_dialog(self, show_all: bool = False) -> None:
+        if not show_all:
+            self.repair_list_refresh_requested.emit()
+            if not self._current_video_has_repair():
+                return
+            self._refresh_candidates(prefer_current=False)
         candidate = self._current_candidate()
-        if not candidate:
+        if not candidate and show_all:
             QMessageBox.information(
                 self,
                 "Không có output",
                 "Chưa có candidate Step 5 để xử lý.",
             )
             return
-        if not Path(candidate.path).is_file() or not self._candidate_payload:
+        if candidate and (not Path(candidate.path).is_file() or not self._candidate_payload):
             self._loaded_manifest_signature = None
             self._candidate_changed()
-        if not Path(candidate.path).is_file() or not self._candidate_payload:
+        if show_all and (not candidate or not Path(candidate.path).is_file() or not self._candidate_payload):
             QMessageBox.warning(
                 self,
                 "Không thể mở danh sách",
@@ -268,23 +272,55 @@ class AudioSyncStepPage(StepPage):
             self._repair_dialog.raise_()
             self._repair_dialog.activateWindow()
             return
-        dialog = SyncRepairDialog(
-            candidate.id,
-            dict(self._candidate_payload),
-            self,
-            show_all=show_all,
-            target_language=self.state.target_language,
-        )
-        dialog.ai_requested.connect(lambda texts: self.ai_rewrite_requested.emit(candidate.id, texts))
-        dialog.process_requested.connect(lambda texts: self.batch_repair_requested.emit(candidate.id, texts))
-        dialog.borrow_requested.connect(lambda: self.neighbor_borrow_requested.emit(candidate.id))
-        dialog.drafts_changed.connect(lambda texts: self._save_repair_drafts(candidate.id, texts))
+        if show_all:
+            dialog = SyncAllSegmentsDialog(
+                candidate.id, dict(self._candidate_payload), self,
+                target_language=self.state.target_language,
+            )
+        else:
+            dialog = SyncRepairDialog(
+                candidate.id if candidate else "",
+                dict(self._candidate_payload) if candidate else {"segments": []},
+                self, target_language=self.state.target_language,
+                videos=self._repair_videos,
+                video_id=self.state.project.video_id if self.state.project else "",
+            )
+        dialog.ai_requested.connect(lambda texts: self.ai_rewrite_requested.emit(dialog.candidate_id, texts))
+        dialog.process_requested.connect(lambda texts: self.batch_repair_requested.emit(dialog.candidate_id, texts))
+        dialog.drafts_changed.connect(lambda texts: self._save_repair_drafts(dialog.candidate_id, texts))
+        dialog.model_toggle_requested.connect(self.tts_model_toggle_requested.emit)
+        dialog.video_changed.connect(self.repair_video_requested.emit)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.destroyed.connect(
             lambda *_args, target=dialog: self._clear_repair_dialog(target)
         )
         self._repair_dialog = dialog
+        self._update_tts_model_button()
         dialog.show()
+
+    def set_repair_videos(self, videos: list[tuple[str, str]]) -> None:
+        self._repair_videos = videos
+        if self._repair_dialog and self._repair_dialog.isVisible() and not self._repair_dialog.show_all:
+            self._repair_dialog.set_videos(videos)
+        if hasattr(self, "repair_button"):
+            self.repair_button.setEnabled(self._current_video_has_repair() and not self._repairing)
+
+    def _current_video_has_repair(self) -> bool:
+        video_id = self.state.project.video_id if self.state.project else ""
+        return bool(video_id) and any(item_id == video_id for _, item_id in self._repair_videos)
+
+    def show_repair_video(self, video_id: str) -> None:
+        dialog = self._repair_dialog
+        if not dialog or not dialog.isVisible() or dialog.show_all:
+            return
+        self._refresh_candidates(prefer_current=False)
+        candidate = self._current_candidate()
+        if not candidate:
+            dialog.set_candidate("", {"segments": []}, video_id)
+            self._update_tts_model_button()
+            return
+        dialog.set_candidate(candidate.id, dict(self._candidate_payload), video_id)
+        self._update_tts_model_button()
 
     def _clear_repair_dialog(self, dialog: SyncRepairDialog) -> None:
         release_tts_session(dialog.candidate_id)
@@ -294,27 +330,16 @@ class AudioSyncStepPage(StepPage):
     def set_tts_model_state(self, loaded: bool, loading: bool = False, message: str = "") -> None:
         self._tts_model_loaded = loaded
         self._tts_model_loading = loading
-        self.tts_model_info.setText(message or (
-            "Model đang được giữ để sửa voice qua các video."
-            if loaded else "Nạp model trước khi sửa voice để dùng lại khi mở popup hoặc đổi video."
-        ))
         self._update_tts_model_button()
 
     def _update_tts_model_button(self) -> None:
-        if not hasattr(self, "tts_model_button"):
-            return
         settings = self._candidate_payload.get("source_tts_settings", {})
         provider = str(settings.get("provider", "")) if isinstance(settings, dict) else ""
-        self.tts_model_button.setText(
-            "Đang nạp model Step 4…" if self._tts_model_loading else
-            "Đóng model Step 4" if self._tts_model_loaded else "Nạp model Step 4"
-        )
-        self.tts_model_button.setEnabled(
-            not self._tts_model_loading and not self._repairing
-            and (self._tts_model_loaded or bool(self._current_candidate()) and bool(provider) and provider != provider_id("edge"))
-        )
-        if not self._tts_model_loaded and not self._tts_model_loading and provider == provider_id("edge"):
-            self.tts_model_info.setText("Edge TTS chạy online, không có model local cần nạp.")
+        if self._repair_dialog:
+            self._repair_dialog.set_model_state(
+                self._tts_model_loaded, self._tts_model_loading,
+                self._tts_model_loaded or bool(self._current_candidate()) and bool(provider) and provider != provider_id("edge"),
+            )
 
     def _save_repair_drafts(self, candidate_id: str, texts: dict[int, str]) -> None:
         candidate = self.state.sync_candidate(candidate_id)
@@ -353,10 +378,7 @@ class AudioSyncStepPage(StepPage):
     def set_repair_busy(self, busy: bool, message: str = "") -> None:
         self._repairing = busy
         self._update_tts_model_button()
-        self.repair_button.setEnabled(not busy and any(
-            item.get("status") != "ready"
-            for item in self._segments()
-        ))
+        self.repair_button.setEnabled(not busy and self._current_video_has_repair())
         self.repair_button.setText("Đang xử lý…" if busy else "Mở danh sách xử lý segment")
         self.edit_segments_button.setEnabled(not busy and bool(self._segments()))
         self.edit_segments_button.setText(
@@ -389,10 +411,16 @@ class AudioSyncStepPage(StepPage):
         if target >= 0:
             self.sync_combo.setCurrentIndex(target)
         if self._repair_dialog and self._repair_dialog.candidate_id == candidate_id:
-            self._repair_dialog.refresh_payload(
-                dict(self._candidate_payload),
-                processed_ids or set(),
-            )
+            if self._repair_dialog.show_all:
+                self._repair_dialog.refresh_payload(
+                    dict(self._candidate_payload), processed_ids or set(),
+                )
+            else:
+                self._repair_dialog.set_candidate(
+                    candidate_id, dict(self._candidate_payload),
+                    self.state.project.video_id if self.state.project else "",
+                )
+        self.repair_list_refresh_requested.emit()
 
     def _select_for_step_six(self) -> None:
         candidate = self._current_candidate()

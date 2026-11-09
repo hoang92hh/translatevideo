@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from pydantic import ValidationError
 from .....config.batch_prompts import prepare_translation_prompt
+from .....config.timing_rewrite_prompt import load_timing_rewrite_prompt
 
 from .....config.web_translation import (
     CHATGPT_EXTENSION_ID,
@@ -554,11 +555,7 @@ class WebTranslationService:
             if progress:
                 progress(5 + int((index - 1) / len(batches) * 88), f"AI đang rút gọn batch {index}/{len(batches)}…")
             parsed = self._request_json(
-                (
-                    f"Rewrite current_translation in {self.target_language} so synthesized speech fits the "
-                    "measured window at or below target_speed. Preserve essential meaning, negation, intent, "
-                    "proper names, numbers, and causality. Return every input ID exactly once."
-                ),
+                load_timing_rewrite_prompt(self.target_language),
                 batch,
                 'A JSON array containing only objects of the form {"id": integer, "translated_text": string}.',
                 require_project=False,

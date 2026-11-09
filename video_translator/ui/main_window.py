@@ -25,7 +25,7 @@ from ..config.deepseek import DEEPSEEK_MODEL, DEEPSEEK_PROVIDER_NAME
 from ..config.opencode_go import OPENCODE_GO_MODEL, OPENCODE_GO_PROVIDER_NAME
 from ..config.batch_prompts import load_batch_prompt
 from ..batch_project import BatchProject, BatchProjectService
-from ..common.models import STEP_ORDER, StepId, StepStatus, Segment
+from ..common.models import STEP_ORDER, StepId, StepStatus, Segment, SyncCandidate
 from ..pipeline import MockPipeline
 from ..pipeline.step_batch_runner import StepBatchRunner
 from ..pipeline.txt_repair_batch_runner import TxtRepairBatchRunner
@@ -174,6 +174,9 @@ class MainWindow(QMainWindow):
                 page.neighbor_borrow_requested.connect(self._borrow_sync_neighbor_time)
             if hasattr(page, "tts_model_toggle_requested"):
                 page.tts_model_toggle_requested.connect(self._toggle_step5_tts_model)
+            if hasattr(page, "repair_video_requested"):
+                page.repair_video_requested.connect(self._switch_step5_repair_video)
+                page.repair_list_refresh_requested.connect(self._refresh_step5_repair_videos)
             if hasattr(page, "review_video_requested"):
                 page.review_video_requested.connect(self._open_step3_review_video)
                 page.review_list_refresh_requested.connect(self._refresh_step3_review_videos)
@@ -202,6 +205,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Project trống", "Project không có video nào được chọn.")
             return
         self.batch_project = project
+        self._refresh_step5_repair_videos()
         self.batch_settings = dict(project.batch_settings)
         self.project_manager.add_recent(project.manifest_path)
         self._refresh_video_selector(project.ordered_videos()[0].id)
@@ -367,6 +371,43 @@ class MainWindow(QMainWindow):
         preloader.loaded.connect(loaded)
         preloader.finished.connect(finished)
         preloader.start()
+
+    def _switch_step5_repair_video(self, video_id: str) -> None:
+        if not self.batch_project or not self.batch_project.video(video_id) or self.active_workers:
+            return
+        if self.state.project and self.state.project.video_id != video_id:
+            index = self.video_selector.findData(video_id)
+            if index < 0:
+                return
+            self.video_selector.setCurrentIndex(index)
+        page = self.pages[StepId.SYNC]
+        QTimer.singleShot(50, lambda: page.show_repair_video(video_id))
+
+    def _refresh_step5_repair_videos(self) -> None:
+        videos: list[tuple[str, str]] = []
+        if self.batch_project:
+            for video in self.batch_project.ordered_videos():
+                try:
+                    project = BatchProjectService.read_video(self.batch_project, video.id)
+                    if not project:
+                        continue
+                    candidates = [
+                        SyncCandidate(**item) for item in project.sync_candidates
+                        if isinstance(item, dict) and item.get("id")
+                    ]
+                    ordered = StepPage.newest_candidates(candidates)
+                    if not ordered:
+                        continue
+                    payload = json.loads(Path(ordered[0].path).read_text(encoding="utf-8"))
+                    segments = payload.get("segments", [])
+                    if isinstance(segments, list) and any(
+                        isinstance(item, dict) and item.get("status") != "ready"
+                        for item in segments
+                    ):
+                        videos.append((video.name, video.id))
+                except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                    continue
+        self.pages[StepId.SYNC].set_repair_videos(videos)
 
     def _open_provider_settings(self) -> None:
         dialog = ProviderSettingsDialog(self)

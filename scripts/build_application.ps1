@@ -36,6 +36,9 @@ foreach ($name in @("extension", "huong_dan_su_dung", "reference")) {
         Copy-Item -LiteralPath (Join-Path $repoRoot $name) -Destination (Join-Path $distRoot $name) -Recurse
     }
 }
+New-Item -ItemType Directory -Force -Path (Join-Path $distRoot "reference\prompt_template") | Out-Null
+Copy-Item -LiteralPath (Join-Path $repoRoot "reference\prompt_template\prompt_rut_gon.md") `
+    -Destination (Join-Path $distRoot "reference\prompt_template\prompt_rut_gon.md") -Force
 $videoPrompts = Join-Path $distRoot "reference\prompt_video"
 New-Item -ItemType Directory -Force -Path $videoPrompts | Out-Null
 Copy-Item -Path (Join-Path $repoRoot "reference\prompt_video\*") -Destination $videoPrompts -Recurse -Force

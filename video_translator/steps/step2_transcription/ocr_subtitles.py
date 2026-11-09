@@ -45,6 +45,7 @@ class SubtitleOcrService:
         progress: Callable[[int, str], None] | None = None,
         whisper: list[TranscriptSegment] | None = None,
         selective: bool = False,
+        gap_intervals: list[tuple[float, float]] | None = None,
     ) -> OcrResult:
         source = Path(video)
         if not source.is_file():
@@ -58,6 +59,11 @@ class SubtitleOcrService:
             request["selective" if selective else "hybrid"] = True
             request["whisper_intervals"] = [
                 {"start": item.start, "end": item.end} for item in whisper
+            ]
+        if selective:
+            request["gap_intervals"] = [
+                {"start": start, "end": end}
+                for start, end in (gap_intervals or []) if end > start
             ]
         if self.batch_session:
             result, error, stderr, code = run_batch_worker(
@@ -187,8 +193,9 @@ def map_ocr_text(
 def map_selective_ocr_text(
     whisper: list[TranscriptSegment], ocr: list[TranscriptSegment],
     target_indices: set[int], language: str,
+    gap_intervals: list[tuple[float, float]] | None = None,
 ) -> tuple[list[TranscriptSegment], int]:
-    """Use cleaned OCR on selected cues; retain empty cues as timeline points."""
+    """Replace selected Whisper text when OCR succeeds and add cues from gaps."""
     cleaned = _prepare_ocr_cues(ocr, language)
     assigned: dict[int, list[TranscriptSegment]] = {index: [] for index in target_indices}
     unmatched: list[TranscriptSegment] = []
@@ -220,17 +227,16 @@ def map_selective_ocr_text(
         if selected:
             mapped[index] = replace(mapped[index], text=selected)
             matched += 1
-        else:
-            mapped[index] = replace(mapped[index], start=mapped[index].end, text="")
-    ordered_whisper = sorted(whisper, key=lambda item: (item.start, item.end))
-    for previous, current in zip(ordered_whisper, ordered_whisper[1:]):
-        gap_start, gap_end = previous.end, current.start
-        if gap_end <= gap_start:
+        # Keep the Whisper text when OCR cannot read a usable replacement.
+    for cue in unmatched:
+        if not cue.text.strip():
             continue
-        mapped.extend(
-            cue for cue in unmatched
-            if cue.start >= gap_start and cue.end <= gap_end and cue.text.strip()
-        )
+        for gap_start, gap_end in gap_intervals or []:
+            start = max(cue.start, gap_start)
+            end = min(cue.end, gap_end)
+            if end > start:
+                mapped.append(replace(cue, start=start, end=end))
+                break
     mapped.sort(key=lambda item: (item.start, item.end))
     return mapped, matched
 

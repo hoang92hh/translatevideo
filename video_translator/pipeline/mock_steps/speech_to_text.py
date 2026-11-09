@@ -47,6 +47,36 @@ def _comparison_text(value: str) -> str:
     )
 
 
+def _has_language_script_mismatch(value: str, language: str) -> bool:
+    """Flag alphabetic text written outside the source language's usual scripts."""
+    def script(char: str) -> str:
+        codepoint = ord(char)
+        if (
+            0x3400 <= codepoint <= 0x4DBF
+            or 0x4E00 <= codepoint <= 0x9FFF
+            or 0xF900 <= codepoint <= 0xFAFF
+            or 0x20000 <= codepoint <= 0x323AF
+        ):
+            return "Han"
+        name = unicodedata.name(char, "")
+        for candidate in ("LATIN", "HANGUL", "HIRAGANA", "KATAKANA"):
+            if candidate in name:
+                return candidate.title()
+        return "Other"
+
+    expected = {
+        "zh": {"Han"},
+        "en": {"Latin"},
+        "vi": {"Latin"},
+        "ja": {"Han", "Hiragana", "Katakana"},
+        "ko": {"Han", "Hangul"},
+    }.get(language, set())
+    return any(
+        char.isalpha() and script(char) not in expected
+        for char in value
+    )
+
+
 def _merge_contained_adjacent_segments(
     segments: list[TranscriptSegment],
 ) -> list[TranscriptSegment]:
@@ -184,8 +214,22 @@ def execute(
             if progress and segmentation_mode in {"OCR", "Hybrid"} else progress
         )
         transcription = service.transcribe(input_audio, asr_progress)
-    target_indices = set(range(len(transcription.segments))) if segmentation_mode == "OCR" else set()
     if segmentation_mode in {"OCR", "Hybrid"}:
+        target_indices = (
+            {
+                index for index, segment in enumerate(transcription.segments)
+                if _has_language_script_mismatch(segment.text, language_code)
+            }
+            if segmentation_mode == "OCR" else set()
+        )
+        ordered_segments = sorted(
+            transcription.segments, key=lambda item: (item.start, item.end),
+        )
+        whisper_gaps = [
+            (previous.end, current.start)
+            for previous, current in zip(ordered_segments, ordered_segments[1:])
+            if current.start > previous.end
+        ] if segmentation_mode == "OCR" else []
         ocr = SubtitleOcrService(language_code, requested_device, batch_session)
         ocr_progress = (
             (lambda value, message: progress(60 + round(value * 0.4), message))
@@ -193,13 +237,16 @@ def execute(
         )
         ocr_result = ocr.extract(
             source_video, ocr_progress,
-            transcription.segments,
+            [transcription.segments[index] for index in sorted(target_indices)]
+            if segmentation_mode == "OCR" else transcription.segments,
             selective=segmentation_mode == "OCR",
+            gap_intervals=whisper_gaps,
         )
         ocr_cue_count = len(ocr_result.segments)
         if segmentation_mode == "OCR":
             mapped, matched_ocr = map_selective_ocr_text(
                 transcription.segments, ocr_result.segments, target_indices, language_code,
+                gap_intervals=whisper_gaps,
             )
             transcription = replace(transcription, segments=mapped)
         else:

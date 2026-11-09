@@ -218,20 +218,19 @@ def run(request: dict[str, Any]) -> None:
             _emit({"type": "result", "actual_device": actual_device})
             return
         if request.get("selective"):
-            ordered_intervals = sorted(
+            target_intervals = sorted(
                 (max(0.0, float(row["start"]) - 0.2), float(row["end"]) + 0.2)
                 for row in request.get("whisper_intervals", [])
                 if float(row["end"]) > float(row["start"])
             )
-            intervals = list(ordered_intervals)
-            intervals.extend(
-                (previous[1], current[0])
-                for previous, current in zip(ordered_intervals, ordered_intervals[1:])
-                if current[0] > previous[1]
-            )
+            gap_intervals = [
+                (max(0.0, float(row["start"])), float(row["end"]))
+                for row in request.get("gap_intervals", [])
+                if float(row["end"]) > float(row["start"])
+            ]
             dense, duration = _scan(
                 str(request["input_video"]), reader, None,
-                _merge_intervals(intervals), 0.2, False,
+                _merge_intervals([*target_intervals, *gap_intervals]), 0.2, False,
             )
             _emit({"type": "result", "segments": _cues(dense, 0.6),
                    "duration_seconds": duration, "actual_device": actual_device,

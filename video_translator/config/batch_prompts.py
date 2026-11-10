@@ -63,12 +63,13 @@ def prepare_translation_prompt(
             lambda match: variables.get(match.group(1), match.group(0)),
             topic,
         )
-        previous_summary = str(variables.get("previous_segment_summary", "")).strip()
-        variables["previous_segment_context"] = (
-            "### 2. Phân đoạn trước đang có diễn biến như sau\n\n"
-            "{\n" + previous_summary + "\n}\n\n"
-            if previous_summary else ""
-        )
+        if provider == OPENCODE_GO_PROVIDER_NAME:
+            previous_summary = str(variables.get("previous_segment_summary", "")).strip()
+            variables["previous_segment_context"] = (
+                "### 2. Phân đoạn trước đang có diễn biến như sau\n\n"
+                "{\n" + previous_summary + "\n}\n\n"
+                if previous_summary else ""
+            )
     # Substitute once: braces in user-edited stories must stay literal.
     return re.sub(
         r"\{([a-z_]+)\}",

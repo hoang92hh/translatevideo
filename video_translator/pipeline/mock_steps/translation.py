@@ -408,7 +408,8 @@ def execute(
         "auto_adjacent_cleanup": auto_adjacent_cleanup,
         "adjacent_cleanup_count": adjacent_cleanup_count,
         "translation_strategy": translation_strategy,
-        **({"batch_summaries": response.batch_summaries} if is_gemini_step_batch else {}),
+        **({"batch_summaries": response.batch_summaries}
+           if provider == OPENCODE_GO_PROVIDER_NAME and is_gemini_step_batch else {}),
         "skipped_translation_ids": skipped_translation_ids,
         "context_consistency": False,
         "dialogue_profile_path": str(profile_path),

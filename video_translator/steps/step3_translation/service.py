@@ -255,7 +255,8 @@ class TranslationWorkflow:
                         response_file=True,
                         batch_index=index,
                         batch_total=len(batches),
-                        **({"previous_segment_summary": previous_segment_summary} if is_gemini else {}),
+                        **({"previous_segment_summary": previous_segment_summary}
+                           if getattr(self.provider, "provider_name", "") == OPENCODE_GO_PROVIDER_NAME else {}),
                         **retry_options,
                     )
                     batch_result = self._validate_translations(response.translations, batch, "dịch")
@@ -289,7 +290,8 @@ class TranslationWorkflow:
                 assert last_error is not None
                 raise last_error
             translated.update(batch_result)
-            if is_gemini and getattr(self.provider, "batch_prompt_context", None) is not None:
+            if (getattr(self.provider, "provider_name", "") == OPENCODE_GO_PROVIDER_NAME
+                    and getattr(self.provider, "batch_prompt_context", None) is not None):
                 previous_segment_summary = response.segment_summary
                 batch_summaries.append({"batch_index": index, "Noi_dung": previous_segment_summary})
             # Gemini automatic assessment/review is temporarily disabled.

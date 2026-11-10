@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Callable
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .....config.gemini import GEMINI_PROVIDER_NAME, GEMINI_RECOMMENDED_MODEL_IDS
 from .....config.batch_prompts import prepare_translation_prompt
@@ -56,7 +56,8 @@ class SourceVerifiedTranslationItem(BaseModel):
 
 
 class BatchTranslationOutput(BaseModel):
-    Noi_dung: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+
     segment_list: list[SourceVerifiedTranslationItem]
 
 
@@ -605,14 +606,11 @@ class GoogleTranslationService:
         )
         if is_video_batch:
             content = {"segments_to_translate": content["segments_to_translate"]}
-        if is_step_batch and not is_video_batch and previous_segment_summary:
-            content["Boi_canh_doan_truoc"] = previous_segment_summary
         prompt, input_filename, output_filename = self._stage_prompt(
             "TRANSLATION",
             segments,
             batch_index,
             batch_total,
-            previous_segment_summary,
         )
         if not is_step_batch:
             prompt += (
@@ -653,22 +651,18 @@ class GoogleTranslationService:
             batch_index=batch_index,
             batch_total=batch_total,
         )
-        segment_summary = ""
         if is_step_batch:
             try:
                 output = BatchTranslationOutput.model_validate(parsed)
-                segment_summary = output.Noi_dung.strip()
-                if not segment_summary:
-                    raise ValueError("Noi_dung trống.")
                 parsed = output.segment_list
             except (ValidationError, TypeError, ValueError) as exc:
                 self._record_diagnostic_error(
-                    diagnostic_dir, "validate_response", "Thiếu Noi_dung hoặc segment_list.",
+                    diagnostic_dir, "validate_response", "Thiếu segment_list.",
                     reason=str(exc),
                 )
                 raise UserFacingError(
                     "Gemini trả về sai cấu trúc batch",
-                    f"Batch {batch_index}/{batch_total}: cần object có Noi_dung và segment_list.",
+                    f"Batch {batch_index}/{batch_total}: cần object có segment_list.",
                     "Kiểm tra response.json trong thư mục chẩn đoán.",
                     str(exc),
                 ) from exc
@@ -789,7 +783,7 @@ class GoogleTranslationService:
                 "Mở request.json, response.json và error.json để đối chiếu.",
                 json.dumps(issues, ensure_ascii=False, indent=2),
             )
-        return TranslationResponse(result, credential_source, corrected_speakers, segment_summary)
+        return TranslationResponse(result, credential_source, corrected_speakers)
 
     def review_translation(
         self,

@@ -16,9 +16,6 @@ from .worker import PipelineWorker
 from .story_worker import StoryWorker
 
 
-STORY_SEGMENT_LIMIT = 150
-
-
 class StepBatchRunner(QObject):
     """Run one selected step and optionally generate stories by Group."""
 
@@ -300,11 +297,10 @@ class StepBatchRunner(QObject):
         self.transcript_video_ids.clear()
         self.timeline_warning_positions.clear()
         pending_groups = set(self.pending_story_groups)
-        segment_counts = {group: 0 for group in pending_groups}
         group_size = max(1, int(self.project.story_group_size))
         for index, video in enumerate(self.project.ordered_videos()):
             group_number = index // group_size + 1
-            if group_number not in pending_groups or segment_counts[group_number] >= STORY_SEGMENT_LIMIT:
+            if group_number not in pending_groups:
                 continue
             video_id = video.id
             try:
@@ -322,12 +318,11 @@ class StepBatchRunner(QObject):
                 )
                 if result is None:
                     continue
-                available = STORY_SEGMENT_LIMIT - segment_counts[group_number]
                 texts = [
                     segment.source_text.strip()
                     for segment in result.segments
                     if segment.source_text.strip()
-                ][:available]
+                ]
                 if not texts:
                     continue
                 self.story_videos.setdefault(group_number, []).append({
@@ -336,7 +331,6 @@ class StepBatchRunner(QObject):
                     "video_filename": Path(project.input_video).name,
                     "source_text": texts,
                 })
-                segment_counts[group_number] += len(texts)
                 self.transcript_video_ids.add(video_id)
                 if int(result.metadata.get("timeline_error_count", 0)) > 0:
                     self.timeline_warning_positions.append(index + 1)

@@ -20,8 +20,9 @@ ChatGPT Web tiếp tục dùng prompt và định dạng phản hồi riêng.
 Story mới chỉ lưu nội dung AI trả về; khi nạp story cũ, ứng dụng xóa khối thông tin
 Group/video do phiên bản trước tự thêm vào đầu file để không gửi khối đó khi dịch.
 
-Khi tạo story, ứng dụng đọc nguyên văn `story.md` của provider đã chọn và gửi transcript
-của toàn bộ video trong Group. Story được lưu tại `stories/story_group_<group>.md`.
+Khi tạo story, ứng dụng đọc nguyên văn `story.md` của provider đã chọn và gửi toàn bộ
+segment có lời thoại trong transcript đã lưu của tất cả video thuộc Group, theo thứ tự video.
+Mỗi Group tạo một story riêng tại `stories/story_group_<group>.md`.
 
 Khi dịch Step 3, ứng dụng đọc nguyên văn `translation.md` rồi điền các biến:
 
@@ -35,10 +36,9 @@ Khi dịch Step 3, ứng dụng đọc nguyên văn `translation.md` rồi đi�
 Danh sách `segments_to_translate`, ngữ cảnh trước/sau và các trường hỗ trợ vẫn nằm trong input JSON
 đính kèm như luồng dịch thường. Story được điền trực tiếp trong prompt, không sao chép vào từng
 segment. AI đọc toàn bộ story và đoạn hiện tại, phân tích nội bộ rồi chỉ trả bản dịch cuối cùng.
-Với Gemini, phản hồi batch là object gồm `Noi_dung` và `segment_list`. Sau khi
-`segment_list` được xác thực, ứng dụng lưu `Noi_dung` vào metadata của candidate
-và gửi nó trong prompt cùng input JSON của batch kế tiếp. Batch đầu không có phần
-diễn biến trước. ChatGPT Web vẫn nhận mảng segment như trước.
+Với Gemini và DeepSeek, phản hồi batch là object chỉ có `segment_list`. Mỗi batch dùng
+story của Group và ngữ cảnh segment trong JSON đầu vào; không tạo hoặc chuyển tóm tắt
+diễn biến giữa các batch. ChatGPT Web vẫn nhận mảng segment như trước.
 Các biến chỉ được thay một lần để giữ nguyên dấu ngoặc/biến xuất hiện trong story do người dùng sửa.
 
 Chia segment vẫn tuân theo thiết lập project, gồm `Segments / batch` và tùy chọn dịch toàn bộ

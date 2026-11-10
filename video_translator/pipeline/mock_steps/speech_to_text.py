@@ -18,9 +18,10 @@ from ...steps.step2_transcription.service import (
     SpeechToTextService, TranscriptSegment, assess_transcript_timeline,
 )
 from ...steps.step2_transcription.ocr_subtitles import (
-    SubtitleOcrService, align_hybrid_text, collapse_srt_segments,
+    SubtitleOcrService, align_hybrid_text,
     map_selective_ocr_text,
 )
+from ...steps.step2_transcription.srt_duplicate_cleanup import collapse_srt_segments
 
 
 LANGUAGE_CODES = {

@@ -185,8 +185,6 @@ def map_ocr_text(
             replaced_in_second_pass.add(index)
             matched_count += 1
 
-    _collapse_adjacent_mapped_duplicates(mapped, separator)
-
     return mapped, matched_count
 
 
@@ -577,73 +575,6 @@ def _remove_comparison_prefix(text: str, count: int) -> str:
 def _remove_comparison_suffix(text: str, count: int) -> str:
     positions = [index for index, char in enumerate(text) if char.isalnum()]
     return text[:positions[-count]].rstrip()
-
-
-def _collapse_adjacent_mapped_duplicates(
-    mapped: list[TranscriptSegment], separator: str,
-) -> None:
-    """Join matching boundaries while preserving short, repeated utterances."""
-    active: list[int] = []
-    for index in range(len(mapped)):
-        if not _comparison_text(mapped[index].text):
-            continue
-        while active:
-            previous_index = active[-1]
-            previous, current = mapped[previous_index], mapped[index]
-            left, right = _comparison_text(previous.text), _comparison_text(current.text)
-            if left == right:
-                if len(left) <= 4:
-                    break
-                keep_previous = True
-                merged_text = previous.text
-            elif overlap := _longest_suffix_prefix_overlap(left, right):
-                keep_previous = True
-                remainder = _remove_comparison_prefix(current.text, overlap)
-                merged_text = (
-                    separator.join((previous.text, remainder))
-                    if _comparison_text(remainder) else previous.text
-                )
-            elif left.startswith(right) or left.endswith(right):
-                keep_previous = True
-                merged_text = previous.text
-            elif right.startswith(left) or right.endswith(left):
-                keep_previous = False
-                merged_text = current.text
-            else:
-                break
-
-            start = min(previous.start, current.start)
-            end = max(previous.end, current.end)
-            if keep_previous:
-                mapped[previous_index] = replace(
-                    previous, start=start, end=end, text=merged_text,
-                )
-                mapped[index] = replace(
-                    current, start=end, end=end, text=COLLAPSED_SEGMENT_TEXT,
-                )
-                break
-
-            mapped[index] = replace(current, start=start, end=end)
-            mapped[previous_index] = replace(
-                previous, start=start, end=start, text=COLLAPSED_SEGMENT_TEXT,
-            )
-            active.pop()
-
-        if mapped[index].text != COLLAPSED_SEGMENT_TEXT:
-            active.append(index)
-
-
-def collapse_srt_segments(
-    segments: list[TranscriptSegment], language: str,
-) -> list[TranscriptSegment]:
-    """Collapse adjacent duplicate text across Whisper, OCR, and Hybrid SRTs."""
-    separator = "" if language in {"zh", "ja", "ko"} else " "
-    mapped = sorted(segments, key=lambda item: (item.start, item.end))
-    _collapse_adjacent_mapped_duplicates(mapped, separator)
-    return [
-        replace(item, text="") if item.text == COLLAPSED_SEGMENT_TEXT else item
-        for item in mapped
-    ]
 
 
 def _contiguous_ocr_blocks(cues: list[TranscriptSegment], separator: str) -> list[str]:

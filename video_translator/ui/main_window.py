@@ -385,6 +385,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_step5_repair_videos(self) -> None:
         videos: list[tuple[str, str]] = []
+        candidate_ids: dict[str, str] = {}
         if self.batch_project:
             for video in self.batch_project.ordered_videos():
                 try:
@@ -398,16 +399,22 @@ class MainWindow(QMainWindow):
                     ordered = StepPage.newest_candidates(candidates)
                     if not ordered:
                         continue
-                    payload = json.loads(Path(ordered[0].path).read_text(encoding="utf-8"))
+                    candidate = ordered[0]
+                    if self.state.project and self.state.project.video_id == video.id:
+                        selected = self.pages[StepId.SYNC]._current_candidate()
+                        if selected and any(item.id == selected.id for item in candidates):
+                            candidate = selected
+                    payload = json.loads(Path(candidate.path).read_text(encoding="utf-8"))
                     segments = payload.get("segments", [])
                     if isinstance(segments, list) and any(
                         isinstance(item, dict) and item.get("status") != "ready"
                         for item in segments
                     ):
                         videos.append((video.name, video.id))
+                        candidate_ids[video.id] = candidate.id
                 except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
                     continue
-        self.pages[StepId.SYNC].set_repair_videos(videos)
+        self.pages[StepId.SYNC].set_repair_videos(videos, candidate_ids)
 
     def _open_provider_settings(self) -> None:
         dialog = ProviderSettingsDialog(self)
@@ -1744,6 +1751,8 @@ class MainWindow(QMainWindow):
                 page.set_progress(0, "Step còn lỗi cần xử lý trước khi tiếp tục.")
             page.set_busy(False)
             page.refresh()
+            if step == StepId.SYNC:
+                self._refresh_step5_repair_videos()
 
         def failed(payload: object) -> None:
             outcome["failed"] = True

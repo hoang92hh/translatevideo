@@ -87,6 +87,7 @@ class AudioSyncStepPage(StepPage):
         self._tts_model_loaded = False
         self._tts_model_loading = False
         self._repair_videos: list[tuple[str, str]] = []
+        self._repair_candidate_ids: dict[str, str] = {}
         super().__init__(state)
 
     def build_result_extra(self) -> QWidget:
@@ -234,10 +235,10 @@ class AudioSyncStepPage(StepPage):
                 f"{len(errors)} segment đang lỗi. "
                 "Mở popup để AI chỉnh sửa theo checkbox hoặc sửa nội dung thủ công."
             )
-            self.repair_button.setEnabled(self._current_video_has_repair() and not self._repairing)
+            self.repair_button.setEnabled(not self._repairing)
         else:
             self.error_info.setText("Không có segment đang lỗi.")
-            self.repair_button.setEnabled(self._current_video_has_repair() and not self._repairing)
+            self.repair_button.setEnabled(False)
         self.edit_segments_button.setEnabled(bool(valid) and not self._repairing)
 
     def _segments(self) -> list[dict[str, object]]:
@@ -249,7 +250,6 @@ class AudioSyncStepPage(StepPage):
             self.repair_list_refresh_requested.emit()
             if not self._current_video_has_repair():
                 return
-            self._refresh_candidates(prefer_current=False)
         candidate = self._current_candidate()
         if not candidate and show_all:
             QMessageBox.information(
@@ -298,22 +298,30 @@ class AudioSyncStepPage(StepPage):
         self._update_tts_model_button()
         dialog.show()
 
-    def set_repair_videos(self, videos: list[tuple[str, str]]) -> None:
+    def set_repair_videos(
+        self, videos: list[tuple[str, str]], candidate_ids: dict[str, str] | None = None,
+    ) -> None:
         self._repair_videos = videos
+        self._repair_candidate_ids = candidate_ids or {}
         if self._repair_dialog and self._repair_dialog.isVisible() and not self._repair_dialog.show_all:
             self._repair_dialog.set_videos(videos)
         if hasattr(self, "repair_button"):
             self.repair_button.setEnabled(self._current_video_has_repair() and not self._repairing)
 
     def _current_video_has_repair(self) -> bool:
-        video_id = self.state.project.video_id if self.state.project else ""
-        return bool(video_id) and any(item_id == video_id for _, item_id in self._repair_videos)
+        return bool(self._current_candidate()) and any(
+            item.get("status") != "ready" for item in self._segments()
+        )
 
     def show_repair_video(self, video_id: str) -> None:
         dialog = self._repair_dialog
         if not dialog or not dialog.isVisible() or dialog.show_all:
             return
         self._refresh_candidates(prefer_current=False)
+        target_id = self._repair_candidate_ids.get(video_id, "")
+        target_index = self.sync_combo.findData(target_id)
+        if target_index >= 0:
+            self.sync_combo.setCurrentIndex(target_index)
         candidate = self._current_candidate()
         if not candidate:
             dialog.set_candidate("", {"segments": []}, video_id)

@@ -50,6 +50,7 @@ def collapse_adjacent_translations(segments: list[Segment]) -> int:
                     break
                 keep_previous = True
                 merged_text = previous.translated_text
+                midpoint_start = (previous.start + previous.end) / 2
             elif overlap := _longest_boundary_overlap(left, right):
                 keep_previous = True
                 remainder = _unmatched_text(current.translated_text, overlap)
@@ -63,11 +64,15 @@ def collapse_adjacent_translations(segments: list[Segment]) -> int:
             elif right.startswith(left) or right.endswith(left):
                 keep_previous = False
                 merged_text = current.translated_text
+                midpoint_start = (previous.start + previous.end) / 2
             else:
                 break
 
             start = min(previous.start, current.start)
             end = max(previous.end, current.end)
+            if left == right or not keep_previous:
+                start = midpoint_start
+                end = current.end
             collapsed += 1
             if keep_previous:
                 segments[previous_index] = replace(
@@ -80,7 +85,7 @@ def collapse_adjacent_translations(segments: list[Segment]) -> int:
 
             segments[index] = replace(current, start=start, end=end)
             segments[previous_index] = replace(
-                previous, start=start, end=start, translated_text="",
+                previous, end=previous.start, translated_text="",
             )
             active.pop()
 

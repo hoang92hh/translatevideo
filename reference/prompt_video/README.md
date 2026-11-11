@@ -1,7 +1,7 @@
-# Prompt Step 3 cho batch tuần tự theo video
+# Prompt Step 3 cho batch theo video
 
-`google_gemini/story.md` tạo story riêng từ toàn bộ kịch bản của một video. Story chỉ được giữ trong bộ nhớ của lượt chạy.
+Mỗi video được chia thành các đoạn theo `video_story_group_size` trong thiết lập project. Đoạn cuối có số segment không quá 50% kích thước đặt trước sẽ được gộp vào đoạn liền trước.
 
-`google_gemini/first_block.md` dịch block segment đầu tiên. `google_gemini/next_block.md` dịch các block tiếp theo. Mỗi block trả `Noi_dung` là bối cảnh cụ thể của chính block đó; giá trị này trở thành `prev` của block kế tiếp. Khi sang video khác, cả story và prev đều được tạo lại.
+`google_gemini/story.md` và `opencode_go/story.md` tạo story riêng cho từng đoạn, theo cấu trúc tham chiếu của `prompt_batch`. Một câu giới thiệu câu chuyện và nhân vật chính được lấy từ phần tổng quan của story đoạn đầu, rồi dùng cho các đoạn tiếp theo trong cùng video.
 
-`{topic_content}` là nội dung prompt type đã chọn trong Thiết lập project → Step 3. Các prompt dịch nhận thêm `{story_content}`, `{previous_segment_summary}` và thông tin batch. Chỉ riêng luồng Google Gemini của popup chạy batch tuần tự sử dụng các file này.
+`translation.md` của từng provider dịch các phân cảnh trong đoạn. Prompt nhận `{topic_content}`, `{story_content}` và `{story_intro_section}` (trống ở đoạn đầu). Kích thước phân cảnh dùng `Segments / batch` của project. Khi chuyển video, story và câu giới thiệu được tạo lại.

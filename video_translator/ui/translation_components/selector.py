@@ -64,6 +64,10 @@ class _CommonTranslationComponent(_ProviderComponent):
         self.batch_size.setRange(1, 1000)
         self.batch_size.setValue(int(default_value(StepId.TRANSLATE, "batch_size")))
         form.addRow("Segments / batch", self.batch_size)
+        self.video_story_group_size = QSpinBox()
+        self.video_story_group_size.setRange(1, 100000)
+        self.video_story_group_size.setValue(int(default_value(StepId.TRANSLATE, "video_story_group_size")))
+        form.addRow("Segments / đoạn story (batch theo video)", self.video_story_group_size)
         self.proper_name_mode = QComboBox()
         self.proper_name_mode.addItems(PROPER_NAME_MODES)
         self.proper_name_mode.setCurrentText(str(default_value(StepId.TRANSLATE, "proper_name_mode")))
@@ -72,9 +76,16 @@ class _CommonTranslationComponent(_ProviderComponent):
             "Dịch toàn bộ segment của project trong một lượt"
         )
         self.all_project_segments.setChecked(bool(default_value(StepId.TRANSLATE, "all_project_segments")))
-        self.all_project_segments.toggled.connect(self.batch_size.setDisabled)
+        self.all_project_segments.toggled.connect(
+            lambda checked: self.batch_size.setDisabled(
+                checked and self.provider_name not in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
+            )
+        )
         form.addRow("Phạm vi dịch", self.all_project_segments)
-        self.batch_size.setDisabled(self.all_project_segments.isChecked())
+        self.batch_size.setDisabled(
+            self.all_project_segments.isChecked()
+            and self.provider_name not in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
+        )
         self.auto_adjacent_cleanup = QCheckBox("Tự động xử lý segment liền kề")
         self.auto_adjacent_cleanup.setChecked(
             bool(default_value(StepId.TRANSLATE, "auto_adjacent_cleanup"))
@@ -85,6 +96,7 @@ class _CommonTranslationComponent(_ProviderComponent):
         return {
             "provider": self.provider_name,
             "batch_size": self.batch_size.value(),
+            "video_story_group_size": self.video_story_group_size.value(),
             "proper_name_mode": self.proper_name_mode.currentText(),
             "all_project_segments": self.all_project_segments.isChecked(),
             "auto_adjacent_cleanup": self.auto_adjacent_cleanup.isChecked(),

@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, ValidationError, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, TypeAdapter
 
 from .....config.opencode_go import OPENCODE_GO_API_URL, OPENCODE_GO_MODEL, OPENCODE_GO_PROVIDER_NAME
 from .....config.batch_prompts import prepare_translation_prompt
@@ -59,6 +59,12 @@ class SourceVerifiedTranslationItem(BaseModel):
 
 class BatchTranslationOutput(BaseModel):
     Noi_dung: str = Field(min_length=1)
+    segment_list: list[SourceVerifiedTranslationItem]
+
+
+class VideoBatchTranslationOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     segment_list: list[SourceVerifiedTranslationItem]
 
 
@@ -531,7 +537,8 @@ class OpenCodeGoTranslationService:
         parsed, credential_source = self._generate_structured(
             content,
             prompt,
-            BatchTranslationOutput if is_step_batch else list[SourceVerifiedTranslationItem],
+            (VideoBatchTranslationOutput if is_video_batch else BatchTranslationOutput)
+            if is_step_batch else list[SourceVerifiedTranslationItem],
             0.2,
             input_filename,
             output_filename,
@@ -543,19 +550,19 @@ class OpenCodeGoTranslationService:
         segment_summary = ""
         if is_step_batch:
             try:
-                output = BatchTranslationOutput.model_validate(parsed)
-                segment_summary = output.Noi_dung.strip()
-                if not segment_summary:
-                    raise ValueError("Noi_dung trống.")
+                output = (VideoBatchTranslationOutput if is_video_batch else BatchTranslationOutput).model_validate(parsed)
+                if not is_video_batch:
+                    segment_summary = output.Noi_dung.strip()
                 parsed = output.segment_list
             except (ValidationError, TypeError, ValueError) as exc:
                 self._record_diagnostic_error(
-                    diagnostic_dir, "validate_response", "Thiếu Noi_dung hoặc segment_list.",
+                    diagnostic_dir, "validate_response", "Thiếu segment_list hoặc sai cấu trúc.",
                     reason=str(exc),
                 )
                 raise UserFacingError(
                     "OpenCode Go trả về sai cấu trúc batch",
-                    f"Batch {batch_index}/{batch_total}: cần object có Noi_dung và segment_list.",
+                    f"Batch {batch_index}/{batch_total}: cần object có segment_list"
+                    + ("." if is_video_batch else " và Noi_dung."),
                     "Kiểm tra response.json trong thư mục chẩn đoán.",
                     str(exc),
                 ) from exc

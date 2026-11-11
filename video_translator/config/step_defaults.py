@@ -36,6 +36,7 @@ STEP_DEFAULTS: Mapping[StepId, Mapping[str, Any]] = {
     StepId.TRANSLATE: {
         "provider": GEMINI_PROVIDER_NAME, "model": GEMINI_DEFAULT_MODEL,
         "prompt_template": DEFAULT_PROMPT_TEMPLATE_ID, "batch_size": 250,
+        "video_story_group_size": 300,
         "proper_name_mode": PROPER_NAME_MODE_AUTO,
         "all_project_segments": True, "project_url": "",
         "auto_adjacent_cleanup": True,

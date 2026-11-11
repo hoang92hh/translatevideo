@@ -1123,18 +1123,17 @@ class MainWindow(QMainWindow):
             settings["input_audio"] = self.batch_state.audio_input_path()
             settings["input_candidate_id"] = self.batch_state.selected_audio_candidate_id
             settings["input_stem"] = self.batch_state.selected_audio_stem
-        if step == StepId.TRANSLATE and self.batch_context_video_id != self.batch_state.project.video_id:
+        if (step == StepId.TRANSLATE and
+                settings.get("provider", GEMINI_PROVIDER_NAME) not in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
+                and self.batch_context_video_id != self.batch_state.project.video_id):
             self._start_video_context_analysis()
             return
         if step == StepId.TRANSLATE:
             gemini_video = settings.get("provider", GEMINI_PROVIDER_NAME) in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
             if gemini_video:
-                if not self.batch_context_story:
-                    self._fail_batch_video("Chưa có story của video hiện tại.", step)
-                    return
-                story_name = "story trong bộ nhớ"
+                story_name = "story theo đoạn của video"
                 story_path = ""
-                story_content = self.batch_context_story
+                story_content = "Sẽ phân tích từng đoạn khi chạy Step 3"
             else:
                 context_path = Path(self.batch_context_path)
                 if not context_path.is_file():

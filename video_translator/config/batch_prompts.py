@@ -25,8 +25,8 @@ def load_batch_prompt(provider: str, mode: str = "step") -> PromptTemplate:
     if folder is None:
         raise ValueError("Batch Step 3 dùng story hiện hỗ trợ Google Gemini, DeepSeek và ChatGPT Web.")
     if mode == "video" and provider in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}:
-        path = PROMPT_VIDEO_ROOT / folder / "first_block.md"
-        template_id = "video_first_block"
+        path = PROMPT_VIDEO_ROOT / folder / "translation.md"
+        template_id = "video_group_translation"
     elif mode == "legacy":
         path = PROMPT_TEMPLATE_ROOT / folder / "translation_review.md"
         template_id = "legacy_translation_review"
@@ -52,10 +52,10 @@ def prepare_translation_prompt(
     variables = {**values, **{key: str(value) for key, value in batch_context.items()}}
     mode = str(batch_context.get("batch_prompt_mode", "step"))
     template = load_batch_prompt(provider, mode)
-    if provider in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} and mode == "video" and int(variables["batch_index"]) > 1:
-        path = PROMPT_VIDEO_ROOT / PROVIDER_FOLDERS[provider] / "next_block.md"
-        text = path.read_text(encoding="utf-8-sig")
-        template = PromptTemplate(provider, "video_next_block", path.stem, text, path)
+    variables["story_intro_section"] = (
+        "## Bối cảnh chung của video\n\n" + str(variables.get("story_intro", "")).strip() + "\n\n"
+        if str(variables.get("story_intro", "")).strip() else ""
+    )
     if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} and mode in {"step", "video"}:
         topic = strip_prompt_marker(load_prompt_template(provider, template_id).prompt)
         variables["topic_content"] = re.sub(

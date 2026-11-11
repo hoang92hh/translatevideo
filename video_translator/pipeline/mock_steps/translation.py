@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -11,7 +13,7 @@ from ...config.gemini import GEMINI_PROVIDER_NAME
 from ...config.deepseek import DEEPSEEK_PROVIDER_NAME
 from ...config.opencode_go import OPENCODE_GO_PROVIDER_NAME
 from ...config.prompt_templates import load_prompt_template
-from ...config.batch_prompts import load_batch_prompt
+from ...config.batch_prompts import load_batch_prompt, PROMPT_VIDEO_ROOT
 from ...config.translation import resolve_proper_name_policy
 from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from ...common.models import StepId, StepResult, TranslationCandidate
@@ -299,7 +301,7 @@ def execute(
     all_project_segments = bool(settings["all_project_segments"])
     is_gemini_video_batch = video_prompt
     batch_size = (
-        50 if is_gemini_video_batch and all_project_segments
+        configured_batch_size if is_gemini_video_batch
         else len(segments) if all_project_segments and segments
         else configured_batch_size
     )
@@ -324,13 +326,59 @@ def execute(
         provider_options,
     )
     workflow = TranslationWorkflow(translation_provider, batch_size)
-    response = workflow.run(
-        segments,
-        False,
-        proper_name_policy,
-        progress,
-        state.target_language,
-    )
+    if is_gemini_video_batch:
+        if not segments:
+            raise ValueError("Transcript Step 2 không có segment để dịch.")
+        group_size = max(1, int(settings["video_story_group_size"]))
+        groups = [segments[pos:pos + group_size] for pos in range(0, len(segments), group_size)]
+        if len(groups) > 1 and len(groups[-1]) * 2 <= group_size:
+            groups[-2].extend(groups.pop())
+        folder = "google_gemini" if provider == GEMINI_PROVIDER_NAME else "opencode_go"
+        story_prompt = (PROMPT_VIDEO_ROOT / folder / "story.md").read_text(encoding="utf-8-sig")
+        all_translations: dict[int, str] = {}
+        all_summaries: list[dict[str, object]] = []
+        story_intro = ""
+        analysis_count = 0
+        translation_count = 0
+        response = None
+        for group_index, group in enumerate(groups, start=1):
+            if progress:
+                progress(int((group_index - 1) / len(groups) * 90), f"Đang phân tích đoạn {group_index}/{len(groups)}…")
+            transcript = [segment.source_text.strip() for segment in group if segment.source_text.strip()]
+            story = translation_provider.generate_story(
+                {"source_language": state.source_language, "videos": [{"source_text": transcript}]},
+                story_prompt,
+                f"video-story-{group_index:03d}-input.json",
+                f"video-story-{group_index:03d}-response.json",
+            ).strip()
+            if not story:
+                raise ValueError(f"Story của đoạn {group_index} trống.")
+            analysis_count += 1
+            if group_index == 1:
+                overview = re.search(r"(?ms)^# 1\. Tổng quan câu chuyện\s*(.*?)(?=^# |\Z)", story)
+                paragraph = (overview.group(1) if overview else story).strip().split("\n\n", 1)[0]
+                story_intro = re.split(r"(?<=[.!?。！？])\s+", paragraph, maxsplit=1)[0].strip()
+            translation_provider.batch_prompt_context.update({
+                "story_content": story,
+                "story_intro": story_intro if group_index > 1 else "",
+                "story_group": group_index,
+            })
+            group_response = workflow.run(
+                group, False, proper_name_policy, progress, state.target_language,
+            )
+            all_translations.update(group_response.translations)
+            all_summaries.extend(group_response.batch_summaries)
+            translation_count += group_response.translation_batch_count
+            response = group_response
+        assert response is not None
+        response = replace(response, translations=all_translations,
+                           analysis_batch_count=analysis_count,
+                           translation_batch_count=translation_count,
+                           batch_summaries=all_summaries)
+    else:
+        response = workflow.run(
+            segments, False, proper_name_policy, progress, state.target_language,
+        )
     for segment in segments:
         segment.translated_text = response.translations[segment.id]
         if not segment.translated_text.strip():

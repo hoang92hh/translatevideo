@@ -291,7 +291,8 @@ class TranslationWorkflow:
                 raise last_error
             translated.update(batch_result)
             if (getattr(self.provider, "provider_name", "") == OPENCODE_GO_PROVIDER_NAME
-                    and getattr(self.provider, "batch_prompt_context", None) is not None):
+                    and getattr(self.provider, "batch_prompt_context", None) is not None
+                    and self.provider.batch_prompt_context.get("batch_prompt_mode") != "video"):
                 previous_segment_summary = response.segment_summary
                 batch_summaries.append({"batch_index": index, "Noi_dung": previous_segment_summary})
             # Gemini automatic assessment/review is temporarily disabled.

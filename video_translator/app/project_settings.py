@@ -787,7 +787,7 @@ class ProjectSettingsDialog(QDialog):
             control = getattr(component, key, None)
             if isinstance(control, QComboBox):
                 control.setCurrentText(str(values[key]))
-        for key in ("batch_size",):
+        for key in ("batch_size", "video_story_group_size"):
             control = getattr(component, key, None)
             if isinstance(control, QSpinBox):
                 control.setValue(int(values[key]))

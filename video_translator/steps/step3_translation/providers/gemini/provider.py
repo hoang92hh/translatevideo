@@ -254,6 +254,8 @@ class GoogleTranslationService:
         expected_ids: list[int] | None = None,
         batch_index: int = 1,
         batch_total: int = 1,
+        parse_raw_json: bool = False,
+        response_json_schema: dict[str, object] | None = None,
     ) -> tuple[object, str]:
         client = None
         credential = None
@@ -327,8 +329,12 @@ class GoogleTranslationService:
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
                         response_mime_type="application/json",
-                        response_schema=response_schema,
                         temperature=temperature,
+                        **(
+                            {"response_json_schema": response_json_schema}
+                            if response_json_schema is not None
+                            else {"response_schema": response_schema}
+                        ),
                     ),
                 )
                 stage = "save_response"
@@ -352,8 +358,10 @@ class GoogleTranslationService:
                     output_path.write_text(response_text, encoding="utf-8")
                 if diagnostic_dir is not None:
                     (diagnostic_dir / "response_source.txt").write_text(response_source, encoding="utf-8")
-                if parsed is None:
+                if parsed is None and not (parse_raw_json and response_text):
                     raise ValueError("Gemini không trả về structured output.")
+                if parse_raw_json:
+                    parsed = json.loads(response_text)
                 return parsed, credential.source
         except UserFacingError as exc:
             self._record_diagnostic_error(
@@ -650,6 +658,8 @@ class GoogleTranslationService:
             expected_ids=expected_ids,
             batch_index=batch_index,
             batch_total=batch_total,
+            parse_raw_json=is_step_batch,
+            response_json_schema=BatchTranslationOutput.model_json_schema() if is_step_batch else None,
         )
         if is_step_batch:
             try:

@@ -89,6 +89,8 @@ class DeepSeekTranslationService(GoogleTranslationService):
         temperature: float, input_filename: str, output_filename: str,
         diagnostic_dir: Path | None = None, expected_ids: list[int] | None = None,
         batch_index: int = 1, batch_total: int = 1,
+        parse_raw_json: bool = False,
+        response_json_schema: dict[str, object] | None = None,
     ) -> tuple[object, str]:
         is_list = get_origin(response_schema) is list
         schema = get_args(response_schema)[0] if is_list else response_schema
@@ -100,7 +102,7 @@ class DeepSeekTranslationService(GoogleTranslationService):
         else:
             system_instruction += "\nReturn a JSON object matching the requested output fields."
             system_instruction += "\nThe output object must match this JSON schema: " + json.dumps(
-                TypeAdapter(schema).json_schema(), ensure_ascii=False,
+                response_json_schema or TypeAdapter(schema).json_schema(), ensure_ascii=False,
             )
         if diagnostic_dir is not None:
             diagnostic_dir.mkdir(parents=True, exist_ok=True)
@@ -118,6 +120,8 @@ class DeepSeekTranslationService(GoogleTranslationService):
             if diagnostic_dir is not None:
                 (diagnostic_dir / "response.json").write_text(answer, encoding="utf-8")
             parsed: Any = json.loads(answer)
+            if parse_raw_json:
+                return parsed, source
             if is_list:
                 if not isinstance(parsed, dict) or not isinstance(parsed.get("items"), list):
                     raise ValueError("DeepSeek phải trả object có mảng items.")

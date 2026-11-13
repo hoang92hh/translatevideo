@@ -9,6 +9,7 @@ from typing import Any
 
 _TIMESTAMP = r"(\d{2,}):([0-5]\d):([0-5]\d)[,.](\d{1,3})"
 _CUE_TIME = re.compile(rf"^\s*{_TIMESTAMP}\s*-->\s*{_TIMESTAMP}(?:\s+.*)?$")
+_SPEAKER_PREFIX = re.compile(r"^\[(SPEAKER_(?:\d+|UNKNOWN))\](?:\s+|$)")
 
 
 def _read_text(path: Path) -> str:
@@ -58,6 +59,10 @@ def read_srt(path: Path) -> list[dict[str, Any]]:
         start = _seconds(match.groups()[:4])
         end = _seconds(match.groups()[4:])
         text = " ".join(line for line in lines[1:] if line)
+        speaker_match = _SPEAKER_PREFIX.match(text)
+        speaker_id = speaker_match.group(1) if speaker_match else "SPEAKER_UNKNOWN"
+        if speaker_match:
+            text = text[speaker_match.end():].strip()
         empty_point = not text and end == start
         if end <= start and not empty_point:
             raise ValueError(f"Mục SRT {cue_number}: End phải lớn hơn Start.")
@@ -71,7 +76,7 @@ def read_srt(path: Path) -> list[dict[str, Any]]:
             "id": cue_number,
             "start": start,
             "end": end,
-            "speaker_id": "SPEAKER_UNKNOWN",
+            "speaker_id": speaker_id,
             "merge_parts": [],
             "text": text,
         })

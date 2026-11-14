@@ -21,7 +21,6 @@ from ...steps.step2_transcription.ocr_subtitles import (
     SubtitleOcrService, align_hybrid_text,
     map_selective_ocr_text,
 )
-from ...steps.step2_transcription.srt_duplicate_cleanup import collapse_srt_segments
 
 
 LANGUAGE_CODES = {
@@ -199,7 +198,7 @@ def execute(
     matched_ocr = 0
     ocr_cue_count = 0
     if segmentation_mode in {"Whisper", "OCR", "Hybrid"}:
-        vad_recovery = bool(settings["vad_recovery"])
+        vad_recovery = bool(settings["vad_recovery"]) or bool(settings["diarization"])
         service = SpeechToTextService(
             model_name=model_name,
             device=requested_device,
@@ -261,8 +260,8 @@ def execute(
     segments = transcription.segments
     if segmentation_mode == "Whisper" and bool(settings["merge_contained_adjacent_segments"]):
         segments = _merge_contained_adjacent_segments(segments)
-    segments = collapse_srt_segments(segments, language_code)
     cues: list[str] = []
+    speaker_cues: list[str] = []
     for index, item in enumerate(segments, start=1):
         cue_text = " ".join(item.text.split())
         empty_point = not cue_text and item.start == item.end
@@ -275,12 +274,48 @@ def execute(
             f"{index}\n{_srt_timestamp(item.start)} --> {_srt_timestamp(item.end)}"
             f"\n{cue_text}\n"
         )
+        if bool(settings["diarization"]):
+            speaker_text = f"[{item.speaker_id or 'SPEAKER_UNKNOWN'}] {cue_text}" if cue_text else ""
+            speaker_cues.append(
+                f"{index}\n{_srt_timestamp(item.start)} --> {_srt_timestamp(item.end)}"
+                f"\n{speaker_text}\n"
+            )
 
     srt_path.parent.mkdir(parents=True, exist_ok=True)
+    device_log_path = srt_path.with_name(f"{srt_path.stem}_step1_5_device.json")
+    device_log = {
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "input_audio": str(input_audio),
+        "model": model_name,
+        "segmentation_mode": segmentation_mode,
+        "requested_device": requested_device,
+        "actual_device": transcription.actual_device,
+        "compute_type": transcription.compute_type,
+        "device_selection_reason": transcription.device_selection_reason,
+        "gpu_fallback": transcription.device_fallback,
+    }
     temporary_path = srt_path.with_suffix(".srt.part")
     try:
         temporary_path.write_text("\n".join(cues), encoding="utf-8")
         temporary_path.replace(srt_path)
+        if speaker_cues:
+            speaker_path = srt_path.with_name(f"{srt_path.stem}_speaker.srt")
+            speaker_temporary_path = speaker_path.with_suffix(".srt.part")
+            try:
+                speaker_temporary_path.write_text("\n".join(speaker_cues), encoding="utf-8")
+                speaker_temporary_path.replace(speaker_path)
+            except Exception:
+                speaker_temporary_path.unlink(missing_ok=True)
+                raise
+        device_log_temporary_path = device_log_path.with_suffix(".json.part")
+        try:
+            device_log_temporary_path.write_text(
+                json.dumps(device_log, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
+            device_log_temporary_path.replace(device_log_path)
+        except Exception:
+            device_log_temporary_path.unlink(missing_ok=True)
+            raise
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
@@ -306,6 +341,7 @@ def execute(
         "language_probability": transcription.language_probability,
         "requested_device": requested_device,
         "actual_device": transcription.actual_device,
+        "device_log_path": str(device_log_path),
         "duration_seconds": transcription.duration_seconds,
         "srt_cue_count": len(cues),
         "segmentation_mode": segmentation_mode,
@@ -323,7 +359,11 @@ def execute(
     return StepResult(
         step=StepId.STT,
         summary=summary,
-        artifacts={"srt": str(srt_path)},
+        artifacts={
+            "srt": str(srt_path),
+            "device_log": str(device_log_path),
+            **({"speaker_srt": str(speaker_path)} if speaker_cues else {}),
+        },
         segments=[],
         metadata=metadata,
     )

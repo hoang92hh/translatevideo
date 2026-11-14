@@ -38,6 +38,7 @@ def preload_batch_models(session_key: str, settings: dict[str, object]) -> None:
         "model_name": str(settings["model"]),
         "model_cache_dir": str(SpeechToTextService.model_cache_dir()),
         "requested_device": str(settings["device"]),
+        "colab_vad": bool(settings["vad_recovery"]) or bool(settings["diarization"]),
     }
     result, error, stderr, _ = run_batch_worker(session_key, "stt", request)
     if error and request["requested_device"] == "Auto" and error.get("fallback_to_cpu"):
@@ -146,6 +147,7 @@ class Transcription:
     actual_device: str
     compute_type: str
     device_selection_reason: str
+    device_fallback: dict[str, object] | None = None
     diarization_model: str = ""
     diarization_device: str = ""
     diarization_turns: tuple[dict[str, object], ...] = ()
@@ -200,6 +202,7 @@ class SpeechToTextService:
             "requested_device": self.device,
             "language": self.language,
             "vad_filter": self.vad_filter,
+            "colab_vad": self.segmentation_mode == "Whisper" and (self.vad_filter or self.diarization),
             "segment_recovery": self.segment_recovery,
             "segmentation_mode": self.segmentation_mode,
         }
@@ -310,6 +313,7 @@ class SpeechToTextService:
                 actual_device=str(result.get("actual_device", "")),
                 compute_type=str(result.get("compute_type", "default")),
                 device_selection_reason=str(result.get("device_selection_reason", "")),
+                device_fallback=dict(result.get("device_fallback") or {}),
                 asr_recovery=dict(result.get("asr_recovery") or {}),
             )
         diarization_model = ""
@@ -566,6 +570,7 @@ class SpeechToTextService:
             actual_device=str(result.get("actual_device", "")),
             compute_type=str(result.get("compute_type", "default")),
             device_selection_reason=str(result.get("device_selection_reason", "")),
+            device_fallback=dict(result.get("device_fallback") or {}),
             diarization_model=diarization_model,
             diarization_device=diarization_device,
             diarization_turns=diarization_turns,
@@ -676,19 +681,15 @@ class SpeechToTextService:
 
     @staticmethod
     def _speaker_for_interval(start: float, end: float, turns: list[dict[str, object]]) -> str:
-        best_speaker = ""
-        best_overlap = 0.0
-        midpoint = (start + end) / 2.0
+        overlaps: dict[str, float] = {}
         for turn in turns:
             turn_start = float(turn.get("start", 0.0))
             turn_end = float(turn.get("end", turn_start))
             overlap = max(0.0, min(end, turn_end) - max(start, turn_start))
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_speaker = str(turn.get("speaker_id", ""))
-            elif not best_speaker and turn_start <= midpoint <= turn_end:
-                best_speaker = str(turn.get("speaker_id", ""))
-        return best_speaker or "SPEAKER_UNKNOWN"
+            speaker = str(turn.get("speaker_id", ""))
+            if overlap > 0 and speaker:
+                overlaps[speaker] = overlaps.get(speaker, 0.0) + overlap
+        return sorted(overlaps, key=lambda speaker: (-overlaps[speaker], speaker))[0] if overlaps else "SPEAKER_UNKNOWN"
 
     @staticmethod
     def _join_text(left: str, right: str) -> str:
@@ -983,9 +984,9 @@ class SpeechToTextService:
 
         if worker_error:
             if self.device == "Auto" and bool(worker_error.get("fallback_to_cpu", False)):
-                if progress:
-                    progress(5, "CUDA không thể khởi tạo; Auto đang thử lại bằng CPU…")
                 fallback_reason = str(worker_error.get("message", "CUDA không thể khởi tạo."))
+                if progress:
+                    progress(5, f"GPU lỗi: {fallback_reason}; Auto đang thử lại bằng CPU…")
                 fallback_request = {
                     **request,
                     "requested_device": "CPU",
@@ -994,6 +995,14 @@ class SpeechToTextService:
                 }
                 fallback_result = self._run_worker(fallback_request, progress)
                 fallback_result["requested_device"] = "Auto"
+                fallback_result["device_fallback"] = {
+                    "attempted_device": "cuda",
+                    "title": str(worker_error.get("title", "")),
+                    "message": fallback_reason,
+                    "technical_detail": str(worker_error.get("technical_detail", "")),
+                    "worker_stderr": stderr,
+                    "worker_exit_code": return_code,
+                }
                 return fallback_result
             detail = str(worker_error.get("technical_detail", ""))
             if stderr:

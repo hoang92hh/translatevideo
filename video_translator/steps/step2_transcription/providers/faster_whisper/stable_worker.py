@@ -13,7 +13,7 @@ from video_translator.config.step_defaults import default_value
 from .worker import _merge_hybrid_segments
 
 
-_BATCH_MODELS: dict[tuple[str, str, str], Any] = {}
+_BATCH_MODELS: dict[tuple[str, str, str, str, str], Any] = {}
 
 
 def _emit(event: dict[str, object]) -> None:
@@ -34,6 +34,18 @@ def _device(requested: str) -> tuple[str, str, str]:
     if requested == "GPU" or torch.cuda.is_available():
         return "cuda", "NVIDIA GPU (CUDA)", "PyTorch sử dụng GPU CUDA."
     return "cpu", "CPU", "Auto chọn CPU vì PyTorch không phát hiện GPU CUDA."
+
+
+def _faster_compute_type(device: str) -> str:
+    if device == "cpu":
+        return "int8"
+    import ctranslate2
+
+    supported = ctranslate2.get_supported_compute_types("cuda", 0)
+    for compute_type in ("float16", "int8_float16", "int8_float32", "float32", "int8"):
+        if compute_type in supported:
+            return compute_type
+    raise RuntimeError(f"CTranslate2 không hỗ trợ kiểu tính toán CUDA phù hợp: {sorted(supported)}")
 
 
 def _segment_dicts(result: Any, offset: float = 0.0) -> list[dict[str, object]]:
@@ -57,6 +69,94 @@ def _segment_dicts(result: Any, offset: float = 0.0) -> list[dict[str, object]]:
         if math.isfinite(start) and math.isfinite(end) and end > start:
             segments.append({"start": start, "end": end, "text": text, "words": words})
     return segments
+
+
+def _colab_vad_segments(
+    model: Any, audio: Any, language: str | None,
+) -> tuple[list[dict[str, object]], int, float]:
+    """Run the Colab VAD -> compact audio -> stable-ts path on original time."""
+    import numpy as np
+    import torch
+    from silero_vad import get_speech_timestamps, load_silero_vad
+
+    sampling_rate = 16000
+    regions = get_speech_timestamps(
+        torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)),
+        load_silero_vad(), sampling_rate=sampling_rate,
+        threshold=0.25, min_speech_duration_ms=100,
+        min_silence_duration_ms=1000, speech_pad_ms=150,
+        return_seconds=False,
+    )
+    pieces: list[Any] = []
+    mapping: list[tuple[int, int, int]] = []
+    cursor = 0
+    for region in regions:
+        source_start, source_end = int(region["start"]), int(region["end"])
+        if source_end <= source_start:
+            continue
+        pieces.append(audio[source_start:source_end])
+        mapping.append((cursor, cursor + source_end - source_start, source_start))
+        cursor += source_end - source_start
+    if not pieces:
+        return [], 0, 0.0
+    compact = np.ascontiguousarray(np.concatenate(pieces), dtype=np.float32)
+    _progress(20, f"VAD giữ {len(mapping)} vùng tiếng; nhận dạng {len(compact) / sampling_rate:.1f}s audio…")
+    result = model.transcribe(
+        compact, language=language, task="transcribe",
+        initial_prompt="以下是普通话的句子。" if language == "zh" else None,
+        word_timestamps=True, regroup=False, vad=True,
+        vad_threshold=0.25, demucs=False, beam_size=5,
+        condition_on_previous_text=True, verbose=False,
+    )
+    result.split_by_gap(0.28)
+    result.split_by_punctuation(["。", "？", "！", "?", "!", "，", ","])
+
+    def region_at(value: float) -> tuple[int, int, int]:
+        sample = value * sampling_rate
+        for index, region in enumerate(mapping):
+            if sample < region[1] or index == len(mapping) - 1:
+                return region
+        return mapping[-1]
+
+    def source_time(value: float, region: tuple[int, int, int]) -> float:
+        compact_start, compact_end, source_start = region
+        sample = min(max(value * sampling_rate, compact_start), compact_end)
+        return (source_start + sample - compact_start) / sampling_rate
+
+    segments: list[dict[str, object]] = []
+    for segment in result.segments:
+        if not str(segment.text).strip():
+            continue
+        words = segment.words or []
+        if not words:
+            region = region_at((float(segment.start) + float(segment.end)) / 2)
+            start, end = source_time(float(segment.start), region), source_time(float(segment.end), region)
+            if end > start:
+                segments.append({"start": round(start, 3), "end": round(end, 3),
+                                 "text": str(segment.text).strip(), "words": []})
+            continue
+        groups: list[tuple[tuple[int, int, int], list[Any]]] = []
+        for word in words:
+            region = region_at((float(word.start) + float(word.end)) / 2)
+            if not groups or groups[-1][0] != region:
+                groups.append((region, []))
+            groups[-1][1].append(word)
+        for region, group in groups:
+            start = source_time(float(group[0].start), region)
+            end = source_time(float(group[-1].end), region)
+            text = "".join(str(word.word) for word in group).strip()
+            if not text or end <= start:
+                continue
+            mapped_words = [
+                {"start": round(source_time(float(word.start), region), 3),
+                 "end": round(source_time(float(word.end), region), 3),
+                 "word": str(word.word),
+                 "probability": float(getattr(word, "probability", None) or 0.0)}
+                for word in group
+            ]
+            segments.append({"start": round(start, 3), "end": round(end, 3),
+                             "text": text, "words": mapped_words})
+    return segments, len(mapping), len(compact) / sampling_rate
 
 
 def _stable_transcribe(model: Any, audio: Any, language: str | None) -> Any:
@@ -155,18 +255,31 @@ def run(request: dict[str, Any]) -> None:
         if requested == "Auto" and device == "cpu" and request.get("fallback_reason"):
             reason = f"Auto chuyển sang CPU: {request['fallback_reason']}"
         model_name = str(request.get("model_name", default_value(StepId.STT, "model")))
-        model_key = (model_name, device, str(request["model_cache_dir"]))
+        colab_vad = bool(request.get("colab_vad", False))
+        backend = "faster" if colab_vad else "pytorch"
+        compute_type = _faster_compute_type(device) if colab_vad else "pytorch"
+        if colab_vad:
+            reason = f"{reason} CTranslate2 dùng {compute_type}."
+        model_key = (model_name, device, str(request["model_cache_dir"]), backend, compute_type)
         model = _BATCH_MODELS.get(model_key)
         if model is None:
             _progress(8, f"Đang nạp Stable Whisper {model_name} trên {actual_device}…")
-            model = stable_whisper.load_model(
-                model_name, device=device,
-                download_root=str(request["model_cache_dir"]),
-            )
+            if colab_vad:
+                model = stable_whisper.load_faster_whisper(
+                    model_name, device=device,
+                    compute_type=compute_type,
+                    download_root=str(request["model_cache_dir"]),
+                )
+            else:
+                model = stable_whisper.load_model(
+                    model_name, device=device,
+                    download_root=str(request["model_cache_dir"]),
+                )
             if request.get("batch_session"):
                 _BATCH_MODELS[model_key] = model
         if request.get("type") == "preload":
-            _emit({"type": "result", "actual_device": actual_device, "compute_type": "pytorch"})
+            _emit({"type": "result", "actual_device": actual_device,
+                   "compute_type": compute_type})
             return
 
         source = str(request["input_audio"])
@@ -179,11 +292,20 @@ def run(request: dict[str, Any]) -> None:
         mode = str(request.get("segmentation_mode", default_value(StepId.STT, "segmentation_mode")))
         if mode not in {"VAD", "Hybrid", "Whisper"}:
             raise ValueError(f"Cơ chế tạo SRT không hợp lệ: {mode}")
-        use_recovery = bool(request.get("segment_recovery")) and bool(request.get("vad_filter", True))
+        use_recovery = (not colab_vad and bool(request.get("segment_recovery"))
+                        and bool(request.get("vad_filter", True)))
         regions = _vad_regions(audio, sampling_rate) if mode in {"VAD", "Hybrid"} or use_recovery else []
         _progress(15, f"Đang nhận dạng {language or 'ngôn ngữ tự động'} bằng Stable Whisper…")
 
-        if mode == "VAD":
+        if colab_vad and mode == "Whisper":
+            segments, region_count, compact_duration = _colab_vad_segments(model, audio, language)
+            recovered = []
+            metadata = {
+                "enabled": True, "mode": "colab_vad_compact",
+                "vad_region_count": region_count,
+                "compact_duration_seconds": round(compact_duration, 3),
+            }
+        elif mode == "VAD":
             segments = _vad_text_segments(model, audio, sampling_rate, regions, language)
             metadata: dict[str, object] = {
                 "enabled": True, "mode": "within_vad_region",
@@ -219,7 +341,8 @@ def run(request: dict[str, Any]) -> None:
             "language": language or str(getattr(locals().get("stable_result"), "language", "")),
             "language_probability": None, "duration_seconds": duration,
             "requested_device": requested, "actual_device": actual_device,
-            "compute_type": "pytorch", "device_selection_reason": reason,
+            "compute_type": compute_type,
+            "device_selection_reason": reason,
         })
     except Exception as exc:
         detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))

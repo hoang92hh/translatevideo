@@ -38,8 +38,8 @@ class SpeechToTextStepPage(StepPage):
                 FieldSpec("model", "Model", "choice", default_value(StepId.STT, "model"), ("small", "medium", "large-v3")),
                 DEVICE_FIELD,
                 FieldSpec("segmentation_mode", "Cơ chế tạo SRT (Step 1.5)", "choice", default_value(StepId.STT, "segmentation_mode"), ("Whisper", "OCR", "Hybrid")),
-                FieldSpec("vad_recovery", "VAD + phục hồi segment (Whisper / Hybrid)", "bool", default_value(StepId.STT, "vad_recovery")),
-                FieldSpec("diarization", "Speaker diarization (Whisper / Hybrid)", "bool", default_value(StepId.STT, "diarization")),
+                FieldSpec("vad_recovery", "VAD khi tạo SRT (Whisper / Hybrid)", "bool", default_value(StepId.STT, "vad_recovery")),
+                FieldSpec("diarization", "Speaker diarization (tự bật VAD)", "bool", default_value(StepId.STT, "diarization")),
                 FieldSpec(
                     "merge_contained_adjacent_segments",
                     "Gộp segment liền kề (Whisper)",

@@ -17,6 +17,10 @@
 - **Điểm cần xem xét:** thời gian tải/chạy MDX; chất lượng voice tách ra ảnh hưởng trực tiếp khả năng nhận dạng ở Step 2. Nên đo riêng thời gian trích FFmpeg và thời gian tách MDX trước khi tối ưu.
 - **Nguồn code:** [pipeline Step 1](../video_translator/pipeline/mock_steps/extract.py), [cấu hình UI](../video_translator/steps/step1_separation/ui/page.py).
 
+## Step 1.5 — Tạo SRT từ voice
+
+Ở chế độ Whisper, khi bật VAD hoặc speaker diarization, Stable Whisper dùng Silero VAD để lấy các vùng lời nói, ghép audio để nhận dạng và ánh xạ timestamp về voice gốc. Bật diarization tự kích hoạt VAD; pyannote chạy trên voice gốc và gán speaker theo tổng thời gian giao nhau giữa từng câu với các lượt nói. Với backend Faster Whisper trên CUDA, ứng dụng chọn kiểu tính toán mà CTranslate2 hỗ trợ trên GPU hiện tại, ví dụ `int8_float32` trên GTX 1060. Step 1.5 ghi SRT thường và, khi bật diarization, thêm file `_speaker.srt` có nhãn speaker. File `_step1_5_device.json` cạnh SRT ghi thiết bị đã chọn, thiết bị thực tế và lỗi GPU gốc nếu Auto phải chạy lại trên CPU. Step 2 tiếp tục đọc SRT thường. Step 1.5 không tự lọc trùng các segment liền kề trước khi ghi SRT; tùy chọn gộp riêng của Whisper vẫn hoạt động nếu được bật.
+
 ## Step 2 — Nhận dạng lời nói và speaker
 
 Ngoài nhận dạng audio, Step 2 có một nút nhập file `.txt` hoặc `.srt` để tạo transcript candidate mới. TXT đọc từng dòng không trắng và thay text theo thứ tự các segment của transcript đang chọn; số dòng phải khớp, ID/Start/End/Speaker giữ nguyên. SRT đọc riêng từng mục phụ đề, dùng timestamp và text trong file để tạo segment mới với ID liên tiếp và `SPEAKER_UNKNOWN`; các mục không được chồng thời gian. Khi nhập thất bại, ứng dụng báo file và nguyên nhân; output cũ không bị thay đổi. Khi thành công, output mới được chọn làm input Step 3.

@@ -55,6 +55,7 @@ class NewProjectDialog(QDialog):
         form.addRow("Tên project", self.name)
 
         self.input_folder = QLineEdit()
+        self.input_folder.editingFinished.connect(self._default_location_from_input)
         self.input_folder.setPlaceholderText("Chọn thư mục chứa video")
         form.addRow("Thư mục input", self._path_row(self.input_folder, self._choose_input_folder, "Chọn thư mục"))
 
@@ -100,6 +101,7 @@ class NewProjectDialog(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Chọn thư mục input", self.input_folder.text())
         if path:
             self.input_folder.setText(path)
+            self._default_location_from_input()
             if not self.name.text().strip():
                 self.name.setText(Path(path).name)
             self._load_videos(path)
@@ -126,6 +128,11 @@ class NewProjectDialog(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Chọn nơi lưu project", self.location.text())
         if path:
             self.location.setText(path)
+
+    def _default_location_from_input(self) -> None:
+        folder = self.input_folder.text().strip()
+        if folder:
+            self.location.setText(str(Path(folder).expanduser().resolve().parent))
 
     def _validate_and_accept(self) -> None:
         if not self.name.text().strip():

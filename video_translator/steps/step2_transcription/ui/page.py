@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -54,7 +53,6 @@ class SpeechToTextStepPage(StepPage):
     def __init__(self, state) -> None:
         self._chain_running = False
         self._processing = False
-        self._old_text_cache: dict[str, tuple[int, int, dict[int, str]]] = {}
         super().__init__(state)
 
     def refresh(self) -> None:
@@ -65,40 +63,16 @@ class SpeechToTextStepPage(StepPage):
 
     def _build_result_column(self) -> QVBoxLayout:
         column = super()._build_result_column()
-        self.table.setHorizontalHeaderLabels(
-            ["ID", "Speaker", "Start", "End", "Source", "Text Old", "Audio"]
-        )
+        self.table.hide()
+        column.setAlignment(column.itemAt(0).widget(), Qt.AlignmentFlag.AlignTop)
+        column.addStretch(1)
         return column
 
+    def _fit_compact_artifacts(self) -> None:
+        self.artifacts.setFixedHeight(76)
+
     def _show_result(self, result) -> None:
-        super()._show_result(result)
-        old_text_by_id: dict[int, str] = {}
-        path = result.artifacts.get("transcript", "")
-        if path:
-            try:
-                transcript_path = Path(path)
-                stamp = transcript_path.stat()
-                cached = self._old_text_cache.get(path)
-                if cached and cached[:2] == (stamp.st_mtime_ns, stamp.st_size):
-                    old_text_by_id = cached[2]
-                else:
-                    payload = json.loads(transcript_path.read_text(encoding="utf-8"))
-                    old_text_by_id = {
-                        int(row["id"]): str(row["text_old"])
-                        for row in payload.get("segments", [])
-                        if isinstance(row, dict) and "id" in row and "text_old" in row
-                    }
-                    self._old_text_cache[path] = (stamp.st_mtime_ns, stamp.st_size, old_text_by_id)
-            except (OSError, ValueError, TypeError, KeyError, AttributeError):
-                pass
-        self._updating_table = True
-        try:
-            for index, segment in enumerate(result.segments):
-                item = QTableWidgetItem(old_text_by_id.get(segment.id, ""))
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(index, 5, item)
-        finally:
-            self._updating_table = False
+        self._show_result_without_segments(result)
 
     def _table_cell_changed(self, row: int, column: int) -> None:
         if column != 5:

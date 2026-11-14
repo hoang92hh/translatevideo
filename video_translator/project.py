@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from .project_paths import encode_paths
 
 
 PROJECT_FILE = "project.json"
@@ -83,6 +84,6 @@ class VideoProject:
     def save(self) -> None:
         self.updated_at = _utc_now()
         self.manifest_path.write_text(
-            json.dumps(asdict(self), ensure_ascii=False, indent=2),
+            json.dumps(encode_paths(asdict(self), self.root_path, video=bool(self.parent_project_id)), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )

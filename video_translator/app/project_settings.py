@@ -500,6 +500,7 @@ class ProjectSettingsDialog(QDialog):
         self.name = QLineEdit()
         self.name.setPlaceholderText("Ví dụ: gioi-thieu-san-pham")
         self.input_folder = QLineEdit()
+        self.input_folder.editingFinished.connect(self._default_location_from_input)
         input_row = QWidget()
         input_layout = QHBoxLayout(input_row)
         input_layout.setContentsMargins(0, 0, 0, 0)
@@ -602,6 +603,7 @@ class ProjectSettingsDialog(QDialog):
         if not folder:
             return
         self.input_folder.setText(folder)
+        self._default_location_from_input()
         if not self.name.text().strip():
             self.name.setText(Path(folder).name)
         self._load_videos(folder)
@@ -610,6 +612,11 @@ class ProjectSettingsDialog(QDialog):
         folder = QFileDialog.getExistingDirectory(self, "Chọn nơi lưu project", self.location.text())
         if folder:
             self.location.setText(folder)
+
+    def _default_location_from_input(self) -> None:
+        folder = self.input_folder.text().strip()
+        if folder and not self.project:
+            self.location.setText(str(Path(folder).expanduser().resolve().parent))
 
     def _load_videos(self, folder: str, selected: set[str] | None = None) -> None:
         try:

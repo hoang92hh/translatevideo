@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from .common.models import StepId
 from .project import PROJECT_FOLDERS, VIDEO_PROJECT_FILE, VideoProject
+from .project_paths import decode_paths, encode_paths
 
 
 PROJECT_FILE = "project.json"
@@ -143,7 +144,7 @@ class BatchProject:
         self.story_group_size = max(1, int(self.story_group_size))
         self.step_batch_video_order = [video.id for video in self.ordered_videos()]
         self.updated_at = utc_now()
-        write_json(self.manifest_path, asdict(self))
+        write_json(self.manifest_path, encode_paths(asdict(self), self.root_path))
 
 
 class BatchProjectService:
@@ -157,6 +158,7 @@ class BatchProjectService:
         if manifest.is_file():
             try:
                 payload = json.loads(manifest.read_text(encoding="utf-8"))
+                payload = decode_paths(payload, root, str(payload.get("folder", "")))
                 stored = {
                     str(Path(item.get("path", "")).resolve()): item
                     for item in payload.get("videos", [])
@@ -187,12 +189,12 @@ class BatchProjectService:
 
     @staticmethod
     def _save_input_manifest(folder: Path, videos: list[InputVideo]) -> None:
-        write_json(folder / INPUT_MANIFEST_FILE, {
+        write_json(folder / INPUT_MANIFEST_FILE, encode_paths({
             "version": 1,
             "folder": str(folder),
             "updated_at": utc_now(),
             "videos": [asdict(item) for item in videos],
-        })
+        }, folder))
 
     @staticmethod
     def create(
@@ -261,6 +263,7 @@ class BatchProjectService:
         data = json.loads(path.read_text(encoding="utf-8"))
         if "input_folder" not in data or "videos" not in data:
             raise ValueError("Project một-video cũ không còn được hỗ trợ.")
+        data = decode_paths(data, path.parent, str(data.get("root", "")))
         data["root"] = str(path.parent)
         data["videos"] = [ProjectVideo(**item) for item in data.get("videos", [])]
         data["story_group_size"] = max(1, int(data.get("story_group_size", 10)))
@@ -359,6 +362,7 @@ class BatchProjectService:
         if not manifest.is_file():
             return None
         data = json.loads(manifest.read_text(encoding="utf-8"))
+        data = decode_paths(data, manifest.parent, str(data.get("root", "")), video=True)
         data["root"] = str(manifest.parent)
         data["input_video"] = record.source_path
         data["original_video"] = record.source_path

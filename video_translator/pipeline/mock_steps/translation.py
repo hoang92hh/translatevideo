@@ -13,7 +13,7 @@ from ...config.gemini import GEMINI_PROVIDER_NAME
 from ...config.deepseek import DEEPSEEK_PROVIDER_NAME
 from ...config.opencode_go import OPENCODE_GO_PROVIDER_NAME
 from ...config.prompt_templates import load_prompt_template
-from ...config.batch_prompts import load_batch_prompt, PROMPT_VIDEO_ROOT
+from ...config.batch_prompts import load_batch_prompt, prepare_speaker_story_prompt, PROMPT_VIDEO_ROOT
 from ...config.translation import resolve_proper_name_policy
 from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from ...common.models import StepId, StepResult, TranslationCandidate
@@ -225,13 +225,23 @@ def execute(
     model_name = str(settings["model"])
     prompt_template_id = str(settings["prompt_template"]).strip() or str(default_value(StepId.TRANSLATE, "prompt_template"))
     batch_context = settings.get("batch_prompt_context")
+    if isinstance(batch_context, dict):
+        batch_context = {**batch_context, "speaker_context_translation": bool(settings.get("speaker_context_translation"))}
+        settings["batch_prompt_context"] = batch_context
     video_prompt = (
-        provider in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} and batch_context is not None
+        (provider in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
+         or provider == DEEPSEEK_PROVIDER_NAME and bool(settings.get("speaker_context_translation")))
+        and batch_context is not None
         and batch_context.get("batch_prompt_mode") == "video"
     )
     prompt_template = (
-        load_prompt_template(provider, prompt_template_id) if video_prompt
-        else load_batch_prompt(provider, str(batch_context.get("batch_prompt_mode", "step"))) if batch_context is not None
+        (load_batch_prompt(provider, "video", True)
+         if bool(settings.get("speaker_context_translation")) and provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
+         else load_prompt_template(provider, prompt_template_id)) if video_prompt
+        else load_batch_prompt(
+            provider, str(batch_context.get("batch_prompt_mode", "step")),
+            bool(batch_context.get("speaker_context_translation")),
+        ) if batch_context is not None
         else load_prompt_template(provider, prompt_template_id)
     )
     prompt_context_metadata = {}
@@ -298,8 +308,18 @@ def execute(
         groups = [segments[pos:pos + group_size] for pos in range(0, len(segments), group_size)]
         if len(groups) > 1 and len(groups[-1]) * 2 <= group_size:
             groups[-2].extend(groups.pop())
-        folder = "google_gemini" if provider == GEMINI_PROVIDER_NAME else "opencode_go"
-        story_prompt = (PROMPT_VIDEO_ROOT / folder / "story.md").read_text(encoding="utf-8-sig")
+        folder = "google_gemini" if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME} else "opencode_go"
+        speaker_context = bool(settings.get("speaker_context_translation")) and provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
+        story_filename = "story_speaker.md" if speaker_context else "story.md"
+        story_prompt = (PROMPT_VIDEO_ROOT / folder / story_filename).read_text(encoding="utf-8-sig")
+        if speaker_context:
+            story_prompt = prepare_speaker_story_prompt(
+                provider, prompt_template_id, story_prompt,
+                source_language=state.source_language,
+                target_language=state.target_language,
+                input_filename="video-story-input.json",
+                output_filename="video-story-response.json",
+            )
         all_translations: dict[int, str] = {}
         all_summaries: list[dict[str, object]] = []
         story_intro = ""
@@ -309,7 +329,12 @@ def execute(
         for group_index, group in enumerate(groups, start=1):
             if progress:
                 progress(int((group_index - 1) / len(groups) * 90), f"Đang phân tích đoạn {group_index}/{len(groups)}…")
-            transcript = [segment.source_text.strip() for segment in group if segment.source_text.strip()]
+            transcript = (
+                [{"speaker_id": segment.speaker_id, "source_text": segment.source_text.strip()}
+                 for segment in group if segment.source_text.strip()]
+                if speaker_context else
+                [segment.source_text.strip() for segment in group if segment.source_text.strip()]
+            )
             story = translation_provider.generate_story(
                 {"source_language": state.source_language, "videos": [{"source_text": transcript}]},
                 story_prompt,

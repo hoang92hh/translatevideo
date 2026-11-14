@@ -799,6 +799,9 @@ class ProjectSettingsDialog(QDialog):
         auto_adjacent_cleanup = getattr(component, "auto_adjacent_cleanup", None)
         if isinstance(auto_adjacent_cleanup, QCheckBox):
             auto_adjacent_cleanup.setChecked(bool(values["auto_adjacent_cleanup"]))
+        speaker_context = getattr(component, "speaker_context_translation", None)
+        if isinstance(speaker_context, QCheckBox):
+            speaker_context.setChecked(bool(values["speaker_context_translation"]))
         project_url = getattr(component, "project_url", None)
         if isinstance(project_url, QLineEdit):
             project_url.setText(str(values["project_url"]))

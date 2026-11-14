@@ -98,6 +98,8 @@ class StepBatchRunner(QObject):
             state = ProjectState()
             state.bind_project(BatchProjectService.open_video(self.project, video_id))
             self.state = state
+            if self.step == StepId.TRANSLATE:
+                state.restore_selected_inputs(StepId.TRANSLATE)
             if not state.can_run(self.step):
                 raise ValueError(
                     f"Step {self.step_number} chưa có đủ đầu vào. "
@@ -122,6 +124,7 @@ class StepBatchRunner(QObject):
                     "video_order": self.video_positions[video_id],
                     "video_name": record.name,
                     "video_filename": Path(record.source_path).name,
+                    "speaker_context_translation": bool(settings.get("speaker_context_translation")),
                 })
                 settings["batch_prompt_context"] = context
             record.restart_step = self.step.value
@@ -206,6 +209,10 @@ class StepBatchRunner(QObject):
                         "video_id": video_id,
                         "video_filename": Path(self.state.input_video).name,
                         "source_text": texts,
+                        "speaker_segments": [
+                            {"speaker_id": segment.speaker_id, "source_text": segment.source_text.strip()}
+                            for segment in self.result.segments if segment.source_text.strip()
+                        ],
                     })
                     self.transcript_video_ids.add(video_id)
                     if self.state.statuses[self.step] != StepStatus.DONE:
@@ -330,6 +337,10 @@ class StepBatchRunner(QObject):
                     "video_id": video_id,
                     "video_filename": Path(project.input_video).name,
                     "source_text": texts,
+                    "speaker_segments": [
+                        {"speaker_id": segment.speaker_id, "source_text": segment.source_text.strip()}
+                        for segment in result.segments if segment.source_text.strip()
+                    ],
                 })
                 self.transcript_video_ids.add(video_id)
                 if int(result.metadata.get("timeline_error_count", 0)) > 0:

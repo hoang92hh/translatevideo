@@ -20,24 +20,45 @@ PROVIDER_FOLDERS = {
 }
 
 
-def load_batch_prompt(provider: str, mode: str = "step") -> PromptTemplate:
+def load_batch_prompt(provider: str, mode: str = "step", speaker_context: bool = False) -> PromptTemplate:
     folder = PROVIDER_FOLDERS.get(provider)
     if folder is None:
         raise ValueError("Batch Step 3 dùng story hiện hỗ trợ Google Gemini, DeepSeek và ChatGPT Web.")
-    if mode == "video" and provider in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}:
-        path = PROMPT_VIDEO_ROOT / folder / "translation.md"
+    speaker_filename = (
+        "translation_speaker.md"
+        if speaker_context and provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
+        else "translation.md"
+    )
+    if mode == "video" and provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}:
+        path = PROMPT_VIDEO_ROOT / folder / speaker_filename
         template_id = "video_group_translation"
     elif mode == "legacy":
         path = PROMPT_TEMPLATE_ROOT / folder / "translation_review.md"
         template_id = "legacy_translation_review"
     else:
-        path = PROMPT_BATCH_ROOT / folder / "translation.md"
+        path = PROMPT_BATCH_ROOT / folder / speaker_filename
         template_id = "step_translation_review"
     text = path.read_text(encoding="utf-8-sig")
     if not text.strip():
         raise ValueError(f"Prompt batch trống: {path}")
     title = text.splitlines()[0].lstrip("# ").strip()
     return PromptTemplate(provider, template_id, title, text, path)
+
+
+def prepare_speaker_story_prompt(
+    provider: str, template_id: str, prompt: str, *,
+    source_language: str, target_language: str,
+    input_filename: str, output_filename: str,
+) -> str:
+    """Include the selected genre rules when producing a speaker-aware story."""
+    topic = render_prompt_template(
+        provider, template_id,
+        source_language=source_language,
+        target_language=target_language,
+        input_filename=input_filename,
+        output_filename=output_filename,
+    )
+    return prompt.replace("{topic_content}", topic)
 
 
 def prepare_translation_prompt(
@@ -51,12 +72,13 @@ def prepare_translation_prompt(
         raise ValueError("Batch Step 3 chưa có nội dung story tham chiếu.")
     variables = {**values, **{key: str(value) for key, value in batch_context.items()}}
     mode = str(batch_context.get("batch_prompt_mode", "step"))
-    template = load_batch_prompt(provider, mode)
+    template = load_batch_prompt(provider, mode, bool(batch_context.get("speaker_context_translation")))
     variables["story_intro_section"] = (
         "## Bối cảnh chung của video\n\n" + str(variables.get("story_intro", "")).strip() + "\n\n"
         if str(variables.get("story_intro", "")).strip() else ""
     )
-    if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} and mode in {"step", "video"}:
+    speaker_context = bool(batch_context.get("speaker_context_translation")) and provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
+    if not speaker_context and provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} and mode in {"step", "video"}:
         topic = strip_prompt_marker(load_prompt_template(provider, template_id).prompt)
         variables["topic_content"] = re.sub(
             r"\{([a-z_]+)\}",

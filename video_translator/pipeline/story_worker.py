@@ -5,7 +5,7 @@ from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
-from ..config.batch_prompts import PROMPT_BATCH_ROOT, PROMPT_VIDEO_ROOT
+from ..config.batch_prompts import PROMPT_BATCH_ROOT, PROMPT_VIDEO_ROOT, prepare_speaker_story_prompt
 from ..config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ..config.deepseek import DEEPSEEK_PROVIDER_NAME
 from ..config.opencode_go import OPENCODE_GO_PROVIDER_NAME
@@ -33,7 +33,12 @@ def validate_story_settings(settings: dict[str, Any]) -> Path:
         error = project_url_error(provider, str(settings.get("project_url", "")))
         if error:
             raise ValueError(error)
-    path = PROMPT_BATCH_ROOT / folder / "story.md"
+    path = (
+        PROMPT_BATCH_ROOT / folder / "story_speaker.md"
+        if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
+        and settings.get("speaker_context_translation")
+        else PROMPT_BATCH_ROOT / folder / "story.md"
+    )
     if not path.is_file():
         raise FileNotFoundError(f"Không tìm thấy prompt tạo story: {path}")
     return path
@@ -85,11 +90,27 @@ class StoryWorker(QThread):
             prompt = prompt_path.read_text(encoding="utf-8")
             stem = f"story_group_{self.group_number}"
             provider_name = str(self.settings.get("provider", GEMINI_PROVIDER_NAME))
+            speaker_context = bool(self.settings.get("speaker_context_translation")) and provider_name in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
+            if speaker_context:
+                prompt = prepare_speaker_story_prompt(
+                    provider_name,
+                    str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
+                    prompt,
+                    source_language=self.source_language,
+                    target_language="Vietnamese",
+                    input_filename=f"{stem}-input.json",
+                    output_filename=f"{stem}-response.json",
+                )
             provider = create_translation_provider(
                 provider_name, str(self.settings.get("model", GEMINI_DEFAULT_MODEL)),
                 self.source_language, "Vietnamese", self.settings,
             )
-            payload = {"source_language": self.source_language, "videos": self.videos}
+            videos = [
+                {**{key: value for key, value in video.items() if key != "speaker_segments"},
+                 "source_text": video.get("speaker_segments", video.get("source_text", [])) if speaker_context else video.get("source_text", [])}
+                for video in self.videos
+            ]
+            payload = {"source_language": self.source_language, "videos": videos}
             self.progress_changed.emit(0, "Đang gửi lời thoại cho AI viết hồ sơ câu chuyện bằng tiếng Việt…")
             markdown = provider.generate_story(
                 payload, prompt, f"{stem}-input.json", f"{stem}-response.json",
@@ -136,23 +157,39 @@ class VideoAnalysisWorker(QThread):
     def run(self) -> None:
         try:
             prompt_path = (
-                PROMPT_VIDEO_ROOT / STORY_PROMPT_FOLDERS[str(self.settings.get("provider", GEMINI_PROVIDER_NAME))] / "story.md"
+                PROMPT_VIDEO_ROOT / STORY_PROMPT_FOLDERS[str(self.settings.get("provider", GEMINI_PROVIDER_NAME))] / (
+                    "story_speaker.md" if self.settings.get("speaker_context_translation")
+                    and str(self.settings.get("provider", GEMINI_PROVIDER_NAME)) in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
+                    else "story.md"
+                )
                 if self.in_memory_story else validate_video_analysis_settings(self.settings)
             )
             prompt = prompt_path.read_text(encoding="utf-8")
             provider_name = str(self.settings.get("provider", GEMINI_PROVIDER_NAME))
+            speaker_context = bool(self.settings.get("speaker_context_translation")) and provider_name in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
             if self.in_memory_story:
-                if provider_name not in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}:
-                    raise ValueError("Prompt story trong bộ nhớ chỉ dành cho Google Gemini và OpenCode Go.")
-                template_id = str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID))
-                topic = render_prompt_template(
-                    provider_name, template_id,
-                    source_language=self.source_language,
-                    target_language=self.target_language,
-                    input_filename="video-analysis-input.json",
-                    output_filename="video-analysis-response.json",
-                )
-                prompt = prompt.replace("{topic_content}", topic)
+                if provider_name not in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}:
+                    raise ValueError("Prompt story trong bộ nhớ chỉ dành cho Google Gemini, DeepSeek và OpenCode Go.")
+                if speaker_context:
+                    prompt = prepare_speaker_story_prompt(
+                        provider_name,
+                        str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
+                        prompt,
+                        source_language=self.source_language,
+                        target_language=self.target_language,
+                        input_filename="video-analysis-input.json",
+                        output_filename="video-analysis-response.json",
+                    )
+                else:
+                    template_id = str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID))
+                    topic = render_prompt_template(
+                        provider_name, template_id,
+                        source_language=self.source_language,
+                        target_language=self.target_language,
+                        input_filename="video-analysis-input.json",
+                        output_filename="video-analysis-response.json",
+                    )
+                    prompt = prompt.replace("{topic_content}", topic)
                 prompt = prompt.replace("{source_language}", self.source_language)
                 prompt = prompt.replace("{target_language}", self.target_language)
             provider = create_translation_provider(
@@ -160,8 +197,12 @@ class VideoAnalysisWorker(QThread):
                 self.source_language, self.target_language, self.settings,
             )
             self.progress_changed.emit(0, "Đang phân tích toàn bộ nội dung video…")
+            video = {
+                **{key: value for key, value in self.video.items() if key != "speaker_segments"},
+                "source_text": self.video.get("speaker_segments", self.video.get("source_text", [])) if speaker_context else self.video.get("source_text", []),
+            }
             markdown = provider.generate_story(
-                {"source_language": self.source_language, "videos": [self.video]},
+                {"source_language": self.source_language, "videos": [video]},
                 prompt, "video-analysis-input.json", "video-analysis-response.json",
             ).strip()
             if not markdown:

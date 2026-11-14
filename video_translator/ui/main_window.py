@@ -1123,13 +1123,16 @@ class MainWindow(QMainWindow):
             settings["input_audio"] = self.batch_state.audio_input_path()
             settings["input_candidate_id"] = self.batch_state.selected_audio_candidate_id
             settings["input_stem"] = self.batch_state.selected_audio_stem
+        video_story_provider = settings.get("provider", GEMINI_PROVIDER_NAME) in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} or (
+            settings.get("provider") == DEEPSEEK_PROVIDER_NAME and bool(settings.get("speaker_context_translation"))
+        )
         if (step == StepId.TRANSLATE and
-                settings.get("provider", GEMINI_PROVIDER_NAME) not in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
+                not video_story_provider
                 and self.batch_context_video_id != self.batch_state.project.video_id):
             self._start_video_context_analysis()
             return
         if step == StepId.TRANSLATE:
-            gemini_video = settings.get("provider", GEMINI_PROVIDER_NAME) in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
+            gemini_video = video_story_provider
             if gemini_video:
                 story_name = "story theo đoạn của video"
                 story_path = ""
@@ -1147,6 +1150,7 @@ class MainWindow(QMainWindow):
                 "story_path": story_path,
                 "story_content": story_content,
                 "batch_prompt_mode": "video" if gemini_video else "legacy",
+                "speaker_context_translation": bool(settings.get("speaker_context_translation")),
                 "video_id": self.batch_state.project.video_id,
                 "video_order": self.batch_run_video_ids.index(self.batch_state.project.video_id) + 1,
                 "video_name": Path(self.batch_state.project.input_video).name,
@@ -1219,7 +1223,11 @@ class MainWindow(QMainWindow):
         if record is None:
             self._fail_batch_video("Video không còn thuộc project.", StepId.TRANSLATE)
             return
-        gemini_video = self.batch_settings.get(StepId.TRANSLATE.value, {}).get("provider", GEMINI_PROVIDER_NAME) in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
+        translation_settings = self.batch_settings.get(StepId.TRANSLATE.value, {})
+        selected_provider = translation_settings.get("provider", GEMINI_PROVIDER_NAME)
+        gemini_video = selected_provider in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} or (
+            selected_provider == DEEPSEEK_PROVIDER_NAME and bool(translation_settings.get("speaker_context_translation"))
+        )
         path = None if gemini_video else Path(project.output_root) / "video-analysis.md"
         self._refresh_header()
         worker = VideoAnalysisWorker(
@@ -1230,6 +1238,10 @@ class MainWindow(QMainWindow):
                 "video_id": video_id,
                 "video_filename": Path(project.input_video).name,
                 "source_text": [s.source_text.strip() for s in result.segments if s.source_text.strip()],
+                "speaker_segments": [
+                    {"speaker_id": s.speaker_id, "source_text": s.source_text.strip()}
+                    for s in result.segments if s.source_text.strip()
+                ],
             },
             target_language=project.target_language,
             in_memory_story=gemini_video,

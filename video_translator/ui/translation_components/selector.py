@@ -91,6 +91,10 @@ class _CommonTranslationComponent(_ProviderComponent):
             bool(default_value(StepId.TRANSLATE, "auto_adjacent_cleanup"))
         )
         form.addRow("Sau khi dịch", self.auto_adjacent_cleanup)
+        if self.provider_name in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}:
+            self.speaker_context_translation = QCheckBox("Dịch theo bối cảnh có hỗ trợ speaker")
+            self.speaker_context_translation.setChecked(False)
+            form.addRow("Xưng hô", self.speaker_context_translation)
 
     def _common_settings(self) -> dict[str, Any]:
         return {
@@ -100,6 +104,10 @@ class _CommonTranslationComponent(_ProviderComponent):
             "proper_name_mode": self.proper_name_mode.currentText(),
             "all_project_segments": self.all_project_segments.isChecked(),
             "auto_adjacent_cleanup": self.auto_adjacent_cleanup.isChecked(),
+            "speaker_context_translation": (
+                self.speaker_context_translation.isChecked()
+                if hasattr(self, "speaker_context_translation") else False
+            ),
         }
 
 
@@ -408,9 +416,9 @@ class TranslationProviderSelector(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setFixedHeight(350)
+        scroll.setMinimumHeight(480)
         scroll.setWidget(self.stack)
-        root.addWidget(scroll)
+        root.addWidget(scroll, 1)
         self.select_index(0)
         self._refresh_button_labels()
         self._last_ready = self.is_ready()

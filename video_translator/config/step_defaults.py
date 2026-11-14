@@ -40,6 +40,7 @@ STEP_DEFAULTS: Mapping[StepId, Mapping[str, Any]] = {
         "proper_name_mode": PROPER_NAME_MODE_AUTO,
         "all_project_segments": True, "project_url": "",
         "auto_adjacent_cleanup": True,
+        "speaker_context_translation": False,
     },
     StepId.TTS: {
         "provider": VIENEU_PROVIDER, "single_voice": True,

@@ -28,6 +28,7 @@ import numpy as np
 import soundfile as sf
 import stable_whisper
 import torch
+from faster_whisper.feature_extractor import FeatureExtractor
 from scipy.signal import resample_poly
 from silero_vad import get_speech_timestamps, load_silero_vad
 
@@ -165,8 +166,10 @@ def recognize_window(model, audio, start, end, out, window_id, *, recovery=False
     clip = np.ascontiguousarray(audio[start:end])
     offset = start / SAMPLE_RATE
     duration = len(clip) / SAMPLE_RATE
+    chunk_length = max(1, round(chunk_seconds))
     record = {"id": window_id, "start": offset, "end": end / SAMPLE_RATE,
-              "recovery": recovery, "decode_attempts": [], "alignment_attempts": []}
+              "recovery": recovery, "chunk_seconds": chunk_length,
+              "decode_attempts": [], "alignment_attempts": []}
     path = out / f"{window_id}.json"
     raw_segments, complete = [], False
     for temperature in (0.0, 0.2):
@@ -177,7 +180,7 @@ def recognize_window(model, audio, start, end, out, window_id, *, recovery=False
                 without_timestamps=False, word_timestamps=True, vad_filter=False,
                 no_speech_threshold=None, hallucination_silence_threshold=None,
                 condition_on_previous_text=False, temperature=temperature,
-                beam_size=5, repetition_penalty=1.0, chunk_length=chunk_seconds)
+                beam_size=5, repetition_penalty=1.0, chunk_length=chunk_length)
             for segment in segments:
                 attempt["segments"].append(asdict(segment))
         except Exception as error:
@@ -276,6 +279,7 @@ def sentence_cues(segments, split_gap, max_segment_seconds=6.0, max_chars=40):
         if not valid_times:
             cues.append({"start": segment["start"], "end": segment["end"],
                          "text": segment["text"], "source_segment_id": segment["id"],
+                         "words": [],
                          "issues": sorted(set(cue_issues) | {"missing_word_timing"}),
                          "timing_source": "asr_segment_needs_review"})
             continue
@@ -299,6 +303,7 @@ def sentence_cues(segments, split_gap, max_segment_seconds=6.0, max_chars=40):
             cues.append({"start": min(word["start"] for word in spoken_words),
                          "end": max(word["end"] for word in spoken_words),
                          "text": "".join(word["word"] for word in group).strip(),
+                         "words": [dict(word) for word in group],
                          "source_segment_id": segment["id"], "issues": list(cue_issues),
                          "timing_source": segment["timing_source"]})
     cues.sort(key=lambda cue: (cue["start"], cue["end"]))
@@ -309,6 +314,126 @@ def sentence_cues(segments, split_gap, max_segment_seconds=6.0, max_chars=40):
         if len(text_key(cue["text"])) > max_chars:
             cue["issues"].append("long_text_needs_review")
     return cues
+
+
+def refine_cue_starts(model, audio, cues, regions, *, precision=0.02, max_shift=0.5):
+    """Refine first spoken-word starts while retaining each cue's text and end."""
+    duration = len(audio) / SAMPLE_RATE
+    probability_threshold = 0.5
+    summary = {"steps": "s", "word_level": False, "precision": precision,
+               "max_shift_seconds": max_shift, "rel_dur_change": None,
+               "prob_threshold": probability_threshold, "status": "completed"}
+    candidates, prepared = [], []
+    previous_word_end = 0.0
+    for cue_index, cue in enumerate(cues):
+        details = {"original_start": cue["start"], "proposed_start": None,
+                   "status": "pending", "reasons": []}
+        cue["start_refinement"] = details
+        # Punctuation-only entries have no spoken onset to refine.
+        word_indices = [index for index, word in enumerate(cue.get("words", []))
+                        if any(char.isalnum() for char in word["word"])]
+        words = [cue["words"][index] for index in word_indices]
+        reason = None
+        if not words:
+            reason = "start_refine_missing_words"
+        elif not all(np.isfinite([word["start"], word["end"]]).all()
+                     and 0 <= word["start"] < min(word["end"], duration)
+                     and word["end"] <= duration + precision for word in words):
+            reason = "start_refine_invalid_word_timing"
+        elif (not np.isfinite([cue["start"], cue["end"]]).all()
+              or not 0 <= cue["start"] < min(cue["end"], duration)
+              or cue["end"] > duration + precision
+              or abs(words[0]["start"] - cue["start"]) > 0.001):
+            reason = "start_refine_invalid_cue_timing"
+        elif (words[0]["start"] < previous_word_end
+              or any(second["start"] < first["end"]
+                     for first, second in zip(words, words[1:]))):
+            reason = "start_refine_overlapping_words"
+        elif not all(word.get("probability") is not None
+                     and np.isfinite(word["probability"]) for word in words):
+            reason = "start_refine_missing_probability"
+        elif words[0]["probability"] < probability_threshold:
+            reason = "start_refine_low_probability"
+        if reason:
+            details.update(status="skipped", reasons=[reason])
+            cue["issues"].append(reason)
+            continue
+        # Tokenize the current text afresh, including text attached from zero-duration words.
+        clean_words = [{"word": word["word"], "start": word["start"],
+                        "end": word["end"], "probability": word["probability"],
+                        "tokens": None} for word in words]
+        prepared.append({"words": clean_words, "round_ts": False})
+        candidates.append((cue_index, word_indices[0], clean_words))
+        previous_word_end = words[-1]["end"]
+
+    refined = None
+    if prepared:
+        print(f"Tinh chỉnh start {len(prepared)}/{len(cues)} đoạn; bước dò {precision:.2f}s.")
+        original_extractor = model.feature_extractor
+        try:
+            # Stable-ts packs refinement batches up to 30s; ASR previously set this to 25s.
+            model.feature_extractor = FeatureExtractor(
+                feature_size=original_extractor.mel_filters.shape[0],
+                sampling_rate=original_extractor.sampling_rate,
+                hop_length=original_extractor.hop_length, n_fft=original_extractor.n_fft,
+                chunk_length=30)
+            result = stable_whisper.WhisperResult(
+                {"language": "zh", "segments": prepared}, check_sorted=False)
+            refined = model.refine(
+                audio, result, steps="s", word_level=False, precision=precision,
+                abs_dur_change=max_shift, rel_dur_change=None,
+                prob_threshold=probability_threshold, inplace=False, verbose=False)
+            if refined is None or len(refined.segments) != len(candidates):
+                raise ValueError("Refine trả về số segment khác dữ liệu đầu vào.")
+        except Exception as error:
+            refined = None
+            summary.update(status="failed", error=f"{type(error).__name__}: {error}")
+            for cue_index, _, _ in candidates:
+                cue = cues[cue_index]
+                cue["start_refinement"].update(status="failed", reasons=["start_refine_failed"])
+                cue["issues"].append("start_refine_failed")
+        finally:
+            model.feature_extractor = original_extractor
+
+    if refined is not None:
+        for (cue_index, word_index, expected), segment in zip(candidates, refined.segments):
+            cue = cues[cue_index]
+            details = cue["start_refinement"]
+            words = segment.words or []
+            stable_content = len(words) == len(expected) and all(
+                word.word == original["word"] and abs(word.end - original["end"]) <= 1e-6
+                and (index == 0 or abs(word.start - original["start"]) <= 1e-6)
+                for index, (word, original) in enumerate(zip(words, expected)))
+            if not stable_content:
+                details.update(status="rejected", reasons=["start_refine_changed_content_or_end"])
+                cue["issues"].append("start_refine_changed_content_or_end")
+                continue
+            proposed = words[0].start
+            finite = bool(np.isfinite(proposed))
+            details["proposed_start"] = proposed if finite else None
+            reasons = []
+            if (not finite or not 0 <= proposed < duration
+                    or round(proposed * 1000) >= round(min(expected[0]["end"], cue["end"]) * 1000)):
+                reasons.append("start_refine_invalid_start")
+            if finite and abs(proposed - cue["start"]) > max_shift + 1e-6:
+                reasons.append("start_refine_excessive_shift")
+            if finite and cue_index and proposed < cues[cue_index - 1]["end"] - 1e-6:
+                reasons.append("start_refine_overlaps_previous")
+            if reasons:
+                details.update(status="rejected", reasons=reasons)
+                cue["issues"].extend(reasons)
+                continue
+            changed = abs(proposed - cue["start"]) > 1e-6
+            cue["start"] = proposed
+            cue["words"][word_index]["start"] = proposed
+            details["status"] = "refined" if changed else "unchanged"
+            if not any(region["start"] - precision <= proposed <= region["end"] + precision
+                       for region in regions):
+                details["reasons"].append("start_refine_outside_vad")
+                cue["issues"].append("start_refine_outside_vad")
+    summary["counts"] = {status: sum(cue["start_refinement"]["status"] == status for cue in cues)
+                         for status in ("refined", "unchanged", "skipped", "rejected", "failed")}
+    return summary
 
 
 def add_recovery_segments(existing, incoming, report):
@@ -374,7 +499,7 @@ def run_vad_stable_srt(audio_path, output_root="/content/srt_results", *,
     report = {
         "audio": str(audio_path), "source_duration_seconds": duration,
         "model": model_name, "language": "zh", "vad_threshold": vad_threshold,
-        "split_gap": split_gap, "chunk_seconds": window_seconds,
+        "split_gap": split_gap, "chunk_seconds": max(1, round(window_seconds)),
         "max_segment_seconds": max_segment_seconds, "max_chars": max_chars,
         "vad_regions": [], "windows": [], "alternatives": [], "warnings": [],
         "versions": {name: importlib.metadata.version(name)
@@ -423,7 +548,12 @@ def run_vad_stable_srt(audio_path, output_root="/content/srt_results", *,
         cues = sentence_cues(segments, split_gap, max_segment_seconds, max_chars)
         dump_json(out / "report.json", report)
 
+    report["start_refinement"] = refine_cue_starts(model, audio, cues, report["vad_regions"])
+    if report["start_refinement"]["status"] == "failed":
+        report["warnings"].append("Tinh chỉnh start thất bại; xem start_refinement.")
     for cue in cues:
+        if cue["end"] - cue["start"] > max_segment_seconds + 0.04:
+            cue["issues"].append("long_segment_needs_review")
         if not any(min(cue["end"], region["end"]) > max(cue["start"], region["start"])
                    for region in report["vad_regions"]):
             cue["issues"].append("outside_vad_speech")
@@ -433,6 +563,8 @@ def run_vad_stable_srt(audio_path, output_root="/content/srt_results", *,
                 break
             cue["issues"].append("overlapping_cues")
             following["issues"].append("overlapping_cues")
+    for cue in cues:
+        cue["issues"] = sorted(set(cue["issues"]))
     expected = {segment["id"]: text_key(segment["text"]) for segment in segments}
     exported = {segment_id: text_key("".join(cue["text"] for cue in cues
                                             if cue["source_segment_id"] == segment_id))

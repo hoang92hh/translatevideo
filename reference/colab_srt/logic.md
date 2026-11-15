@@ -48,7 +48,9 @@ Nếu VAD lỗi hoặc trả về danh sách rỗng, ghi cảnh báo và tiếp 
 
 **4. Để Whisper tạo các segment gốc và timestamp từng từ**
 
-Đưa toàn bộ WAV vào `model.transcribe_original()`. Faster-Whisper xử lý audio theo các khối nội bộ có `chunk_length=25.0` giây. Nó trả về các segment do model xác định, mỗi segment gồm text, `start`, `end` và danh sách từ có timestamp.
+Đưa toàn bộ WAV vào `model.transcribe_original()`. Faster-Whisper xử lý audio theo các khối nội bộ có `chunk_length=25` giây. Nó trả về các segment do model xác định, mỗi segment gồm text, `start`, `end` và danh sách từ có timestamp.
+
+Chuẩn hóa `chunk_seconds` thành số nguyên bằng `max(1, round(chunk_seconds))` trước khi truyền vào thư viện. Giá trị này được dùng để tính chỉ số cắt mảng đặc trưng. Lưu giá trị thực tế đã truyền trong `chunk_seconds` của báo cáo và từng lượt nhận dạng.
 
 Một khối xử lý 25 giây có thể sinh nhiều segment. Ranh giới segment gốc do kết quả nhận dạng và timestamp của model quyết định.
 
@@ -130,6 +132,7 @@ Dấu câu đi cùng nhóm từ đang xử lý. Điểm cắt nằm giữa các 
 - `start` là mốc bắt đầu sớm nhất của các từ có chữ hoặc số trong nhóm.
 - `end` là mốc kết thúc muộn nhất của các từ đó.
 - Cue giữ ID segment gốc để truy nguyên nội dung.
+- Cue giữ thêm danh sách `words`, gồm text, timestamp và xác suất từng từ. Danh sách này cung cấp dữ liệu cho bước tinh chỉnh `start` sau lượt bổ sung cuối cùng.
 
 Ví dụ, từ trước kết thúc ở `5.20` giây và từ sau bắt đầu ở `5.58` giây thì khoảng nghỉ là `0.38` giây. Với ngưỡng `0.3`, hai từ thuộc hai cue khác nhau. Cue trước kết thúc theo mốc từ trước, cue sau bắt đầu theo mốc từ sau.
 
@@ -169,9 +172,54 @@ Phần kết quả nằm chồng với cue đã có được lưu trong dữ li�
 
 Cách chọn này phụ thuộc vào độ chính xác của timing đã giữ. Khi timing câu cũ phủ rộng hơn lời nói thực tế, một phần lời nói bổ sung có thể bị giữ lại trong dữ liệu đối chiếu thay vì được xuất ra SRT.
 
-**12. Kiểm tra toàn bộ cue sau lượt bổ sung**
+**12. Tinh chỉnh riêng thời gian bắt đầu của mỗi cue**
 
-Sắp xếp cue theo thời gian và đánh lại ID. Thực hiện các kiểm tra sau.
+Sau khi đã chạy xong các lượt bổ sung và chia lại thành cue ngắn, gọi `refine_cue_starts()`. Đây là bước tinh chỉnh cuối cho mốc bắt đầu trước khi kiểm tra toàn bộ kết quả và xuất SRT.
+
+Ghi `original_start` cho từng cue vào `start_refinement`. Lấy các phần tử trong `words` có chữ hoặc số để chuẩn bị dữ liệu âm thanh cần dò. Từ đầu tiên trong tập này là mục tiêu tinh chỉnh đầu cue. Dấu câu của text hiển thị vẫn được giữ trong cue.
+
+Chọn các cue có mốc từ hữu hạn, thời lượng từ dương, thứ tự từ hợp lệ và xác suất đầy đủ. Kiểm tra mốc từ đầu khớp với `start` của cue trong sai số `0.001` giây. Cho phép mốc kết thúc lệch khỏi cuối audio tối đa một bước `precision` để xử lý làm tròn timestamp. Từ đầu có xác suất nhỏ hơn `0.5` được ghi nhận là chưa đủ tin cậy cho lượt refine này.
+
+Cue thiếu dữ liệu hoặc có thời gian từ chồng nhau được đánh dấu `skipped` cùng lý do trong `start_refinement.reasons`. Text và các mốc đã có tiếp tục được giữ trong kết quả.
+
+Với các cue đủ dữ liệu, tạo một `WhisperResult` có ngôn ngữ `zh`, chứa các nhóm từ riêng của từng cue. Token được tạo lại từ text đang dùng để bao gồm cả phần chữ được ghép từ từ có thời lượng bằng 0 ở bước 7. Dữ liệu đưa vào refinement là bản riêng để có thể đối chiếu với dữ liệu đang giữ.
+
+| Tham số của lượt refine | Giá trị hiện tại | Ý nghĩa |
+|---|---|---|
+| `steps` | `"s"` | Dò mốc bắt đầu |
+| `word_level` | `False` | Chọn từ đầu mỗi nhóm để tinh chỉnh đầu cue |
+| `precision` | `0.02` giây | Bước dò khoảng 20 mili giây |
+| `abs_dur_change` | `0.5` giây | Giới hạn phần ngữ cảnh được mở về trước khi dò |
+| `rel_dur_change` | `None` | Dùng giới hạn theo giây cho khoảng dò |
+| `prob_threshold` | `0.5` | Ngưỡng xác suất của thư viện trong lượt dò |
+| `inplace` | `False` | Trả về bản kết quả riêng để kiểm tra |
+
+Hàm bao cũng dùng `max_shift=0.5` giây để kiểm tra độ dịch chuyển cuối cùng theo cả hai phía. Đây là giới hạn mặc định được chọn cho bước sửa sai lệch nhỏ, có thể điều chỉnh tại `refine_cue_starts()` khi cần phạm vi khác.
+
+Stable-ts che các phần audio và theo dõi thay đổi xác suất của token để ước lượng lại mốc phát âm. Feature extractor dành cho bước này dùng khối nội bộ 30 giây, phù hợp với cách Stable-ts đóng gói lượt refine. Cấu hình feature extractor trước đó được khôi phục sau lượt gọi, kể cả khi có lỗi.
+
+Đối chiếu kết quả trả về theo các điều kiện sau.
+
+1. Số cue và số từ phải khớp dữ liệu đầu vào.
+2. Text từng từ và mốc kết thúc từng từ phải khớp dữ liệu đã giữ. Mốc bắt đầu của các từ sau từ đầu cũng phải khớp.
+3. `start` đề xuất phải hữu hạn, nằm trong WAV và tạo thời lượng dương khi xuất theo mili giây.
+4. Mốc đề xuất phải sớm hơn cuối từ đầu và cuối cue.
+5. Mức dịch chuyển so với mốc cũ phải nằm trong `0.5` giây.
+6. Mốc mới phải nằm từ cuối cue liền trước trở đi, với dung sai số thực `0.000001` giây.
+
+Nếu kết quả vi phạm các kiểm tra theo cue, ghi trạng thái `rejected`, lưu mốc đề xuất và dùng mốc cũ. Nếu lời gọi thư viện lỗi hoặc trả về sai số lượng cue, ghi `failed` cho các cue trong lượt refine và lưu lỗi trong báo cáo.
+
+Nếu kết quả hợp lệ, cập nhật `start` của cue và `start` của từ đầu tương ứng. Text hiển thị và `end` tiếp tục dùng dữ liệu đã giữ. Đặt trạng thái `refined` khi mốc thay đổi, hoặc `unchanged` khi thư viện trả về mốc cũ.
+
+Đối chiếu thêm mốc bắt đầu với các vùng VAD, cho phép dung sai một bước `precision` ở biên. Mốc nằm ngoài các vùng này được thêm cờ `start_refine_outside_vad` để nghe kiểm tra. Đây là kiểm tra mềm vì VAD có thể bỏ sót lời nói nhỏ. Kết quả đã vượt qua các kiểm tra thời gian ở trên vẫn được áp dụng cùng cờ này.
+
+Lưu thống kê trạng thái vào `report.start_refinement.counts` và chi tiết từng cue vào `cue.start_refinement`, gồm `original_start`, `proposed_start`, `status` và `reasons`. Các trạng thái có thể là `refined`, `unchanged`, `skipped`, `rejected` hoặc `failed`.
+
+`precision=0.02` biểu thị độ phân giải dò tìm. Độ chính xác thực tế của mốc bắt đầu cần được xác minh trên WAV. Bước refine dùng text đã chọn làm đầu vào và phụ thuộc vào mức khớp của text với lời nói.
+
+**13. Kiểm tra toàn bộ cue sau lượt tinh chỉnh start**
+
+Các cue đã được sắp xếp và đánh ID ở bước chia đoạn. Dùng các mốc cuối cùng sau refinement để thực hiện các kiểm tra sau.
 
 | Kiểm tra | Cách xử lý |
 |---|---|
@@ -180,16 +228,18 @@ Sắp xếp cue theo thời gian và đánh lại ID. Thực hiện các kiểm 
 | Text ghép từ cue khác text của segment nguồn sau khi bỏ khoảng trắng | Ghi `text_mismatch_segment_ids` |
 | Một lượt nhận dạng thất bại | Ghi `failed_windows` và cảnh báo |
 | Vẫn còn vùng VAD chưa được cue phủ | Ghi `uncovered_speech` |
+| Cue dài hơn `6.04` giây sau thay đổi `start` | Thêm cờ `long_segment_needs_review` |
+| Refine bị bỏ qua, bị từ chối, gặp lỗi hoặc thiếu hỗ trợ từ VAD | Ghi lý do `start_refine_*` trong cue và chi tiết trong `start_refinement` |
 
 So sánh text ở đây áp dụng cho các segment đã được chọn để xuất, gồm segment lượt chính và phần bổ sung đã nhận. Các bản text lưu trong `alternatives` được giữ để đối chiếu riêng.
 
 Các kiểm tra cuối ghi nhận nghi vấn. Timeline và text đang được chọn vẫn được đưa vào SRT, kèm chi tiết cần kiểm tra trong báo cáo JSON.
 
-**13. Ghi SRT, báo cáo và ZIP**
+**14. Ghi SRT, báo cáo và ZIP**
 
 Chuyển timestamp sang định dạng `HH:MM:SS,mmm`, làm tròn đến mili giây. Ghi mỗi cue thành một mục SRT gồm ID, `start/end` và text.
 
-Lưu `report.json` với cấu hình, phiên bản thư viện, các vùng VAD, kết quả nhận dạng, segment được chọn, cue cuối cùng, vùng nghi thiếu và các cờ cần kiểm tra. Các file JSON của từng lượt vẫn được giữ để truy nguyên.
+Lưu `report.json` với cấu hình, phiên bản thư viện, các vùng VAD, kết quả nhận dạng, segment được chọn, cue cuối cùng, thống kê tinh chỉnh `start`, vùng nghi thiếu và các cờ cần kiểm tra. Các file JSON của từng lượt vẫn được giữ để truy nguyên.
 
 Nếu còn cue nghi vấn, vùng nghi thiếu hoặc cảnh báo, đặt trạng thái `needs_review` và in thông báo `CẦN KIỂM TRA`. Nếu các kiểm tra tự động đi qua, đặt `automatic_checks_passed`. Trường `human_verified` luôn là `False` trong script hiện tại.
 

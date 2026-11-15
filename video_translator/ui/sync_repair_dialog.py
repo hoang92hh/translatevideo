@@ -613,12 +613,26 @@ class SyncRepairDialog(QDialog):
         self.ai_requested.emit({segment_id: texts[segment_id] for segment_id in selected})
 
     def _request_process(self) -> None:
-        selected = self.selected_ids()
-        if not selected:
+        checked = self.selected_ids()
+        if not checked:
             QMessageBox.information(
                 self,
                 "Chưa chọn segment",
                 "Hãy đánh dấu ít nhất một checkbox trước khi tạo lại voice.",
+            )
+            return
+        selected = [
+            segment_id for segment_id in checked
+            if (row := self._row_by_segment_id.get(segment_id)) is not None
+            and (status := self.table.item(row, self.STATUS_COLUMN)) is not None
+            and status.text() == "Chờ tạo voice"
+        ]
+        if not selected:
+            QMessageBox.information(
+                self,
+                "Không có segment chờ tạo voice",
+                "Chỉ các row đã chọn và có trạng thái “Chờ tạo voice” mới được xử lý. "
+                "Hãy sửa nội dung, Start/End hoặc Speaker của row cần tạo lại voice.",
             )
             return
         updates = self.segment_updates()

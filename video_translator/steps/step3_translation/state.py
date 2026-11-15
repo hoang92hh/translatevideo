@@ -238,12 +238,12 @@ class TranslationStateMixin:
                 manifest_segments[segment.id].update(
                     speaker_id=segment.speaker_id, start=segment.start, end=segment.end,
                 )
-        from .config.gemini import GEMINI_PROVIDER_NAME
-        from .config.deepseek import DEEPSEEK_PROVIDER_NAME
-        from .config.opencode_go import OPENCODE_GO_PROVIDER_NAME
-        from .config.web_translation import CHATGPT_WEB_PROVIDER_NAME
+        from video_translator.config.gemini import GEMINI_PROVIDER_NAME
+        from video_translator.config.deepseek import DEEPSEEK_PROVIDER_NAME
+        from video_translator.config.opencode_go import OPENCODE_GO_PROVIDER_NAME
+        from video_translator.config.web_translation import CHATGPT_WEB_PROVIDER_NAME
         if candidate.metadata.get("provider") in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME}:
-            from .steps.step3_translation.quality import assess_manual_segments
+            from video_translator.steps.step3_translation.quality import assess_manual_segments
             payload.setdefault("workflow", {})["review_issues"] = assess_manual_segments(
                 edited_segments, self.target_language,
             )

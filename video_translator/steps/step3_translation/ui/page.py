@@ -322,7 +322,13 @@ class TranslationStepPage(StepPage):
                 "File của output đang chọn không còn tồn tại.",
             )
             return
-        editable = candidate.id == self.state.selected_translation_candidate_id
+        # Editing a displayed output also makes it the active Step 4 input.
+        # Batch review can restore the candidate list before its selection.
+        if candidate.id != self.state.selected_translation_candidate_id:
+            if not self.state.select_translation_candidate(candidate.id):
+                QMessageBox.warning(self, "Không thể chỉnh sửa", "Không thể chọn bản dịch này làm input Step 4.")
+                return
+        editable = True
         dialog = TranslationEditorDialog(candidate, editable, self,
                                          manual_check=manual_check,
                                          target_language=self.state.target_language)
@@ -355,6 +361,9 @@ class TranslationStepPage(StepPage):
                 "Không thể lưu bản dịch",
                 f"Không thể ghi translated_segments.json.\n\n{exc}",
             )
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Không thể lưu bản dịch", str(exc))
             return
         dialog.save_succeeded()
         self._refresh_translations(prefer_selected=True)

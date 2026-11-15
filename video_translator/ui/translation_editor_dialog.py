@@ -305,8 +305,12 @@ class TranslationEditorDialog(QDialog):
 
     def _request_save(self) -> None:
         if not self.model.editable:
+            self.status_label.setText("Bản dịch này chưa sẵn sàng để chỉnh sửa.")
+            self.status_label.setVisible(True)
             return
         self.table.clearFocus()
+        self.status_label.setText("Đang lưu thay đổi…")
+        self.status_label.setVisible(True)
         self.save_requested.emit(self.candidate_id, self.model.updates())
 
     def _filter_changed(self, text: str) -> None:

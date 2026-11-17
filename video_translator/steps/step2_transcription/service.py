@@ -20,8 +20,6 @@ ProgressCallback = Callable[[int, str], None]
 
 SPEAKER_CHANGE_MIN_DURATION_SECONDS = 0.8
 SPEAKER_CHANGE_MIN_WORDS = 2
-RECOVERY_MAX_MAIN_OVERLAP_SECONDS = 0.1
-RECOVERY_FALLBACK_GAP_SECONDS = 0.2
 
 
 class SpeechToTextError(UserFacingError):
@@ -38,7 +36,7 @@ def preload_batch_models(session_key: str, settings: dict[str, object]) -> None:
         "model_name": str(settings["model"]),
         "model_cache_dir": str(SpeechToTextService.model_cache_dir()),
         "requested_device": str(settings["device"]),
-        "colab_vad": bool(settings["vad_recovery"]) or bool(settings["diarization"]),
+        "compute_type": str(settings["compute_type"]),
     }
     result, error, stderr, _ = run_batch_worker(session_key, "stt", request)
     if error and request["requested_device"] == "Auto" and error.get("fallback_to_cpu"):
@@ -50,24 +48,6 @@ def preload_batch_models(session_key: str, settings: dict[str, object]) -> None:
             "Không thể nạp model Step 1.5", str((error or {}).get("message", "Worker không trả về kết quả.")),
             "Kiểm tra model và thiết bị đã cấu hình.", stderr,
         )
-    if str(settings["segmentation_mode"]) == "OCR":
-        from .ocr_subtitles import LANGUAGES
-
-        language = str(settings.get("_source_language", ""))
-        language_code = {"Chinese": "zh", "English": "en", "Vietnamese": "vi", "Japanese": "ja", "Korean": "ko"}.get(language, language)
-        if language_code not in LANGUAGES:
-            raise SpeechToTextError("Không thể nạp model OCR", f"Ngôn ngữ nguồn không được hỗ trợ: {language}")
-        ocr_request = {
-            "type": "preload", "language": LANGUAGES[language_code],
-            "requested_device": str(settings["device"]),
-        }
-        ocr_result, ocr_error, ocr_stderr, _ = run_batch_worker(session_key, "ocr", ocr_request)
-        if ocr_error or ocr_result is None:
-            raise SpeechToTextError(
-                "Không thể nạp model OCR",
-                str((ocr_error or {}).get("message", "Worker không trả về kết quả.")),
-                "Kiểm tra model OCR và thiết bị đã cấu hình.", ocr_stderr,
-            )
     if bool(settings["diarization"]):
         model_path = configured_model_path().resolve()
         device = "GPU" if "GPU" in str(result.get("actual_device", "")) else "CPU"
@@ -84,6 +64,14 @@ def preload_batch_models(session_key: str, settings: dict[str, object]) -> None:
                 "Không thể nạp model diarization", str((diar_error or {}).get("message", "Worker không trả về kết quả.")),
                 "Kiểm tra model local và thiết bị đã cấu hình.", stderr,
             )
+
+    if settings["ocr_enabled"]:
+        from .ocr_text import OcrTextService
+
+        source_language = str(settings.get("_source_language", ""))
+        language = {"Chinese": "zh", "English": "en", "Vietnamese": "vi",
+                    "Japanese": "ja", "Korean": "ko"}.get(source_language, source_language)
+        OcrTextService(language, settings, session_key).preload()
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,18 +148,16 @@ class SpeechToTextService:
         model_name: str,
         device: str,
         language: str | None,
-        vad_filter: bool,
         diarization: bool = False,
-        segment_recovery: bool = default_value(StepId.STT, "vad_recovery"),
-        segmentation_mode: str = default_value(StepId.STT, "segmentation_mode"),
+        compute_type: str = default_value(StepId.STT, "compute_type"),
         batch_session: str = "",
+        diagnostics_dir: str = "",
     ) -> None:
         self.model_name = model_name
         self.device = device
         self.language = language
-        self.vad_filter = vad_filter
-        self.segment_recovery = segment_recovery
-        self.segmentation_mode = segmentation_mode
+        self.compute_type = compute_type
+        self.diagnostics_dir = diagnostics_dir
         self.diarization = diarization
         self.batch_session = batch_session
 
@@ -201,21 +187,19 @@ class SpeechToTextService:
             "model_cache_dir": str(self.model_cache_dir()),
             "requested_device": self.device,
             "language": self.language,
-            "vad_filter": self.vad_filter,
-            "colab_vad": self.segmentation_mode == "Whisper" and (self.vad_filter or self.diarization),
-            "segment_recovery": self.segment_recovery,
-            "segmentation_mode": self.segmentation_mode,
+            "compute_type": self.compute_type,
+            "diagnostics_dir": self.diagnostics_dir,
         }
         stt_progress = (
             (lambda value, message: progress(round(value * 0.58), message))
-            if progress and self.diarization and self.segmentation_mode == "Whisper"
+            if progress and self.diarization
             else progress
         )
         result = self._run_worker(request, stt_progress)
         raw_segments = result.get("segments")
         if not isinstance(raw_segments, list):
             raise SpeechToTextError(
-                "Kết quả Stable Whisper không hợp lệ",
+                "Kết quả Whisper không hợp lệ",
                 "Worker không trả về danh sách segment hợp lệ.",
                 "Mở chi tiết kỹ thuật để kiểm tra dữ liệu worker.",
                 repr(raw_segments),
@@ -230,61 +214,9 @@ class SpeechToTextService:
                 }
                 for item in raw_segments
             ]
-            raw_recovered = result.get("recovered_segments", [])
-            if not isinstance(raw_recovered, list):
-                raw_recovered = []
-            normalized_recovered = []
-            recovery_fallback_indices: set[int] = set()
-            recovery_input_warnings: list[dict[str, object]] = []
-            recovery_info = result.get("asr_recovery", {})
-            timing_audit = recovery_info.get("main_timing_audit", []) if isinstance(recovery_info, dict) else []
-            for item in raw_recovered:
-                start = float(item["start"])
-                end_value = item.get("end")
-                end = float(end_value) if end_value is not None else None
-                if end is None or not math.isfinite(end) or end <= start:
-                    recovery_fallback_indices.add(len(normalized_recovered))
-                    # Only a missing/invalid Recovery end needs a substitute.
-                    # Prefer the original enclosing Main interval when available.
-                    parents = [
-                        (float(record["before_start"]), float(record["before_end"]))
-                        for record in timing_audit
-                        if isinstance(record, dict)
-                        and record.get("before_start") is not None
-                        and record.get("before_end") is not None
-                        and float(record["before_start"]) <= start < float(record["before_end"])
-                    ]
-                    if not parents:
-                        parents = [
-                            (float(main["start"]), float(main["end"]))
-                            for main in normalized
-                            if float(main["start"]) <= start < float(main["end"])
-                        ]
-                    if not parents:
-                        # Keep the utterance as an explicitly invalid interval
-                        # for manual repair, never invent a usable duration.
-                        if end is None or not math.isfinite(end):
-                            end = start
-                        recovery_input_warnings.append({
-                            "stage": "segment", "start": start, "end": end,
-                            "text": str(item["text"]),
-                            "reason": "missing_recovery_end_requires_manual_timing",
-                        })
-                    else:
-                        end = max(parents, key=lambda interval: interval[0])[1]
-                normalized_recovered.append({
-                    "start": start,
-                    "end": end,
-                    "text": str(item["text"]),
-                    "words": list(item.get("words", [])),
-                    "alignment_start": float(item["alignment_start"] if item.get("alignment_start") is not None else start),
-                    "alignment_end": float(item["alignment_end"] if item.get("alignment_end") is not None else end),
-                    "before_start": float(item["before_start"] if item.get("before_start") is not None else start),
-                    "before_end": float(item["before_end"] if item.get("before_end") is not None else end),
-                })
         except (KeyError, TypeError, ValueError) as exc:
             raise SpeechToTextError(
-                "Kết quả Stable Whisper không hợp lệ",
+                "Kết quả Whisper không hợp lệ",
                 "Một hoặc nhiều segment thiếu timestamp hoặc nội dung hợp lệ.",
                 "Mở chi tiết kỹ thuật để kiểm tra dữ liệu worker.",
                 repr(raw_segments),
@@ -292,29 +224,8 @@ class SpeechToTextService:
         if not normalized:
             raise SpeechToTextError(
                 "Không phát hiện lời nói",
-                "Stable Whisper đã xử lý xong nhưng không tạo được segment nào.",
-                "Thử chọn Original Mix, tắt Voice activity detection hoặc kiểm tra lại audio từ Step 1.",
-            )
-        if self.segmentation_mode in {"VAD", "Hybrid"}:
-            probability = result.get("language_probability")
-            duration = result.get("duration_seconds")
-            return Transcription(
-                segments=[
-                    TranscriptSegment(
-                        start=float(item["start"]), end=float(item["end"]),
-                        text=str(item["text"]),
-                    )
-                    for item in normalized
-                ],
-                language=str(result.get("language", "")),
-                language_probability=float(probability) if probability is not None else None,
-                duration_seconds=float(duration) if duration is not None else None,
-                requested_device=str(result.get("requested_device", self.device)),
-                actual_device=str(result.get("actual_device", "")),
-                compute_type=str(result.get("compute_type", "default")),
-                device_selection_reason=str(result.get("device_selection_reason", "")),
-                device_fallback=dict(result.get("device_fallback") or {}),
-                asr_recovery=dict(result.get("asr_recovery") or {}),
+                "Whisper đã xử lý xong nhưng không tạo được segment nào.",
+                "Thử chọn Original Mix hoặc kiểm tra lại audio từ Step 1.",
             )
         diarization_model = ""
         diarization_device = ""
@@ -403,162 +314,6 @@ class SpeechToTextService:
             if isinstance(result.get("asr_recovery"), dict)
             else {"enabled": False}
         )
-        overlap_warnings: list[dict[str, object]] = []
-        retained_recovered: list[dict[str, object]] = []
-        for item in normalized_recovered:
-            # Keep overlaps for review using the full ASR word extent;
-            # never cut or rebuild the utterance to make it fit.
-            start = float(item["alignment_start"] if self.diarization else item["start"])
-            end = float(item["alignment_end"] if self.diarization else item["end"])
-            overlap = self._max_overlap(start, end, segments)
-            if overlap > RECOVERY_MAX_MAIN_OVERLAP_SECONDS + 1e-9:
-                overlap_warnings.append({
-                    "stage": "word_alignment" if self.diarization else "segment",
-                    "start": item["start"],
-                    "end": item["end"],
-                    "text": item["text"],
-                    "main_overlap_seconds": round(overlap, 3),
-                    "reason": "overlap_kept_for_content_and_acoustic_review",
-                })
-            retained_recovered.append(item)
-
-        if self.diarization:
-            recovered_segments = self._segments_with_speakers(
-                retained_recovered,
-                turns,
-                source_id_offset=max(
-                    (
-                        int(part.get("source_id", 0))
-                        for segment in segments
-                        for part in segment.merge_parts
-                    ),
-                    default=0,
-                ),
-            )
-        else:
-            recovered_segments = [
-                TranscriptSegment(
-                    start=float(item["start"]),
-                    end=float(item["end"]),
-                    text=str(item["text"]),
-                )
-                for item in retained_recovered
-            ]
-
-        # Preserve an acoustic speaker if one exists. Only unknown Recovery
-        # speakers get a symbolic label; Main labels are never rewritten here.
-        recovered_segments = [
-            replace(item, speaker_id="SPEAKER_RECOVERY")
-            if item.speaker_id in {"", "SPEAKER_UNKNOWN"} else item
-            for item in recovered_segments
-        ]
-
-        final_recovered: list[TranscriptSegment] = []
-        for item in recovered_segments:
-            overlap = self._max_overlap(item.start, item.end, segments)
-            if overlap > RECOVERY_MAX_MAIN_OVERLAP_SECONDS + 1e-9:
-                overlap_warnings.append({
-                    "stage": "final_segment",
-                    "start": item.start,
-                    "end": item.end,
-                    "text": item.text,
-                    "main_overlap_seconds": round(overlap, 3),
-                    "reason": "overlap_kept_after_speaker_assignment",
-                })
-            final_recovered.append(item)
-        recovery_metadata["max_main_overlap_seconds"] = RECOVERY_MAX_MAIN_OVERLAP_SECONDS
-        recovery_metadata["rejected_postprocess_overlap_count"] = 0
-        recovery_metadata["rejected_postprocess_overlaps"] = []
-        recovery_metadata["postprocess_overlap_warnings"] = overlap_warnings
-        recovery_metadata["final_accepted_segment_count"] = len(final_recovered)
-
-        main_audit = recovery_metadata.get("main_timing_audit", [])
-        def source_index(item: TranscriptSegment, fallback: int) -> int:
-            indices = [
-                int(part["raw_index"]) for part in item.merge_parts
-                if isinstance(part, dict) and "raw_index" in part
-            ]
-            return min(indices) if indices else fallback
-
-        source_details: dict[int, dict[str, object]] = {}
-        for index, item in enumerate(segments):
-            origin = source_index(item, index)
-            audit = main_audit[origin] if isinstance(main_audit, list) and origin < len(main_audit) else {}
-            source_details[id(item)] = {
-                "source": "main", "source_index": origin,
-                "before_start": audit.get("before_start", item.start),
-                "before_end": audit.get("before_end", item.end),
-                "reason": audit.get("reason", "main_asr"),
-                "action": audit.get("action", "kept"),
-            }
-        fallback_recovery_ids: set[int] = set()
-        for index, item in enumerate(final_recovered):
-            origin = source_index(item, index)
-            raw = normalized_recovered[origin] if origin < len(normalized_recovered) else {}
-            reliable_timing = self._has_reliable_word_timing(raw)
-            if (
-                origin in recovery_fallback_indices
-                or not reliable_timing
-                or self._max_overlap(item.start, item.end, segments) > 0
-            ):
-                fallback_recovery_ids.add(id(item))
-            source_details[id(item)] = {
-                "source": "recovery", "source_index": origin,
-                "before_start": raw.get("before_start", item.start),
-                "before_end": raw.get("before_end", item.end),
-                "reason": "targeted_asr_recovery",
-                "action": "kept",
-            }
-        recovery_main_pairs: dict[int, int] = {}
-        for recovery in final_recovered:
-            if id(recovery) not in fallback_recovery_ids:
-                continue
-            overlapping = [
-                main for main in segments
-                if min(main.end, recovery.end) > max(main.start, recovery.start)
-            ]
-            if overlapping:
-                # The Recovery start anchors the split. A later Main is only
-                # an end limit when the Recovery already begins inside a Main.
-                containing_start = [main for main in overlapping if main.start < recovery.start]
-                main = (
-                    max(containing_start, key=lambda item: item.start)
-                    if containing_start else min(overlapping, key=lambda item: item.start)
-                )
-                recovery_main_pairs[id(recovery)] = id(main)
-        tagged = sorted(
-            [(item, "main") for item in segments] + [(item, "recovery") for item in final_recovered],
-            key=lambda pair: (pair[0].start, pair[0].end),
-        )
-        ordered = [item for item, _ in tagged]
-        timeline_warnings = list(recovery_input_warnings)
-        resolved = self._non_overlapping_timeline(
-            ordered, recovery_main_pairs, timeline_warnings,
-        )
-        for original, adjusted in zip(ordered, resolved, strict=True):
-            detail = dict(source_details[id(original)])
-            if (adjusted.start, adjusted.end) != (original.start, original.end):
-                detail["action"] = "adjusted"
-                detail["reason"] = "recovery_main_pair_timing_fallback"
-            source_details[id(adjusted)] = detail
-        tagged = [
-            (adjusted, origin)
-            for adjusted, (_, origin) in zip(resolved, tagged, strict=True)
-        ]
-        segments = resolved
-        recovery_metadata["postprocess_overlap_warnings"] = timeline_warnings
-        recovery_metadata["max_main_overlap_seconds"] = max(
-            (self._max_overlap(item.start, item.end, [main for main, source in tagged if source == "main"])
-             for item, source in tagged if source == "recovery"), default=0.0,
-        )
-        recovery_metadata["final_segment_sources"] = [
-            {
-                "id": index, **source_details[id(item)],
-                "after_start": item.start, "after_end": item.end,
-            }
-            for index, (item, source) in enumerate(tagged, start=1)
-        ]
-
         probability = result.get("language_probability")
         duration = result.get("duration_seconds")
         return Transcription(
@@ -575,108 +330,6 @@ class SpeechToTextService:
             diarization_device=diarization_device,
             diarization_turns=diarization_turns,
             asr_recovery=recovery_metadata,
-        )
-
-    @staticmethod
-    def _has_reliable_word_timing(item: dict[str, object]) -> bool:
-        """Use complete, ordered, confident ASR word timing as evidence."""
-        words = item.get("words")
-        if not isinstance(words, list) or not words:
-            return False
-        try:
-            times = [(float(word["start"]), float(word["end"])) for word in words]
-            confidence = [float(word.get("probability") or 0.0) for word in words]
-            normalize = lambda value: "".join(character for character in str(value).casefold() if character.isalnum())
-            return (
-                all(math.isfinite(start) and math.isfinite(end) and start >= 0 and end > start
-                    for start, end in times)
-                and all(times[index][0] >= times[index - 1][1] - 0.25 for index in range(1, len(times)))
-                and float(item["start"]) - 0.25 <= min(start for start, _ in times)
-                and max(end for _, end in times) <= float(item["end"]) + 0.25
-                and normalize(item.get("text", "")) != ""
-                and normalize(item.get("text", "")) == normalize("".join(str(word.get("word", "")) for word in words))
-                and all(math.isfinite(value) for value in confidence)
-                and sum(confidence) / len(confidence) >= 0.4
-            )
-        except (KeyError, TypeError, ValueError, AttributeError):
-            return False
-
-    @staticmethod
-    def _non_overlapping_timeline(
-        segments: list[TranscriptSegment],
-        recovery_main_pairs: dict[int, int],
-        warnings: list[dict[str, object]],
-    ) -> list[TranscriptSegment]:
-        """Adjust only a selected overlapping Recovery/Main pair at a time."""
-        for index, item in enumerate(segments):
-            if (
-                not math.isfinite(item.start) or not math.isfinite(item.end)
-                or item.start < 0 or item.end <= item.start
-            ):
-                warnings.append({"stage": "final_segment", "start": item.start, "end": item.end,
-                                 "text": item.text, "reason": "invalid_interval_requires_manual_timing"})
-                return list(segments)
-            if index and item.start <= segments[index - 1].start:
-                warnings.append({"stage": "final_segment", "start": item.start, "end": item.end,
-                                 "text": item.text, "reason": "non_increasing_start_requires_manual_timing"})
-                return list(segments)
-        result = list(segments)
-        positions = {id(item): index for index, item in enumerate(segments)}
-        for recovery_id, main_id in sorted(recovery_main_pairs.items(), key=lambda pair: positions[pair[0]]):
-            recovery_index, main_index = positions[recovery_id], positions[main_id]
-            recovery, main = segments[recovery_index], result[main_index]
-            warning = {
-                "stage": "final_segment", "start": recovery.start, "end": recovery.end,
-                "text": recovery.text,
-            }
-            main_end = min(main.end, recovery.start) if main_index < recovery_index else main.end
-            # Only this Main and Recovery may change. Other rows provide fixed
-            # boundaries; neither their start nor their end is moved for padding.
-            lower = max(
-                (main_end if index == main_index else item.end
-                 for index, item in enumerate(result[:recovery_index])),
-                default=recovery.start,
-            )
-            slot_start = max(recovery.start, lower)
-            slot_end = min(
-                recovery.end,
-                segments[recovery_index + 1].start if recovery_index + 1 < len(segments) else recovery.end,
-            )
-            if main_end <= main.start or slot_end <= slot_start:
-                warnings.append({**warning, "reason": "recovery_pair_requires_manual_timing"})
-                continue
-            # Both margins are taken from Recovery, never from Main or neighbors.
-            recovery_start = slot_start + RECOVERY_FALLBACK_GAP_SECONDS
-            recovery_end = slot_end - RECOVERY_FALLBACK_GAP_SECONDS
-            if recovery_end <= recovery_start:
-                # Keep the available positive interval rather than delete text.
-                recovery_start, recovery_end = slot_start, slot_end
-                warnings.append({**warning, "reason": "insufficient_duration_for_recovery_fallback_gap"})
-            updates = (
-                (main_index, main, main.start, main_end),
-                (recovery_index, recovery, recovery_start, recovery_end),
-            )
-            for index, item, start, end in updates:
-                if (start, end) == (item.start, item.end):
-                    continue
-                parts = tuple({
-                    **part, "start": start, "end": end,
-                    "duration": round(end - start, 3),
-                } for part in item.merge_parts)
-                result[index] = replace(item, start=start, end=end, merge_parts=parts)
-        # Never repair an unresolved collision by trimming an unrelated neighbor.
-        for previous, following in zip(result, result[1:]):
-            if previous.end > following.start:
-                warnings.append({"stage": "final_segment", "start": following.start,
-                                 "end": previous.end, "text": following.text,
-                                 "reason": "overlap_requires_manual_timing"})
-        return result
-
-    @staticmethod
-    def _max_overlap(start: float, end: float, segments: list[TranscriptSegment]) -> float:
-        return max(
-            (max(0.0, min(end, item.end) - max(start, item.start)) for item in segments),
-            default=0.0,
         )
 
     @staticmethod
@@ -1008,14 +661,14 @@ class SpeechToTextService:
             if stderr:
                 detail = f"{detail}\n\nWorker stderr:\n{stderr}".strip()
             raise SpeechToTextError(
-                str(worker_error.get("title", "Stable Whisper không thể nhận dạng")),
-                str(worker_error.get("message", "Worker Stable Whisper gặp lỗi.")),
+                str(worker_error.get("title", "Whisper không thể nhận dạng")),
+                str(worker_error.get("message", "Worker Whisper gặp lỗi.")),
                 str(worker_error.get("suggestion", "")),
                 detail,
             )
         if return_code != 0 or result is None:
             raise SpeechToTextError(
-                "Worker Stable Whisper kết thúc bất thường",
+                "Worker Whisper kết thúc bất thường",
                 "Tiến trình nhận dạng không trả về kết quả hợp lệ.",
                 "Kiểm tra dependency, model và cấu hình CPU/GPU rồi thử lại.",
                 stderr or f"Worker exit code: {return_code}",

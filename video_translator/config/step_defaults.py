@@ -29,9 +29,15 @@ STEP_DEFAULTS: Mapping[StepId, Mapping[str, Any]] = {
         "channels": "Stereo", "device": "Auto",
     },
     StepId.STT: {
-        "provider": "Stable Whisper", "model": "medium", "device": "Auto",
-        "segmentation_mode": "Whisper", "vad_recovery": False,
+        "provider": "Whisper", "model": "large-v2", "device": "Auto",
+        "compute_type": "int8_float32",
         "diarization": False, "merge_contained_adjacent_segments": False,
+        # OCR reads the original video and exports changed text to a TXT file.
+        "ocr_enabled": False,
+        "ocr_interval_seconds": 0.25,
+        "ocr_bottom_margin_percent": 0,
+        "ocr_width_percent": 100,
+        "ocr_height_percent": 35,
     },
     StepId.TRANSLATE: {
         "provider": GEMINI_PROVIDER_NAME, "model": GEMINI_DEFAULT_MODEL,
@@ -106,4 +112,11 @@ def with_defaults(step: StepId, settings: Mapping[str, Any]) -> dict[str, Any]:
     provider = str(settings.get("provider", STEP_DEFAULTS[step]["provider"]))
     values = defaults_for(step, provider)
     values.update(settings)
+    if step == StepId.STT:
+        for key in ("segmentation_mode", "vad_recovery", "vad_filter", "segment_recovery", "ocr_region"):
+            values.pop(key, None)
+        if values["provider"] in {"Stable Whisper", "Faster Whisper"}:
+            values["provider"] = "Whisper"
+        if values["model"] not in {"medium", "large-v2", "large-v3"}:
+            values["model"] = STEP_DEFAULTS[step]["model"]
     return values

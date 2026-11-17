@@ -1,2 +1,3 @@
-DEFAULT_MODEL = "medium"
-SUPPORTED_MODELS = ("small", "medium", "large-v3")
+from .providers.faster_whisper.config import DEFAULT_MODEL, MODELS
+
+SUPPORTED_MODELS = MODELS

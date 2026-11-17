@@ -41,7 +41,7 @@ from ..ui.components import Card, FilePicker, ProviderPanel
 from ..steps.step5_alignment.ui import AudioSyncStepPage
 from ..steps.step6_render.ui import BuildAudioStepPage
 from ..steps.step1_separation.ui import ExtractStepPage
-from ..steps.step2_transcription.ui import SpeechToTextStepPage
+from ..steps.step2_transcription.ui.page import SpeechToTextProviderPanel, SpeechToTextStepPage
 from ..ui.translation_components import TranslationProviderSelector
 from ..ui.tts_components.base import device_control, speed_control
 
@@ -566,7 +566,8 @@ class ProjectSettingsDialog(QDialog):
         self._add_section("Project & Input", _scroll_page("Project & Input", "Thông tin chung và danh sách video.", content))
 
     def _add_provider_page(self, spec) -> None:
-        panel = ProviderPanel(spec.providers)
+        panel_type = SpeechToTextProviderPanel if spec.step == StepId.STT else ProviderPanel
+        panel = panel_type(spec.providers)
         self.step_panels[spec.step] = panel
         self._add_section(
             f"Step {spec.number}",

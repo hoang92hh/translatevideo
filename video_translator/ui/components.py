@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtCore import Qt
+
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -90,10 +92,27 @@ class ProviderPanel(Card):
             form.setContentsMargins(0, 8, 0, 0)
             form.setSpacing(12)
             page_controls: dict[str, QWidget] = {}
+            grouped_rows: dict[str, QHBoxLayout] = {}
             for spec in provider.fields:
                 control = self._make_control(spec)
                 page_controls[spec.key] = control
-                form.addRow(spec.label, control)
+                if spec.row:
+                    if spec.row not in grouped_rows:
+                        row = QHBoxLayout()
+                        row.setContentsMargins(0, 0, 0, 0)
+                        row.setSpacing(10)
+                        grouped_rows[spec.row] = row
+                        form.addRow(row)
+                    row = grouped_rows[spec.row]
+                    if spec.kind != "checkbox":
+                        row.addWidget(QLabel(spec.label))
+                    row.addWidget(control)
+                elif spec.kind == "checkbox":
+                    form.addRow(control)
+                else:
+                    form.addRow(spec.label, control)
+            for row in grouped_rows.values():
+                row.addStretch(1)
             form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
             self.controls.append(page_controls)
             self.stack.addWidget(page)
@@ -111,18 +130,29 @@ class ProviderPanel(Card):
             widget.addItems(spec.choices)
             widget.setCurrentText(str(spec.default))
             return widget
-        if spec.kind == "bool":
-            widget = QCheckBox()
+        if spec.kind in {"bool", "checkbox"}:
+            widget = QCheckBox(spec.label if spec.kind == "checkbox" else "")
+            widget.setProperty("clearOption", spec.kind == "checkbox")
+            if spec.kind == "checkbox":
+                widget.setCursor(Qt.CursorShape.PointingHandCursor)
             widget.setChecked(bool(spec.default))
             return widget
         if spec.kind == "int":
             widget = QSpinBox()
-            widget.setRange(1, 1000)
+            widget.setRange(
+                int(spec.minimum) if spec.minimum is not None else 1,
+                int(spec.maximum) if spec.maximum is not None else 1000,
+            )
+            widget.setSuffix(spec.suffix)
             widget.setValue(int(spec.default))
             return widget
         if spec.kind == "float":
             widget = QDoubleSpinBox()
-            widget.setRange(spec.minimum if spec.minimum is not None else 0.25, 4.0)
+            widget.setRange(
+                spec.minimum if spec.minimum is not None else 0.25,
+                spec.maximum if spec.maximum is not None else 4.0,
+            )
+            widget.setSuffix(spec.suffix)
             widget.setSingleStep(0.05)
             widget.setValue(float(spec.default))
             return widget

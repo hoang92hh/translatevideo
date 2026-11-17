@@ -15,6 +15,9 @@ class FieldSpec:
     default: Any = ""
     choices: tuple[str, ...] = ()
     minimum: float | None = None
+    maximum: float | None = None
+    suffix: str = ""
+    row: str = ""
 
 
 @dataclass(frozen=True)

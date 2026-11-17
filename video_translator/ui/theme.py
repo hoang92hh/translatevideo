@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import QApplication
 
@@ -36,6 +38,12 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QListWidget {
 QLineEdit:focus, QComboBox:focus, QTextEdit:focus { border-color: #38bdf8; }
 QComboBox::drop-down { border: none; width: 24px; }
 QCheckBox { spacing: 8px; }
+QCheckBox[clearOption="true"]::indicator {
+    width: 16px; height: 16px; border: 1px solid #ffffff;
+}
+QCheckBox[clearOption="true"]::indicator:checked {
+    image: url("__CHECKBOX_CHECK_ICON__");
+}
 QProgressBar {
     background: #0b1220; border: 1px solid #2a3850; border-radius: 6px;
     min-height: 14px; text-align: center; color: #e8edf6;
@@ -63,6 +71,10 @@ QScrollBar:vertical { background: #0c111b; width: 10px; }
 QScrollBar::handle:vertical { background: #334155; border-radius: 5px; min-height: 28px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 """
+APP_STYLE = APP_STYLE.replace(
+    "__CHECKBOX_CHECK_ICON__",
+    (Path(__file__).resolve().parents[1] / "assets" / "checkbox_check.png").as_posix(),
+)
 
 
 def apply_application_style(app: QApplication) -> None:

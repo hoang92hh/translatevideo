@@ -21,9 +21,26 @@ from video_translator.config.step_defaults import default_value
 from video_translator.errors import UserFacingError
 from video_translator.steps.step2_transcription.csv_exchange import export_segments
 from video_translator.ui.transcript_timeline_dialog import TranscriptTimelineDialog
-from video_translator.ui.components import Card
+from video_translator.ui.components import Card, ProviderPanel
 from video_translator.ui.specs import DEVICE_FIELD, FieldSpec, ProviderSpec, StepSpec
 from video_translator.ui.steps.base import StepPage
+
+
+class SpeechToTextProviderPanel(ProviderPanel):
+    def __init__(self, providers) -> None:
+        super().__init__(providers)
+        self._ocr_height = self.controls[0]["ocr_height_percent"]
+        self._ocr_bottom_margin = self.controls[0]["ocr_bottom_margin_percent"]
+        self._ocr_height.valueChanged.connect(self._update_ocr_margin_limit)
+        self._update_ocr_margin_limit()
+
+    def _update_ocr_margin_limit(self, *_: object) -> None:
+        self._ocr_bottom_margin.setMaximum(100 - self._ocr_height.value())
+
+    def set_values(self, values: dict[str, object]) -> None:
+        # Load height first so a valid saved margin is not clamped by the old height.
+        self._ocr_height.setValue(values.get("ocr_height_percent", self._ocr_height.value()))
+        super().set_values(values)
 
 
 class SpeechToTextStepPage(StepPage):
@@ -34,19 +51,41 @@ class SpeechToTextStepPage(StepPage):
         "Step 1.5 tạo SRT; Step 2 chuyển SRT thành segment cho Step 3.",
         (
             ProviderSpec(default_value(StepId.STT, "provider"), (
-                FieldSpec("model", "Model", "choice", default_value(StepId.STT, "model"), ("small", "medium", "large-v3")),
+                FieldSpec("model", "Model", "choice", default_value(StepId.STT, "model"), ("medium", "large-v2", "large-v3")),
                 DEVICE_FIELD,
-                FieldSpec("segmentation_mode", "Cơ chế tạo SRT (Step 1.5)", "choice", default_value(StepId.STT, "segmentation_mode"), ("Whisper", "OCR", "Hybrid")),
-                FieldSpec("vad_recovery", "VAD khi tạo SRT (Whisper / Hybrid)", "bool", default_value(StepId.STT, "vad_recovery")),
-                FieldSpec("diarization", "Speaker diarization (tự bật VAD)", "bool", default_value(StepId.STT, "diarization")),
+                FieldSpec("compute_type", "Kiểu tính toán", "choice", default_value(StepId.STT, "compute_type"), ("int8_float32", "float16", "float32")),
+                FieldSpec("diarization", "Speaker diarization", "checkbox", default_value(StepId.STT, "diarization")),
                 FieldSpec(
                     "merge_contained_adjacent_segments",
-                    "Gộp segment liền kề (Whisper)",
-                    "bool",
+                    "Gộp segment liền kề",
+                    "checkbox",
                     default_value(StepId.STT, "merge_contained_adjacent_segments"),
                 ),
+                FieldSpec(
+                    "ocr_enabled", "OCR", "checkbox",
+                    default_value(StepId.STT, "ocr_enabled"), row="ocr",
+                ),
+                FieldSpec(
+                    "ocr_interval_seconds", "Chu kỳ quét", "float",
+                    default_value(StepId.STT, "ocr_interval_seconds"),
+                    minimum=0.01, maximum=3600.0, suffix=" giây", row="ocr",
+                ),
+                FieldSpec(
+                    "ocr_bottom_margin_percent", "Cách mép dưới", "int",
+                    default_value(StepId.STT, "ocr_bottom_margin_percent"),
+                    minimum=0, maximum=100, suffix="%", row="ocr",
+                ),
+                FieldSpec(
+                    "ocr_width_percent", "Rộng", "int",
+                    default_value(StepId.STT, "ocr_width_percent"),
+                    minimum=1, maximum=100, suffix="%", row="ocr",
+                ),
+                FieldSpec(
+                    "ocr_height_percent", "Cao", "int",
+                    default_value(StepId.STT, "ocr_height_percent"),
+                    minimum=1, maximum=100, suffix="%", row="ocr",
+                ),
             )),
-            ProviderSpec("Provider khác (sắp có)", available=False),
         ),
     )
 

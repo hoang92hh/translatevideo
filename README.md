@@ -1,6 +1,6 @@
 # TransLanguage
 
-Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project và xử lý thật toàn bộ pipeline: chuẩn bị audio ở Step 1, tạo SRT bằng Stable Whisper, OCR hoặc Hybrid ở Step 1.5, chuyển SRT thành segment ở Step 2, dịch bằng Google Gemini hoặc DeepSeek ở Step 3, tạo giọng nói ở Step 4, đồng bộ thời lượng bằng FFmpeg ở Step 5, ghép voice timeline ở Step 6 và render video hoàn chỉnh ở Step 7.
+Ứng dụng desktop cho pipeline phiên dịch và lồng tiếng video. Phiên bản hiện tại có quản lý project và xử lý thật toàn bộ pipeline: chuẩn bị audio ở Step 1, tạo SRT bằng Whisper + VAD ở Step 1.5, chuyển SRT thành segment ở Step 2, dịch bằng Google Gemini hoặc DeepSeek ở Step 3, tạo giọng nói ở Step 4, đồng bộ thời lượng bằng FFmpeg ở Step 5, ghép voice timeline ở Step 6 và render video hoàn chỉnh ở Step 7.
 
 ## Chạy ứng dụng
 
@@ -41,12 +41,15 @@ Với GPU NVIDIA Pascal như GTX 10xx, profile `cuda` khóa ONNX Runtime ở dò
 model thực sự kích hoạt `CUDAExecutionProvider`; việc provider chỉ xuất hiện
 trong danh sách khả dụng là chưa đủ.
 
-Step 1.5 dùng Stable Whisper trên PyTorch. Chế độ `Auto` chọn GPU khi PyTorch
-phát hiện CUDA, nếu không sẽ dùng CPU; nếu chạy GPU thất bại, Auto thử lại trên
-CPU. Lựa chọn `GPU` sẽ báo lỗi thay vì tự đổi thiết bị. Model Stable Whisper
-được lưu trong cache riêng; model Faster Whisper cũ không được dùng lại.
-Faster Whisper vẫn là dependency cho bộ giải mã audio và VAD; dự án khóa PyAV
-dưới phiên bản 19 để tương thích Faster Whisper 1.2.1.
+Step 1.5 dùng Faster-Whisper kết hợp Stable-ts và Silero VAD theo pipeline
+`reference/colab_srt/windows_srt_standalone.py`. Audio đầu vào được giải mã về
+mono 16 kHz bằng `faster_whisper.audio.decode_audio`. Mặc định dùng `large-v2` và
+`int8_float32`. Có thể chọn model `medium`, `large-v2`, `large-v3` và kiểu tính toán
+`int8_float32`, `float16`, `float32`. CTranslate2 kiểm tra kiểu tính toán trên thiết bị
+đã chọn. `Auto` chọn CUDA khi khả dụng và thử lại trên CPU nếu GPU gặp lỗi.
+Lựa chọn `CPU` hoặc `GPU` chạy trên thiết bị được chỉ định. Model được lưu trong
+`%LOCALAPPDATA%/TransLanguage/stable-whisper-models`. Model có thể được tải ở lần dùng đầu.
+Dự án khóa PyAV dưới phiên bản 19 để tương thích Faster-Whisper 1.2.1.
 
 ## Pipeline trên giao diện
 
@@ -253,9 +256,9 @@ ghép, chỉnh thứ tự video tại **Project & Input** trước.
 - Trạng thái project lưu output được người dùng chọn gần nhất ở mỗi step. Khi pipeline đầy đủ được triển khai, đó là input duy nhất được chuyển sang step kế tiếp.
 - Khi chạy lại Step 1, audio player được giải phóng trước; MDX tái sử dụng Original Mix có cấu hình phù hợp thay vì ghi đè file đang nghe.
 - Khi chạy MDX, ứng dụng tự đưa thư mục chứa FFmpeg/FFprobe đã chọn vào môi trường của provider; không bắt buộc cấu hình PATH toàn hệ thống.
-- Step 1.5 chạy sau Step 1 và ghi đè `<thư mục cha của input>/srt/<tên-video>.srt`; thư mục SRT cùng cấp với input và dùng chung cho các video trong input. `Whisper` giữ cách nhận dạng audio bằng Stable Whisper hiện có. `OCR` đọc vùng 35% phía dưới hình video bằng EasyOCR theo ngôn ngữ nguồn của project (tiếng Trung dùng chữ giản thể), lấy mẫu mỗi 0,25 giây. `Hybrid` chạy Whisper trước, quét thưa tối đa 48 khung hình để tìm hàng phụ đề cháy ở nửa dưới và gần giữa khung hình. Hàng chữ phải đổi theo thời gian, trùng lời Whisper ít nhất hai lần và đạt ít nhất 35% số dòng OCR; nếu không, giữ nguyên Whisper và ghi lý do. Khi đạt, Hybrid quét 2 khung hình/giây trong từng khoảng `[start - 0,5 giây, end]` của Whisper, rồi kiểm tra lại. Hybrid không quét dày khoảng trống giữa các segment và không tạo segment mới từ OCR. OCR được làm sạch và gộp trùng trước khi ghép. Với mỗi dòng OCR giao thời gian, chọn segment Whisper giao nhiều nhất. Nếu text segment đó là chữ Hán, chỉ thay khi một block OCR giống text Whisper ít nhất 80% (tính trên chuỗi dài hơn); nếu text không phải chữ Hán (Latin, số, ký hiệu) thì thay bằng block của dòng OCR theo timeline. OCR tin cậy từ 0,62 mới được dùng. Hybrid giữ nguyên start/end do Whisper sinh ra: mỗi dòng OCR chỉ thay text của một segment, không mở rộng thời gian và không hấp thụ segment khác. Tùy chọn **Gộp segment liền kề** áp dụng riêng cho `Whisper`. Trong màn hình batch, chọn **Step 1.5** để tạo SRT; chọn **Step 2** để đọc SRT và tạo transcript segment candidate trong `transcripts/<candidate-id>/transcript.json` cho Step 3.
+- Step 1.5 chạy sau Step 1 và ghi SRT tại `<thư mục cha của input>/srt/<tên-video>.srt`. Whisper nhận dạng toàn bộ audio gốc, giữ ranh giới segment ASR và chia cue theo mốc từ với khoảng nghỉ 0,3 giây, mục tiêu tối đa 6 giây và 40 ký tự. Silero VAD luôn chạy để đối chiếu vùng lời nói, nhận dạng bổ sung vùng thiếu và rà đầu/cuối audio. Stable-ts căn lại timing lỗi và refine start với bước 0,02 giây. Báo cáo từng lượt được lưu trong `srt/diagnostics/<tên-video>/<lần-chạy>/report.json`. Batch chọn **Step 1.5** để tạo SRT và **Step 2** để chuyển SRT thành transcript segment candidate cho Step 3.
 - Project mới mặc định chọn `Whisper` và tắt **Gộp segment liền kề** ở Step 1.5. Nếu project cũ lưu chế độ `VAD`, hãy chọn lại một trong ba chế độ hiện có trước khi chạy Step 1.5.
-- Một checkbox **VAD + phục hồi segment (Whisper / Hybrid)** bật hoặc tắt đồng thời VAD và Recovery cho phần Stable Whisper; mặc định tắt. Các khóa VAD/Recovery cũ của project không được chuyển đổi. Mặc định của các thiết lập Step 1–7 được quản lý tập trung trong `video_translator/config/step_defaults.py`; giá trị đã lưu trong project được ưu tiên. OCR dùng model EasyOCR lưu trong `%LOCALAPPDATA%/TransLanguage/easyocr-models`; lần dùng đầu có thể tải model. Chế độ `GPU` yêu cầu CUDA, `Auto` dùng GPU nếu PyTorch phát hiện được và dùng CPU nếu không.
+- Whisper giữ hai tùy chọn **Speaker diarization** và **Gộp segment liền kề**. Diarization dùng voice gốc để gán speaker và xuất thêm `_speaker.srt`. Gộp segment áp dụng sau pipeline ASR. Checkbox **OCR** đi kèm Whisper, mặc định bỏ chọn. Cùng hàng có chu kỳ quét, khoảng cách tới mép dưới và kích thước rộng/cao theo phần trăm khung hình. OCR đọc video gốc và ghi `srt/<tên-video>.txt`, mỗi lần text thay đổi thêm một dòng. Khoảng trắng được chuẩn hóa, lượt quét rỗng được bỏ qua. Cấu hình mặc định Step 1–7 được quản lý trong `video_translator/config/step_defaults.py`.
 
 Muốn đổi mặc định của một tùy chọn step, sửa `STEP_DEFAULTS` trong `video_translator/config/step_defaults.py`; các mặc định riêng cho provider nằm ở `PROVIDER_DEFAULTS`. `default_value()` cấp giá trị cho giao diện, còn `with_defaults()` áp dụng cấu hình project lên mặc định trước khi chạy pipeline. Các ngưỡng thuật toán và giá trị dùng để đọc dữ liệu lỗi không thuộc registry này.
 - Step 2 có nút **Nhập TXT/SRT thành output mới**. Với TXT, mỗi dòng không trắng thay text của một segment trong transcript đang chọn theo đúng thứ tự; số dòng phải bằng số segment, còn ID/timestamp/speaker được giữ nguyên. Với SRT, mỗi mục phụ đề tạo một segment có text và timestamp từ file; ID được cấp theo thứ tự, speaker là `SPEAKER_UNKNOWN`, không cần transcript Step 2 có sẵn. Cả hai cách đều tạo candidate transcript mới, giữ output cũ và chọn output mới làm input Step 3. File sai định dạng, sai số dòng, thời gian chồng nhau hoặc text trống sẽ có thông báo lỗi cụ thể.
@@ -265,7 +268,19 @@ Muốn đổi mặc định của một tùy chọn step, sửa `STEP_DEFAULTS` 
 - Tại Step 3, chọn một output rồi bấm **Xuất CSV** để chỉnh danh sách segment bên ngoài. CSV có các cột `STT, ID, Start, End, Speaker, Translation, Source`; `STT` chỉ để tham khảo. Muốn thêm segment, chèn một hàng với `ID` và `Source` để trống, nhập mốc thời gian tính bằng giây, `Speaker` và `Translation`. **Nhập CSV thành output mới** tạo một candidate JSON riêng, tự cấp ID cho hàng mới, giữ output cũ và chọn candidate mới làm input Step 4. Các đoạn có lời không được chồng thời gian; sau khi nhập có thể chạy lại Step 4 → 7. Segment nhập mới chỉ thuộc Step 3 trở đi, không ghi ngược transcript Step 2.
 - Hàng **Kiểm tra step 3** dưới các nút Step 3 đếm và liệt kê những video có output bản dịch đang chọn còn chữ Trung Quốc hoặc câu liền kề trùng/giống nhau. Chọn video rồi bấm nút để chuyển đến video đó và mở popup **Kiểm tra / sửa bản dịch** hiện có; có thể sửa text, speaker và Start/End. Danh sách được tính lại sau khi đóng popup.
 - Mỗi folder cài dùng file `api_keys.env` riêng cạnh `translatevideo.exe` để nạp `GEMINI_API_KEY`, `DEEPSEEK_API_KEY` và `OPENCODE_API_KEY` vào môi trường của ứng dụng. Sao chép `api_keys.env.example`, nhập key và mở lại ứng dụng; popup **Cài đặt → API & Providers** hiển thị trạng thái và kiểm tra kết nối. DeepSeek dùng model `deepseek-flash` cho Step 3, gồm dịch riêng và batch có story; các prompt Gemini hiện có được dùng lại cho DeepSeek. OpenCode Go là provider riêng, gọi OpenCode API bằng `OPENCODE_API_KEY` với model `deepseek-v4.1-flash`; mã provider và prompt nằm trong thư mục riêng. Danh sách project gần đây, đường dẫn model diarization, provider TTS mặc định và thư mục thư viện giọng được lưu riêng theo folder cài. Speaker diarization chỉ đọc model local được chọn trong cùng màn hình; phần nhận dạng/diarization Step 1.5 không cần Hugging Face token và không gọi mạng khi xử lý. Riêng tác vụ tạo story sau batch Step 2 gửi lời thoại đến provider AI đã cấu hình.
-- Stable Whisper hỗ trợ `small`, `medium`, `large-v3` và ba chế độ `Auto`, `CPU`, `GPU`. Model được lưu tại cache riêng của TransLanguage trong `%LOCALAPPDATA%`.
+- Các mặc định OCR nằm trong `STEP_DEFAULTS[StepId.STT]` tại `video_translator/config/step_defaults.py`.
+
+  | Biến | Mặc định | Ý nghĩa |
+  | --- | --- | --- |
+  | `ocr_enabled` | `False` | Trạng thái checkbox OCR |
+  | `ocr_interval_seconds` | `0.25` | Chu kỳ quét video, tính bằng giây |
+  | `ocr_bottom_margin_percent` | `0` | Khoảng cách từ mép dưới video đến cạnh dưới vùng OCR, từ 0 đến `100 − ocr_height_percent` |
+  | `ocr_width_percent` | `100` | Chiều rộng vùng quét, căn giữa theo chiều ngang |
+  | `ocr_height_percent` | `35` | Chiều cao vùng quét theo phần trăm chiều cao video |
+
+  Chiều rộng vùng quét căn giữa. Khoảng cách mép dưới tính theo phần trăm chiều cao video. Với vùng cao 35%, khoảng cách điều chỉnh từ 0% đến 65%; ví dụ cách mép dưới 5% thì vùng OCR nằm từ mốc 60% đến 95% chiều cao hình. Khi tăng chiều cao vùng quét, giao diện tự giảm khoảng cách nếu vượt giới hạn mới. Giá trị đã lưu trong project được ưu tiên hơn mặc định. OCR dùng EasyOCR theo ngôn ngữ nguồn, thiết bị theo Auto/CPU/GPU và cache model tại `%LOCALAPPDATA%/TransLanguage/easyocr-models`. Lần dùng đầu có thể tải model.
+
+- Whisper hỗ trợ `medium`, `large-v2`, `large-v3`, các kiểu tính toán `int8_float32`, `float16`, `float32` và ba chế độ thiết bị `Auto`, `CPU`, `GPU`.
 - Profile CUDA khóa cuBLAS `12.6.4.1` và cuDNN `9.6.0.74` để tiếp tục hỗ trợ GPU Pascal như GTX 1060.
 - Lỗi provider được hiển thị theo nhóm nguyên nhân, kèm hướng xử lý và phần chi tiết kỹ thuật có thể mở rộng.
 - Step 4 tách từng TTS thành component riêng, chọn bằng các nút dạng tab con và có thể đặt một provider làm mặc định cho các lần mở ứng dụng sau. Các provider gồm VieNeu-TTS local cho tiếng Việt, Piper TTS local CPU/ONNX, MeloTTS + OpenVoice V2 local cho English/Spanish/Chinese/Japanese/Korean và Edge TTS online. `SPEAKER_00`, `SPEAKER_01`, `SPEAKER_02` có cấu hình giọng/model riêng; mọi speaker còn lại dùng chung một cấu hình. VieNeu và Melo/OpenVoice dùng audio tham chiếu; Piper dùng cặp voice model `.onnx` + `.onnx.json`, hỗ trợ `speaker_id` của model đa giọng và các tham số `SynthesisConfig` native; Edge dùng voice preset. Ánh xạ này được giữ khi Step 5 tạo lại voice. Mỗi lần chạy thành công tạo một candidate riêng trong `generated_audio/`; candidate mới nhất tự động là input Step 5, còn lỗi không thay đổi input trước đó.

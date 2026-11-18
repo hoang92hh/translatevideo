@@ -57,6 +57,10 @@ def prepare_translation_prompt(
     variables = {**values, **{key: str(value) for key, value in batch_context.items()}}
     mode = str(batch_context.get("batch_prompt_mode", "step"))
     template = load_batch_prompt(provider, mode, bool(batch_context.get("speaker_context_translation")))
+    variables["translation_rules_section"] = ""
+    if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME} and mode == "step":
+        rules = render_prompt_template(provider, template_id, "TRANSLATION_RULES", **values)
+        variables["translation_rules_section"] = rules + "\n\n" if rules else ""
     variables["story_intro_section"] = (
         "## Bối cảnh chung của video\n\n" + str(variables.get("story_intro", "")).strip() + "\n\n"
         if str(variables.get("story_intro", "")).strip() else ""
@@ -68,9 +72,12 @@ def prepare_translation_prompt(
             "{\n" + previous_summary + "\n}\n\n"
             if previous_summary else ""
         )
+    prompt = template.prompt
+    if "{translation_rules_section}" not in prompt:
+        prompt = variables["translation_rules_section"] + prompt
     # Substitute once: braces in user-edited stories must stay literal.
     return re.sub(
         r"\{([a-z_]+)\}",
         lambda match: variables.get(match.group(1), match.group(0)),
-        template.prompt,
+        prompt,
     )

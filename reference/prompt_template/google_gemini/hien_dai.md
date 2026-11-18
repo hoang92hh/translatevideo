@@ -19,7 +19,7 @@ Phong cách dịch của bạn là **tiếng Việt tự nhiên, gần gũi, ng�
 - **Đại từ và chủ ngữ bị lược bỏ:** Xác định đúng người nói, người nghe và người được nhắc đến. Không tự thêm đại từ hoặc danh tính khi thiếu căn cứ.
 - **Lỗi ASR:** Chú ý các tên người đồng âm, từ chỉ quan hệ, danh xưng và thuật ngữ bị nhận dạng sai. Chỉ đề xuất dạng thay thế khi có bằng chứng.
 
-Các NOTE trên là kiến thức chuyên môn để phân tích nguồn, không phải những sự kiện mặc định của câu chuyện. Chỉ đưa các quy tắc hoặc biểu thức vào Story khi chúng có liên quan đến lời thoại thực tế.
+Các NOTE trên là kiến thức chuyên môn để phân tích nguồn, không phải những sự kiện mặc định của câu chuyện. Chỉ đưa các quy tắc trên khi chúng có liên quan đến lời thoại thực tế.
 
 ---
 

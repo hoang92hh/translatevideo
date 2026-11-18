@@ -48,6 +48,21 @@ class PromptTemplate:
     prompt: str
     path: Path
 
+    def prompt_for_stage(self, stage: str) -> str:
+        """Select a task from a two-part template while retaining legacy prompts."""
+        if self.provider not in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}:
+            return "" if stage == "TRANSLATION_RULES" else self.prompt
+        part_one = re.search(r"^##[ \t]+PHẦN[ \t]+1\b[^\r\n]*", self.prompt, re.MULTILINE | re.IGNORECASE)
+        part_two = re.search(r"^##[ \t]+PHẦN[ \t]+2\b[^\r\n]*", self.prompt, re.MULTILINE | re.IGNORECASE)
+        if part_one is None or part_two is None or part_one.start() >= part_two.start():
+            return "" if stage == "TRANSLATION_RULES" else self.prompt
+        if stage == "STORY":
+            return self.prompt[part_two.start():].strip()
+        if stage in {"TRANSLATION", "TRANSLATION_RULES"}:
+            rules = self.prompt[part_one.start():part_two.start()].strip()
+            return re.sub(r"\n[ \t]*---[ \t]*$", "", rules).strip()
+        return self.prompt
+
     @property
     def stages(self) -> dict[str, str]:
         """Compatibility view for callers that still expect the old stage mapping."""
@@ -136,7 +151,9 @@ def render_prompt_template(
     **values: str,
 ) -> str:
     template = load_prompt_template(provider, template_id)
-    prompt = strip_prompt_marker(template.prompt) if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} else template.prompt
+    prompt = template.prompt_for_stage(stage)
+    if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}:
+        prompt = strip_prompt_marker(prompt)
     for name, value in values.items():
         prompt = prompt.replace("{" + name + "}", value)
     return prompt

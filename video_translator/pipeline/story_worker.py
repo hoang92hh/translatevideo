@@ -71,6 +71,7 @@ class StoryWorker(QThread):
             prompt = render_prompt_template(
                 provider_name,
                 str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
+                stage="STORY",
                 source_language=self.source_language,
                 target_language="Vietnamese",
                 input_filename=f"{stem}-input.json",
@@ -139,6 +140,7 @@ class VideoAnalysisWorker(QThread):
             prompt = render_prompt_template(
                 provider_name,
                 str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
+                stage="STORY",
                 source_language=self.source_language,
                 target_language=self.target_language,
                 input_filename="video-analysis-input.json",

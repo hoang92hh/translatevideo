@@ -1,5 +1,7 @@
 # Dịch batch Step 3 — Google Gemini
 
+{translation_rules_section}
+
 ## A. Tài liệu bối cảnh tổng thể và quy ước dịch
 
 {story_content}

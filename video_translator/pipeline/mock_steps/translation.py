@@ -326,6 +326,7 @@ def execute(
             )
             story_prompt = render_prompt_template(
                 provider, prompt_template_id,
+                stage="STORY",
                 source_language=state.source_language,
                 target_language=state.target_language,
                 input_filename=f"video-story-{group_index:03d}-input.json",

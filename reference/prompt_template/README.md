@@ -30,17 +30,20 @@ Template cũ có ba phần vẫn đọc được: ứng dụng lấy nội dung 
 
 Mỗi project chỉ lưu provider và mã template đã chọn. Popup **Quản lý Prompt** trên màn hình chính là nơi thêm, sửa và xóa template; màn hình **Thiết lập project** chỉ lựa chọn template có sẵn.
 
-## Prompt batch theo step
+## Prompt tạo story trong batch
 
-Prompt tạo story và prompt dịch Step 3 trong popup batch được quản lý tại `../prompt_batch/`.
-Riêng batch Step 3 của Google Gemini chèn nội dung template được chọn tại
-**Thiết lập project → Step 3** vào biến `{topic_content}` của prompt dịch batch.
+Template `.md` đang chọn tại **Thiết lập project → Step 3** được dùng làm toàn bộ
+prompt tạo story cho các luồng batch theo step, theo video và phân tích video.
+DeepSeek dùng chung template trong `google_gemini/`; các provider khác dùng thư mục
+riêng. Chế độ người nói cũng dùng template đã chọn, không có prompt story riêng.
 
-Popup **Chạy batch video đã chọn** dùng bộ prompt Gemini riêng tại `../prompt_video/google_gemini/`:
-prompt lấy story của từng video, prompt dịch block đầu và prompt dịch các block tiếp theo.
-Ba prompt này cũng chèn template đã chọn vào `{topic_content}`; mỗi block dịch trả
-`Noi_dung` để làm ngữ cảnh cho block kế tiếp. Story chỉ giữ trong bộ nhớ khi batch chạy.
-Tác vụ tạo story dùng `../prompt_batch/google_gemini/story.md` hoặc
-`../prompt_batch/chatgpt_web/story.md` theo provider đã chọn. Prompt phân tích video
-`google_gemini/story/video_analysis.md` và `chatgpt_web/story/video_analysis.md` vẫn nằm
-trong thư mục này.
+Template dùng cho batch cần chứa chỉ dẫn tạo hồ sơ câu chuyện phù hợp. Ứng dụng
+thay các biến ngôn ngữ và tên file input/output rồi nhận nội dung qua trường
+`story_markdown`. Các template có sẵn không được tự động chuyển đổi nội dung.
+
+Batch theo step lưu story tại `stories/story_group_<group>.md`.
+Batch theo video tạo story cho từng đoạn và giữ nội dung trong bộ nhớ để điền vào
+`{story_content}` khi dịch. Nhánh phân tích video cũ cũng dùng template đã chọn.
+
+Prompt dịch batch nằm tại `../prompt_batch/` hoặc `../prompt_video/`, nhận story
+và dữ liệu cần dịch, không chèn lại template chủ đề vào prompt dịch.

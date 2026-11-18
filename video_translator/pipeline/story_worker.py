@@ -5,58 +5,36 @@ from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
-from ..config.batch_prompts import PROMPT_BATCH_ROOT, PROMPT_VIDEO_ROOT, prepare_speaker_story_prompt
 from ..config.gemini import GEMINI_DEFAULT_MODEL, GEMINI_PROVIDER_NAME
 from ..config.deepseek import DEEPSEEK_PROVIDER_NAME
 from ..config.opencode_go import OPENCODE_GO_PROVIDER_NAME
-from ..config.prompt_templates import PROMPT_TEMPLATE_ROOT
-from ..config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, render_prompt_template
+from ..config.prompt_templates import DEFAULT_PROMPT_TEMPLATE_ID, load_prompt_template, render_prompt_template
 from ..config.web_translation import CHATGPT_WEB_PROVIDER_NAME, project_url_error
 from ..errors import error_payload
 from ..steps.step3_translation.providers import create_translation_provider
 
 
-STORY_PROMPT_FOLDERS = {
-    GEMINI_PROVIDER_NAME: "google_gemini",
-    DEEPSEEK_PROVIDER_NAME: "google_gemini",
-    OPENCODE_GO_PROVIDER_NAME: "opencode_go",
-    CHATGPT_WEB_PROVIDER_NAME: "chatgpt_web",
+STORY_PROVIDERS = {
+    GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME,
+    OPENCODE_GO_PROVIDER_NAME, CHATGPT_WEB_PROVIDER_NAME,
 }
 
 
 def validate_story_settings(settings: dict[str, Any]) -> Path:
     provider = str(settings.get("provider", GEMINI_PROVIDER_NAME))
-    folder = STORY_PROMPT_FOLDERS.get(provider)
-    if folder is None:
+    if provider not in STORY_PROVIDERS:
         raise ValueError("Tạo story hiện hỗ trợ Google Gemini, DeepSeek, OpenCode Go và ChatGPT Web. Chọn provider trong Thiết lập project → Step 3.")
     if provider == CHATGPT_WEB_PROVIDER_NAME:
         error = project_url_error(provider, str(settings.get("project_url", "")))
         if error:
             raise ValueError(error)
-    path = (
-        PROMPT_BATCH_ROOT / folder / "story_speaker.md"
-        if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
-        and settings.get("speaker_context_translation")
-        else PROMPT_BATCH_ROOT / folder / "story.md"
-    )
-    if not path.is_file():
-        raise FileNotFoundError(f"Không tìm thấy prompt tạo story: {path}")
-    return path
+    return load_prompt_template(
+        provider, str(settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
+    ).path
 
 
 def validate_video_analysis_settings(settings: dict[str, Any]) -> Path:
-    provider = str(settings.get("provider", GEMINI_PROVIDER_NAME))
-    folder = STORY_PROMPT_FOLDERS.get(provider)
-    if folder is None:
-        raise ValueError("Phân tích video hiện hỗ trợ Google Gemini, DeepSeek, OpenCode Go và ChatGPT Web.")
-    if provider == CHATGPT_WEB_PROVIDER_NAME:
-        error = project_url_error(provider, str(settings.get("project_url", "")))
-        if error:
-            raise ValueError(error)
-    path = PROMPT_TEMPLATE_ROOT / folder / "story" / "video_analysis.md"
-    if not path.is_file():
-        raise FileNotFoundError(f"Không tìm thấy prompt phân tích video: {path}")
-    return path
+    return validate_story_settings(settings)
 
 
 class StoryWorker(QThread):
@@ -86,21 +64,18 @@ class StoryWorker(QThread):
         try:
             if not self.videos:
                 raise ValueError("Không có lời thoại đã lưu trong Group để tạo story.")
-            prompt_path = validate_story_settings(self.settings)
-            prompt = prompt_path.read_text(encoding="utf-8")
+            validate_story_settings(self.settings)
             stem = f"story_group_{self.group_number}"
             provider_name = str(self.settings.get("provider", GEMINI_PROVIDER_NAME))
             speaker_context = bool(self.settings.get("speaker_context_translation")) and provider_name in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
-            if speaker_context:
-                prompt = prepare_speaker_story_prompt(
-                    provider_name,
-                    str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
-                    prompt,
-                    source_language=self.source_language,
-                    target_language="Vietnamese",
-                    input_filename=f"{stem}-input.json",
-                    output_filename=f"{stem}-response.json",
-                )
+            prompt = render_prompt_template(
+                provider_name,
+                str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
+                source_language=self.source_language,
+                target_language="Vietnamese",
+                input_filename=f"{stem}-input.json",
+                output_filename=f"{stem}-response.json",
+            )
             provider = create_translation_provider(
                 provider_name, str(self.settings.get("model", GEMINI_DEFAULT_MODEL)),
                 self.source_language, "Vietnamese", self.settings,
@@ -156,42 +131,19 @@ class VideoAnalysisWorker(QThread):
 
     def run(self) -> None:
         try:
-            prompt_path = (
-                PROMPT_VIDEO_ROOT / STORY_PROMPT_FOLDERS[str(self.settings.get("provider", GEMINI_PROVIDER_NAME))] / (
-                    "story_speaker.md" if self.settings.get("speaker_context_translation")
-                    and str(self.settings.get("provider", GEMINI_PROVIDER_NAME)) in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
-                    else "story.md"
-                )
-                if self.in_memory_story else validate_video_analysis_settings(self.settings)
-            )
-            prompt = prompt_path.read_text(encoding="utf-8")
+            validate_video_analysis_settings(self.settings)
             provider_name = str(self.settings.get("provider", GEMINI_PROVIDER_NAME))
             speaker_context = bool(self.settings.get("speaker_context_translation")) and provider_name in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
-            if self.in_memory_story:
-                if provider_name not in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}:
-                    raise ValueError("Prompt story trong bộ nhớ chỉ dành cho Google Gemini, DeepSeek và OpenCode Go.")
-                if speaker_context:
-                    prompt = prepare_speaker_story_prompt(
-                        provider_name,
-                        str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
-                        prompt,
-                        source_language=self.source_language,
-                        target_language=self.target_language,
-                        input_filename="video-analysis-input.json",
-                        output_filename="video-analysis-response.json",
-                    )
-                else:
-                    template_id = str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID))
-                    topic = render_prompt_template(
-                        provider_name, template_id,
-                        source_language=self.source_language,
-                        target_language=self.target_language,
-                        input_filename="video-analysis-input.json",
-                        output_filename="video-analysis-response.json",
-                    )
-                    prompt = prompt.replace("{topic_content}", topic)
-                prompt = prompt.replace("{source_language}", self.source_language)
-                prompt = prompt.replace("{target_language}", self.target_language)
+            if self.in_memory_story and provider_name not in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}:
+                raise ValueError("Prompt story trong bộ nhớ chỉ dành cho Google Gemini, DeepSeek và OpenCode Go.")
+            prompt = render_prompt_template(
+                provider_name,
+                str(self.settings.get("prompt_template", DEFAULT_PROMPT_TEMPLATE_ID)),
+                source_language=self.source_language,
+                target_language=self.target_language,
+                input_filename="video-analysis-input.json",
+                output_filename="video-analysis-response.json",
+            )
             provider = create_translation_provider(
                 provider_name, str(self.settings.get("model", GEMINI_DEFAULT_MODEL)),
                 self.source_language, self.target_language, self.settings,

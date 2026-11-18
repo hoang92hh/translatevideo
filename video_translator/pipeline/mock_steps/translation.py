@@ -12,8 +12,8 @@ from uuid import uuid4
 from ...config.gemini import GEMINI_PROVIDER_NAME
 from ...config.deepseek import DEEPSEEK_PROVIDER_NAME
 from ...config.opencode_go import OPENCODE_GO_PROVIDER_NAME
-from ...config.prompt_templates import load_prompt_template
-from ...config.batch_prompts import load_batch_prompt, prepare_speaker_story_prompt, PROMPT_VIDEO_ROOT
+from ...config.prompt_templates import load_prompt_template, render_prompt_template
+from ...config.batch_prompts import load_batch_prompt
 from ...config.translation import resolve_proper_name_policy
 from ...config.web_translation import CHATGPT_WEB_PROVIDER_NAME
 from ...common.models import StepId, StepResult, TranslationCandidate
@@ -308,18 +308,7 @@ def execute(
         groups = [segments[pos:pos + group_size] for pos in range(0, len(segments), group_size)]
         if len(groups) > 1 and len(groups[-1]) * 2 <= group_size:
             groups[-2].extend(groups.pop())
-        folder = "google_gemini" if provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME} else "opencode_go"
         speaker_context = bool(settings.get("speaker_context_translation")) and provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
-        story_filename = "story_speaker.md" if speaker_context else "story.md"
-        story_prompt = (PROMPT_VIDEO_ROOT / folder / story_filename).read_text(encoding="utf-8-sig")
-        if speaker_context:
-            story_prompt = prepare_speaker_story_prompt(
-                provider, prompt_template_id, story_prompt,
-                source_language=state.source_language,
-                target_language=state.target_language,
-                input_filename="video-story-input.json",
-                output_filename="video-story-response.json",
-            )
         all_translations: dict[int, str] = {}
         all_summaries: list[dict[str, object]] = []
         story_intro = ""
@@ -334,6 +323,13 @@ def execute(
                  for segment in group if segment.source_text.strip()]
                 if speaker_context else
                 [segment.source_text.strip() for segment in group if segment.source_text.strip()]
+            )
+            story_prompt = render_prompt_template(
+                provider, prompt_template_id,
+                source_language=state.source_language,
+                target_language=state.target_language,
+                input_filename=f"video-story-{group_index:03d}-input.json",
+                output_filename=f"video-story-{group_index:03d}-response.json",
             )
             story = translation_provider.generate_story(
                 {"source_language": state.source_language, "videos": [{"source_text": transcript}]},

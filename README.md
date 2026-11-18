@@ -136,12 +136,13 @@ không gửi speaker hoặc timestamp, rồi dùng provider/model đang cấu h�
 (Google Gemini, DeepSeek hoặc ChatGPT Web) để viết một hồ sơ câu chuyện tiếng Việt cho mỗi Group.
 Tại Output Step 2 — Story, tích các Group cần sửa, chọn một trong hai checkbox Google Gemini hoặc DeepSeek rồi bấm **Chạy lại** để tạo lại story bằng provider đã chọn; lần tạo lại cũng chỉ gửi tối đa 150 segment. Lựa chọn này được lưu trong project riêng cho tác vụ tạo lại story và không đổi provider dịch Step 3.
 Có thể chọn Group chưa có story, nhập nội dung trực tiếp vào ô Story và bấm **Lưu story** để tạo `stories/story_group_<group>.md`; story tạo thủ công hoặc bằng AI đều có thể chỉnh sửa và lưu lại tại đây. Nếu chưa cấu hình AI tạo story, Step 2 vẫn chạy transcript và bỏ qua tạo story tự động. Story đã nhập tay được dùng cho Step 3 như story do AI tạo.
-Prompt tạo story nằm tại `reference/prompt_batch/google_gemini/story.md` hoặc
-`reference/prompt_batch/chatgpt_web/story.md` theo provider đã chọn.
+Prompt tạo story là toàn bộ nội dung template `.md` đang chọn trong
+**Thiết lập project → Step 3**, lấy từ `reference/prompt_template/<provider>/`.
+DeepSeek dùng chung thư mục template của Google Gemini. Template cần chứa chỉ dẫn tạo
+hồ sơ câu chuyện; kết quả được nhận qua trường `story_markdown`.
 Story mới không thêm danh sách Group/video vào nội dung API trả về; story cũ được làm sạch
-khối thông tin này khi nạp hoặc dùng để dịch. Batch Step 3 với Gemini ghép phần
-`## PROMPT` của template đã chọn trong **Thiết lập project → Step 3** vào
-`{topic_content}` của `reference/prompt_batch/google_gemini/translation.md`.
+khối thông tin này khi nạp hoặc dùng để dịch. Prompt dịch batch chỉ nhận story và dữ liệu
+cần dịch, không chèn lại nội dung template chủ đề.
 Tên file cố định là `stories/story_group_<group>.md`. Chuỗi Step 1 → 3 không tạo lại Group
 đã có story hợp lệ. **Chạy lại từ 1–2** luôn tạo candidate và file Step 1 mới, ghi đè
 SRT ở Step 1.5 rồi nạp SRT thành transcript segment ở Step 2 cho video đã tích;

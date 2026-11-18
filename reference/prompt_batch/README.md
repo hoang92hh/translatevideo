@@ -3,8 +3,6 @@
 Thư mục này nằm cùng cấp `prompt_template/`, chứa prompt tạo story và dịch Step 3
 trong popup **Chạy batch theo step**. Các prompt này không xuất hiện trong danh sách prompt dịch thường.
 
-- `google_gemini/story.md`: prompt tạo story bằng Gemini API.
-- `chatgpt_web/story.md`: prompt tạo story bằng ChatGPT Web.
 - `google_gemini/translation.md`: prompt cho Gemini API.
 - `chatgpt_web/translation.md`: prompt cho ChatGPT Web, trả JSON trực tiếp trong chat.
 - `chatgpt_web/chinh_sua/prompt1.md`: prompt Step 2.5 gửi story và segment video đầu tiên.
@@ -14,14 +12,19 @@ Hai prompt Step 2.5 chèn JSON của toàn bộ segment video vào `{segments_js
 chèn story vào `{story_content}`; `prompt2.md` chèn story mới vào `{story_section}` khi Group
 thay đổi, hoặc để trống biến này khi tiếp tục cùng Group. Không dùng `topic_content` trong Step 2.5.
 
-Batch Step 3 với Google Gemini điền `{topic_content}` từ phần `## PROMPT` của template
-được chọn tại **Thiết lập project → Step 3** vào `google_gemini/translation.md`.
-ChatGPT Web tiếp tục dùng prompt và định dạng phản hồi riêng.
-Story mới chỉ lưu nội dung AI trả về; khi nạp story cũ, ứng dụng xóa khối thông tin
-Group/video do phiên bản trước tự thêm vào đầu file để không gửi khối đó khi dịch.
+Mọi luồng tạo story dùng toàn bộ nội dung template `.md` đang chọn tại
+**Thiết lập project → Step 3**, từ `../prompt_template/<provider>/`.
+DeepSeek dùng chung template của Google Gemini. Không còn prompt story riêng, kể cả
+chế độ người nói. Template cần yêu cầu tạo hồ sơ câu chuyện; ứng dụng nhận kết quả qua
+trường `story_markdown`, lưu nội dung Markdown AI trả về và không thêm metadata Group/video.
+Khi nạp story cũ, ứng dụng xóa khối thông tin Group/video do phiên bản trước tự thêm.
 
-Khi tạo story, ứng dụng đọc nguyên văn `story.md` của provider đã chọn và gửi toàn bộ
-segment có lời thoại trong transcript đã lưu của tất cả video thuộc Group, theo thứ tự video.
+Batch Step 3 dùng prompt dịch riêng của provider, không chèn nội dung template chủ đề.
+ChatGPT Web tiếp tục dùng định dạng phản hồi riêng.
+
+Khi tạo story, ứng dụng render template đã chọn với ngôn ngữ và tên file input/output,
+rồi gửi lời thoại đã thu thập trong Group theo thứ tự video. Chế độ người nói giữ
+thông tin speaker trong dữ liệu đầu vào theo thiết lập hiện tại.
 Mỗi Group tạo một story riêng tại `stories/story_group_<group>.md`.
 
 Khi dịch Step 3, ứng dụng đọc nguyên văn `translation.md` rồi điền các biến:

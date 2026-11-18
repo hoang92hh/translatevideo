@@ -6,7 +6,7 @@ from typing import Any
 from .gemini import GEMINI_PROVIDER_NAME
 from .deepseek import DEEPSEEK_PROVIDER_NAME
 from .opencode_go import OPENCODE_GO_PROVIDER_NAME
-from .prompt_templates import PROMPT_TEMPLATE_ROOT, PromptTemplate, load_prompt_template, render_prompt_template, strip_prompt_marker
+from .prompt_templates import PROMPT_TEMPLATE_ROOT, PromptTemplate, render_prompt_template
 from .web_translation import CHATGPT_WEB_PROVIDER_NAME
 
 
@@ -45,22 +45,6 @@ def load_batch_prompt(provider: str, mode: str = "step", speaker_context: bool =
     return PromptTemplate(provider, template_id, title, text, path)
 
 
-def prepare_speaker_story_prompt(
-    provider: str, template_id: str, prompt: str, *,
-    source_language: str, target_language: str,
-    input_filename: str, output_filename: str,
-) -> str:
-    """Include the selected genre rules when producing a speaker-aware story."""
-    topic = render_prompt_template(
-        provider, template_id,
-        source_language=source_language,
-        target_language=target_language,
-        input_filename=input_filename,
-        output_filename=output_filename,
-    )
-    return prompt.replace("{topic_content}", topic)
-
-
 def prepare_translation_prompt(
     provider: str, template_id: str, stage: str,
     *, batch_context: dict[str, Any] | None = None, **values: str,
@@ -77,21 +61,13 @@ def prepare_translation_prompt(
         "## Bối cảnh chung của video\n\n" + str(variables.get("story_intro", "")).strip() + "\n\n"
         if str(variables.get("story_intro", "")).strip() else ""
     )
-    speaker_context = bool(batch_context.get("speaker_context_translation")) and provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}
-    if not speaker_context and provider in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME} and mode in {"step", "video"}:
-        topic = strip_prompt_marker(load_prompt_template(provider, template_id).prompt)
-        variables["topic_content"] = re.sub(
-            r"\{([a-z_]+)\}",
-            lambda match: variables.get(match.group(1), match.group(0)),
-            topic,
+    if provider == OPENCODE_GO_PROVIDER_NAME and mode in {"step", "video"}:
+        previous_summary = str(variables.get("previous_segment_summary", "")).strip()
+        variables["previous_segment_context"] = (
+            "### 2. Phân đoạn trước đang có diễn biến như sau\n\n"
+            "{\n" + previous_summary + "\n}\n\n"
+            if previous_summary else ""
         )
-        if provider == OPENCODE_GO_PROVIDER_NAME:
-            previous_summary = str(variables.get("previous_segment_summary", "")).strip()
-            variables["previous_segment_context"] = (
-                "### 2. Phân đoạn trước đang có diễn biến như sau\n\n"
-                "{\n" + previous_summary + "\n}\n\n"
-                if previous_summary else ""
-            )
     # Substitute once: braces in user-edited stories must stay literal.
     return re.sub(
         r"\{([a-z_]+)\}",

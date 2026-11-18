@@ -1,7 +1,5 @@
 # Dịch phân cảnh trong đoạn của video
 
-{topic_content}
-
 {story_intro_section}
 
 ## B. Story của đoạn hiện tại

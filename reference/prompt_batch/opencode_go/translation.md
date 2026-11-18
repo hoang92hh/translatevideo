@@ -1,7 +1,5 @@
 # Dịch batch Step 3 — OpenCode Go
 
-{topic_content}
-
 ## B. Hồ sơ nhân vật và diễn biến phân đoạn trước đó
 
 ### 1. Hồ sơ nhân vật
@@ -21,7 +19,7 @@ File `{input_filename}` chứa `segments_to_translate`.
 ### 2. Dịch các giá trị `source_text` sang tiếng Việt
 
 - Đọc toàn bộ `segments_to_translate`, hồ sơ nhân vật và diễn biến phân đoạn trước ở mục B (nếu có) để hiểu mạch hội thoại và sự kiện đang tiếp diễn.
-- Dịch lần lượt từng `source_text`. Trước khi viết câu dịch, xác định người nói, người được nhắc đến, quan hệ và ý nghĩa câu nguồn; chọn cách xưng hô, tên riêng, danh xưng và thuật ngữ theo quy tắc chủ đề ở đầu prompt (mục A nếu có) và thông tin đã xác minh ở mục B.
+- Dịch lần lượt từng `source_text`. Trước khi viết câu dịch, xác định người nói, người được nhắc đến, quan hệ và ý nghĩa câu nguồn; chọn cách xưng hô, tên riêng, danh xưng và thuật ngữ theo quy tắc và thông tin đã xác minh trong story ở mục B.
 - Dùng những từ ngữ đã chọn để tạo thành câu dịch đúng và đủ nghĩa. Giữ nguyên phủ định, câu hỏi, mệnh lệnh, hành động và sắc thái có căn cứ trong câu nguồn.
 - Sau khi câu đã đúng nghĩa, điều chỉnh cách diễn đạt cho tự nhiên, phù hợp văn phong và toàn phân cảnh. Dùng diễn biến trước để giữ mạch câu chuyện, không thêm tình tiết mà câu nguồn không thể hiện.
 - Hoàn thành từng câu theo trình tự trên trước khi chuyển sang câu tiếp theo. Cuối batch, kiểm tra lại tính nhất quán của toàn bộ bản dịch.

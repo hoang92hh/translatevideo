@@ -60,8 +60,7 @@ def run(request: dict[str, Any]) -> None:
             _prepare_cuda()
         import ctranslate2
         import stable_whisper
-        from faster_whisper.audio import decode_audio
-        from .srt_pipeline import transcribe_audio
+        from .srt_pipeline import read_audio, transcribe_audio
 
         model_name = str(request.get("model_name", default_value(StepId.STT, "model")))
         compute_type = str(request.get("compute_type", default_value(StepId.STT, "compute_type")))
@@ -94,7 +93,7 @@ def run(request: dict[str, Any]) -> None:
         language = str(request.get("language") or "")
         if language not in {"zh", "en", "vi", "ja", "ko"}:
             raise ValueError(f"Ngôn ngữ project không được hỗ trợ: {language}")
-        audio = decode_audio(str(source), sampling_rate=16000)
+        audio = read_audio(source)
         output_root = str(request.get("diagnostics_dir") or source.parent / "srt_diagnostics" / source.stem)
         cues, report, report_path = transcribe_audio(
             audio, output_root, model=model, model_name=model_name, language=language,

@@ -113,6 +113,7 @@ No broken requirements found.
 13. Khởi chạy ứng dụng
 .\environment\app\.venv\Scripts\python.exe -m video_translator.app
 
+Set-Location 'G:\workspace\multiple_voice\translatevideo'
 .\environment\app\.venv\Scripts\translanguage.exe
 
 

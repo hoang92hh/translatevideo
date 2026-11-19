@@ -6,12 +6,15 @@ import importlib.metadata
 import json
 from dataclasses import asdict
 from datetime import datetime
+from math import gcd
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 import stable_whisper
 import torch
 from faster_whisper.feature_extractor import FeatureExtractor
+from scipy.signal import resample_poly
 from silero_vad import get_speech_timestamps, load_silero_vad
 
 SAMPLE_RATE = 16000
@@ -19,6 +22,19 @@ SAMPLE_RATE = 16000
 
 def dump_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def read_audio(path):
+    audio, rate = sf.read(path, dtype="float32")
+    if audio.ndim == 2:
+        audio = audio.mean(axis=1)
+    if rate != 16000:
+        divisor = gcd(rate, 16000)
+        audio = resample_poly(audio, 16000 // divisor, rate // divisor)
+    audio = np.ascontiguousarray(audio, dtype=np.float32)
+    if not len(audio) or not np.isfinite(audio).all():
+        raise ValueError("WAV rỗng hoặc có mẫu âm thanh không hợp lệ.")
+    return audio
 
 
 def text_key(text):
@@ -293,6 +309,30 @@ def sentence_cues(segments, split_gap, max_segment_seconds=6.0, max_chars=40):
     return cues
 
 
+def merge_recovery_cues(cues):
+    """Join consecutive recovery cues across pauses shorter than 0.3 seconds."""
+    merged = []
+    for cue in cues:
+        previous = merged[-1] if merged else None
+        if (previous is None or not previous["source_segment_id"].startswith("recovery-")
+                or not cue["source_segment_id"].startswith("recovery-")
+                or not previous["words"] or not cue["words"]
+                or not 0 <= round(cue["words"][0]["start"] - previous["words"][-1]["end"], 9) < 0.3):
+            merged.append(cue)
+            continue
+
+        words = previous["words"] + cue["words"]
+        sources = previous.get("source_segment_ids", [previous["source_segment_id"]])
+        merged[-1] = dict(previous, start=words[0]["start"], end=words[-1]["end"],
+                          text="".join(word["word"] for word in words).strip(), words=words,
+                          issues=previous["issues"] + cue["issues"],
+                          source_segment_ids=list(dict.fromkeys([*sources, cue["source_segment_id"]])))
+
+    for index, cue in enumerate(merged, 1):
+        cue["id"] = index
+    return merged
+
+
 def refine_cue_starts(model, audio, cues, regions, *, precision=0.02, max_shift=0.5, language="zh"):
     """Refine first spoken-word starts while retaining each cue's text and end."""
     duration = len(audio) / SAMPLE_RATE
@@ -306,6 +346,10 @@ def refine_cue_starts(model, audio, cues, regions, *, precision=0.02, max_shift=
         details = {"original_start": cue["start"], "proposed_start": None,
                    "status": "pending", "reasons": []}
         cue["start_refinement"] = details
+        if "source_segment_ids" in cue:
+            details.update(status="skipped", reasons=["merged_recovery_word_timing"])
+            previous_word_end = max(previous_word_end, cue["end"])
+            continue
         # Punctuation-only entries have no spoken onset to refine.
         word_indices = [index for index, word in enumerate(cue.get("words", []))
                         if any(char.isalnum() for char in word["word"])]
@@ -521,6 +565,15 @@ def transcribe_audio(audio, output_root, *, model, model_name, language, compute
         cues = sentence_cues(segments, split_gap, max_segment_seconds, max_chars)
         dump_json(out / "report.json", report)
 
+    expected = {segment["id"]: text_key(segment["text"]) for segment in segments}
+    exported = {segment_id: text_key("".join(cue["text"] for cue in cues
+                                            if cue["source_segment_id"] == segment_id))
+                for segment_id in expected}
+    text_mismatches = [segment_id for segment_id in expected if expected[segment_id] != exported[segment_id]]
+    if text_mismatches:
+        report["warnings"].append("Có segment chưa giữ đủ text; xem text_mismatch_segment_ids.")
+
+    cues = merge_recovery_cues(cues)
     progress(88, "Đang tinh chỉnh thời điểm bắt đầu phụ đề…")
     report["start_refinement"] = refine_cue_starts(model, audio, cues, report["vad_regions"], language=language)
     if report["start_refinement"]["status"] == "failed":
@@ -528,6 +581,8 @@ def transcribe_audio(audio, output_root, *, model, model_name, language, compute
     for cue in cues:
         if cue["end"] - cue["start"] > max_segment_seconds + 0.04:
             cue["issues"].append("long_segment_needs_review")
+        if len(text_key(cue["text"])) > max_chars:
+            cue["issues"].append("long_text_needs_review")
         if not any(min(cue["end"], region["end"]) > max(cue["start"], region["start"])
                    for region in report["vad_regions"]):
             cue["issues"].append("outside_vad_speech")
@@ -539,13 +594,6 @@ def transcribe_audio(audio, output_root, *, model, model_name, language, compute
             following["issues"].append("overlapping_cues")
     for cue in cues:
         cue["issues"] = sorted(set(cue["issues"]))
-    expected = {segment["id"]: text_key(segment["text"]) for segment in segments}
-    exported = {segment_id: text_key("".join(cue["text"] for cue in cues
-                                            if cue["source_segment_id"] == segment_id))
-                for segment_id in expected}
-    text_mismatches = [segment_id for segment_id in expected if expected[segment_id] != exported[segment_id]]
-    if text_mismatches:
-        report["warnings"].append("Có segment chưa giữ đủ text; xem text_mismatch_segment_ids.")
     failed_windows = [window["id"] for window in report["windows"]
                       if window["status"] == "recognition_failed"]
     if failed_windows:

@@ -7,6 +7,7 @@ Thư mục phát hành chỉ có `extension`, `huong_dan_su_dung`, `models`, `re
 Sau khi sửa tính năng thuần code, chạy tại gốc repository:
 
 ```powershell
+Set-Location 'G:\workspace\multiple_voice\translatevideo'
 .\environment\app\.venv\Scripts\python.exe -m pip install pyinstaller
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_application.ps1 -Target app
 ```
@@ -20,6 +21,7 @@ Mỗi lần mở ứng dụng tạo một mã taskbar Windows riêng, vì vậy 
 Sau khi thay đổi `pyproject.toml` hoặc quy tắc cài đặt trong `scripts\translatevideo_setup.py`:
 
 ```powershell
+Set-Location 'G:\workspace\multiple_voice\translatevideo'
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_application.ps1 -Target setup
 ```
 

@@ -38,10 +38,18 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QListWidget {
 QLineEdit:focus, QComboBox:focus, QTextEdit:focus { border-color: #38bdf8; }
 QComboBox::drop-down { border: none; width: 24px; }
 QCheckBox { spacing: 8px; }
-QCheckBox[clearOption="true"]::indicator {
+QCheckBox[clearOption="true"]::indicator,
+QDialog#projectSettingsDialog QCheckBox::indicator,
+QDialog#projectSettingsDialog QTableWidget::indicator {
     width: 16px; height: 16px; border: 1px solid #ffffff;
 }
-QCheckBox[clearOption="true"]::indicator:checked {
+QDialog#syncRepairDialog QTableWidget::indicator {
+    border: 1px solid #ffffff;
+}
+QCheckBox[clearOption="true"]::indicator:checked,
+QDialog#projectSettingsDialog QCheckBox::indicator:checked,
+QDialog#projectSettingsDialog QTableWidget::indicator:checked,
+QDialog#syncRepairDialog QTableWidget::indicator:checked {
     image: url("__CHECKBOX_CHECK_ICON__");
 }
 QProgressBar {

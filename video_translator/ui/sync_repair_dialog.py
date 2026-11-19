@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+from difflib import SequenceMatcher
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -18,6 +21,27 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
 )
+
+
+_HAN_PATTERN = re.compile(r"[\u3400-\u9fff\uf900-\ufaff\U00020000-\U0002fa1f\U00030000-\U000323af]")
+
+
+def _comparison_words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", unicodedata.normalize("NFC", text).casefold())
+
+
+def _has_source_repetition(text: str) -> bool:
+    normalized = "".join(
+        char for char in unicodedata.normalize("NFC", text).casefold()
+        if not char.isspace() and not unicodedata.category(char).startswith("P")
+    )
+    # The repeated unit must cover the entire source, not just a phrase inside it.
+    for size in range(1, len(normalized) // 2 + 1):
+        if len(normalized) % size == 0:
+            unit = normalized[:size]
+            if unit * (len(normalized) // size) == normalized:
+                return True
+    return False
 
 
 class SyncRepairDialog(QDialog):
@@ -55,6 +79,7 @@ class SyncRepairDialog(QDialog):
         video_id: str = "",
     ) -> None:
         super().__init__(parent)
+        self.setObjectName("syncRepairDialog")
         self.candidate_id = candidate_id
         self._busy = False
         self.show_all = show_all
@@ -105,6 +130,16 @@ class SyncRepairDialog(QDialog):
         self.search_button = QPushButton("Tìm kiếm")
         self.search_button.clicked.connect(lambda: self._apply_search())
         search_actions.addWidget(self.search_input, 1)
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItem("Tất cả", "all")
+        self.filter_combo.addItem("Segment liền kề chứa/trùng trên 80%", "duplicates")
+        self.filter_combo.addItem("Segment đang lỗi quá thời lượng", "too_long")
+        self.filter_combo.addItem("Câu dịch có tiếng Trung", "translation_chinese")
+        self.filter_combo.addItem("Câu nguồn chứa ký tự Latin", "source_latin")
+        self.filter_combo.addItem("Câu nguồn có 1 âm tiết", "source_single_syllable")
+        self.filter_combo.addItem("Câu nguồn có đoạn lặp", "source_repetition")
+        self.filter_combo.currentIndexChanged.connect(lambda _index: self._apply_search())
+        search_actions.addWidget(self.filter_combo)
         search_actions.addWidget(self.search_button)
         layout.addLayout(search_actions)
 
@@ -377,6 +412,7 @@ class SyncRepairDialog(QDialog):
 
     def refresh_payload(self, payload: dict[str, Any], processed_ids: set[int]) -> None:
         """Patch repaired rows in place; rebuild only when row identity is unavailable."""
+        self._payload = payload
         if not processed_ids or not self.table.rowCount():
             self.load_payload(payload)
             return
@@ -499,12 +535,82 @@ class SyncRepairDialog(QDialog):
 
     def _apply_search(self) -> None:
         query = self.search_input.text().strip().casefold()
-        if query:
-            matches = {
-                row
-                for row in range(self.table.rowCount())
-                if query in self.table.item(row, self.CURRENT_COLUMN).text().casefold()
+        mode = self.filter_combo.currentData()
+        texts = [
+            self.table.item(row, self.CURRENT_COLUMN).text()
+            for row in range(self.table.rowCount())
+        ]
+        matches = set(self._default_visible_indexes)
+        if mode == "duplicates":
+            normalized = [_comparison_words(text) for text in texts]
+            raw = self._payload.get("segments", [])
+            segments = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+            original_indexes = {
+                int(item["id"]): index for index, item in enumerate(segments)
+                if str(item.get("id", "")).lstrip("-").isdigit()
             }
+            row_indexes = {
+                row: original_indexes.get(segment_id)
+                for segment_id, row in self._row_by_segment_id.items()
+            }
+            matches = set()
+            for row in range(1, len(normalized)):
+                previous_index = row_indexes.get(row - 1)
+                if (
+                    previous_index is not None
+                    and row_indexes.get(row) == previous_index + 1
+                    and normalized[row]
+                    and normalized[row - 1]
+                ):
+                    left, right = normalized[row - 1], normalized[row]
+                    matched = max(
+                        sum(block.size for block in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks())
+                        for a, b in ((left, right), (right, left))
+                    )
+                    if matched / min(len(left), len(right)) > 0.8:
+                        matches.update((row - 1, row))
+        elif mode == "too_long":
+            raw = self._payload.get("segments", [])
+            segments = raw if isinstance(raw, list) else []
+            error_ids = {
+                int(item["id"])
+                for item in segments
+                if isinstance(item, dict)
+                and str(item.get("id", "")).lstrip("-").isdigit()
+                and item.get("status") != "ready"
+                and (
+                    item.get("repair_status") == "too_long"
+                    or item.get("sync_error_type") == "audio_duration"
+                )
+            }
+            matches = {
+                row for segment_id, row in self._row_by_segment_id.items()
+                if segment_id in error_ids
+            }
+        elif mode == "translation_chinese":
+            matches = {row for row, text in enumerate(texts) if _HAN_PATTERN.search(text)}
+        elif mode in {"source_latin", "source_single_syllable", "source_repetition"}:
+            matches = set()
+            for row in range(self.table.rowCount()):
+                source = unicodedata.normalize("NFC", self.table.item(row, self.SOURCE_COLUMN).text())
+                if mode == "source_latin":
+                    matched_source = any(
+                        char.isalpha() and "LATIN" in unicodedata.name(char, "")
+                        for char in source
+                    )
+                elif mode == "source_single_syllable":
+                    spoken = "".join(
+                        char for char in source
+                        if not char.isspace() and not unicodedata.category(char).startswith("P")
+                    )
+                    matched_source = bool(_HAN_PATTERN.fullmatch(spoken))
+                else:
+                    matched_source = _has_source_repetition(source)
+                if matched_source:
+                    matches.add(row)
+        if query:
+            matches = {row for row in matches if query in texts[row].casefold()}
+        if query or mode != "all":
             visible: set[int] = set()
             for row in matches:
                 visible.add(row)
@@ -528,7 +634,7 @@ class SyncRepairDialog(QDialog):
         status = self.table.item(item.row(), self.STATUS_COLUMN)
         if status:
             status.setText("Chờ tạo voice")
-        self._update_summary()
+        self._apply_search()
 
     def _speaker_changed(self, row: int) -> None:
         status = self.table.item(row, self.STATUS_COLUMN)
@@ -689,7 +795,7 @@ class SyncRepairDialog(QDialog):
                     status.setText("Chờ tạo voice")
         finally:
             self.table.blockSignals(False)
-        self._update_summary()
+        self._apply_search()
 
     def set_busy(self, busy: bool, message: str = "") -> None:
         self._busy = busy
@@ -699,6 +805,7 @@ class SyncRepairDialog(QDialog):
         self.clear_all_button.setEnabled(not busy and has_selectable_rows)
         self.search_input.setEnabled(not busy)
         self.search_button.setEnabled(not busy)
+        self.filter_combo.setEnabled(not busy)
         self.ai_button.setEnabled(not busy)
         self.process_button.setEnabled(not busy)
         if hasattr(self, "video_combo"):

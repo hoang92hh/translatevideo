@@ -441,6 +441,7 @@ class RenderSettings(QWidget):
 class ProjectSettingsDialog(QDialog):
     def __init__(self, project: BatchProject | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("projectSettingsDialog")
         self.project = project
         self._first_show = True
         self.setWindowTitle("Thiết lập project" if project else "Tạo project mới")

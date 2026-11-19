@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -34,21 +32,12 @@ class SyncOutcome:
     target_duration: float
     allowed_duration: float
     speed_factor: float
-    used_gap: float
-    detected_leading_silence: float = 0.0
-    detected_trailing_silence: float = 0.0
-    trimmed_leading_silence: float = 0.0
-    trimmed_trailing_silence: float = 0.0
-    silence_trim_decision: str = "disabled"
     error: str = ""
 
 
 class AudioSyncService:
     SAMPLE_RATE = 48_000
     CHANNELS = 1
-    SILENCE_THRESHOLD_DB = -55
-    MIN_EDGE_SILENCE = 0.25
-    EDGE_SILENCE_GUARD = 0.12
 
     def __init__(self) -> None:
         try:
@@ -70,97 +59,6 @@ class AudioSyncService:
         if remaining > 1.0001:
             factors.append(remaining)
         return ",".join(f"atempo={factor:.8f}" for factor in factors)
-
-    @staticmethod
-    def _edge_trim_filters(
-        input_duration: float,
-        leading_trim: float,
-        trailing_trim: float,
-    ) -> list[str]:
-        if leading_trim <= 0.000001 and trailing_trim <= 0.000001:
-            return []
-        end = max(leading_trim + 0.01, input_duration - trailing_trim)
-        return [
-            f"atrim=start={leading_trim:.6f}:end={end:.6f}",
-            "asetpts=PTS-STARTPTS",
-        ]
-
-    def _detect_edge_silence(self, source: Path, duration: float) -> tuple[float, float]:
-        command = [
-            self.ffmpeg.ffmpeg_path,
-            "-hide_banner",
-            "-nostats",
-            "-i",
-            str(source),
-            "-vn",
-            "-af",
-            (
-                f"silencedetect=noise={self.SILENCE_THRESHOLD_DB}dB:"
-                f"d={self.MIN_EDGE_SILENCE:.3f}"
-            ),
-            "-f",
-            "null",
-            os.devnull,
-        ]
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            check=False,
-        )
-        if completed.returncode != 0:
-            return 0.0, 0.0
-
-        intervals: list[tuple[float, float]] = []
-        current_start: float | None = None
-        for match in re.finditer(
-            r"silence_(start|end):\s*(-?\d+(?:\.\d+)?)",
-            completed.stderr,
-        ):
-            event, raw_value = match.groups()
-            value = max(0.0, float(raw_value))
-            if event == "start":
-                current_start = value
-            elif current_start is not None:
-                intervals.append((current_start, min(duration, value)))
-                current_start = None
-        if current_start is not None:
-            intervals.append((current_start, duration))
-
-        leading = 0.0
-        trailing = 0.0
-        if intervals and intervals[0][0] <= 0.02:
-            leading = max(0.0, intervals[0][1])
-        if intervals and intervals[-1][1] >= duration - 0.05:
-            trailing = max(0.0, duration - intervals[-1][0])
-        return leading, trailing
-
-    def _safe_edge_trim(
-        self,
-        source: Path,
-        input_duration: float,
-        allowed_duration: float,
-        enabled: bool,
-    ) -> tuple[float, float, float, float, str]:
-        if not enabled:
-            return 0.0, 0.0, 0.0, 0.0, "disabled"
-        excess = input_duration - max(allowed_duration, 0.01)
-        if excess <= 0.0001:
-            return 0.0, 0.0, 0.0, 0.0, "fits_allowed_duration"
-
-        leading, trailing = self._detect_edge_silence(source, input_duration)
-        leading_available = max(0.0, leading - self.EDGE_SILENCE_GUARD)
-        trailing_available = max(0.0, trailing - self.EDGE_SILENCE_GUARD)
-        if leading_available + trailing_available <= 0.0001:
-            return leading, trailing, 0.0, 0.0, "no_safe_edge_silence"
-
-        # Ưu tiên bỏ silence cuối để không làm dịch thời điểm bắt đầu phát lời.
-        trailing_trim = min(excess, trailing_available)
-        leading_trim = min(max(0.0, excess - trailing_trim), leading_available)
-        return leading, trailing, leading_trim, trailing_trim, "edge_silence_trimmed"
 
     def _run_ffmpeg(self, source: Path, output: Path, filters: list[str]) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -213,9 +111,7 @@ class AudioSyncService:
         source_path: str | Path,
         output_path: str | Path,
         target_duration: float,
-        allowed_duration: float,
         max_speed: float,
-        trim_silence: bool,
         allow_overflow: bool = False,
     ) -> SyncOutcome:
         source = Path(source_path)
@@ -235,27 +131,10 @@ class AudioSyncService:
             )
 
         prepared = output.with_name(f".{output.stem}.prepared.wav")
-        (
-            detected_leading,
-            detected_trailing,
-            trimmed_leading,
-            trimmed_trailing,
-            trim_decision,
-        ) = self._safe_edge_trim(
-            source,
-            input_duration,
-            allowed_duration,
-            trim_silence,
-        )
-        trim_filter = self._edge_trim_filters(
-            input_duration,
-            trimmed_leading,
-            trimmed_trailing,
-        )
         try:
-            self._run_ffmpeg(source, prepared, trim_filter)
+            self._run_ffmpeg(source, prepared, [])
             prepared_duration = self.ffmpeg.probe_duration(prepared) or input_duration
-            required_speed = prepared_duration / max(allowed_duration, 0.01)
+            required_speed = prepared_duration / max(target_duration, 0.01)
             if required_speed > max_speed + 0.0001 and not allow_overflow:
                 output.unlink(missing_ok=True)
                 return SyncOutcome(
@@ -264,14 +143,8 @@ class AudioSyncService:
                     prepared_duration=prepared_duration,
                     output_duration=0.0,
                     target_duration=target_duration,
-                    allowed_duration=allowed_duration,
+                    allowed_duration=target_duration,
                     speed_factor=required_speed,
-                    used_gap=max(0.0, allowed_duration - target_duration),
-                    detected_leading_silence=detected_leading,
-                    detected_trailing_silence=detected_trailing,
-                    trimmed_leading_silence=trimmed_leading,
-                    trimmed_trailing_silence=trimmed_trailing,
-                    silence_trim_decision=trim_decision,
                     error=(
                         f"Cần tốc độ {required_speed:.2f}x nhưng giới hạn là {max_speed:.2f}x"
                     ),
@@ -295,14 +168,8 @@ class AudioSyncService:
                 prepared_duration=prepared_duration,
                 output_duration=measured,
                 target_duration=target_duration,
-                allowed_duration=allowed_duration,
+                allowed_duration=target_duration,
                 speed_factor=speed_factor,
-                used_gap=max(0.0, measured - target_duration),
-                detected_leading_silence=detected_leading,
-                detected_trailing_silence=detected_trailing,
-                trimmed_leading_silence=trimmed_leading,
-                trimmed_trailing_silence=trimmed_trailing,
-                silence_trim_decision=trim_decision,
             )
         finally:
             prepared.unlink(missing_ok=True)
@@ -312,12 +179,9 @@ class AudioSyncService:
         source_path: str | Path,
         output_path: str | Path,
         speed_factor: float,
-        leading_trim: float = 0.0,
-        trailing_trim: float = 0.0,
     ) -> float:
         source = Path(source_path)
-        input_duration = self.ffmpeg.probe_duration(source) or 0.0
-        filters = self._edge_trim_filters(input_duration, leading_trim, trailing_trim)
+        filters: list[str] = []
         atempo = self._atempo_filter(max(1.0, speed_factor))
         if atempo:
             filters.append(atempo)
@@ -410,7 +274,6 @@ def _borrow_groups(segments: list[dict[str, Any]]) -> list[tuple[int, int]]:
 def apply_neighbor_borrow(
     segments: list[dict[str, Any]],
     max_speed: float,
-    trim_silence: bool,
 ) -> int:
     """Cân timeline cho các nhóm có lỗi, chỉ dùng tối đa một hàng xóm mỗi phía."""
     for item in segments:
@@ -478,8 +341,6 @@ def apply_neighbor_borrow(
                     source,
                     output,
                     chosen_speed,
-                    float(item.get("trimmed_leading_silence", 0.0)),
-                    float(item.get("trimmed_trailing_silence", 0.0)),
                 )
             except Exception:
                 render_failed = True
@@ -574,8 +435,6 @@ def borrow_neighbor_time(
             source,
             output,
             max_speed,
-            float(item.get("trimmed_leading_silence", 0.0)),
-            float(item.get("trimmed_trailing_silence", 0.0)),
         )
         staged[index] = (output, measured)
         return output, measured
@@ -961,7 +820,6 @@ def repair_sync_segments(
         sync_segment["sync_strategy"] = "zero_duration"
         sync_segment["borrowed_before"] = 0.0
         sync_segment["borrowed_after"] = 0.0
-        sync_segment["used_gap"] = 0.0
 
     repair_root = sync_manifest.parent / "repairs" / f"batch-{uuid4().hex[:8]}"
     synthesis = None
@@ -1003,9 +861,7 @@ def repair_sync_segments(
                 target_audio,
                 synced_audio,
                 float(sync_segment.get("target_duration", 0.0)),
-                float(sync_segment.get("allowed_duration", 0.0)),
                 float(sync_payload.get("max_speed", 1.35)),
-                bool(sync_payload.get("trim_silence", False)),
                 allow_overflow=bool(sync_payload.get("auto_extend_video", True)),
             )
         except Exception as exc:
@@ -1059,20 +915,6 @@ def repair_sync_segments(
             sync_segment["sync_strategy"] = "local"
             sync_segment["borrowed_before"] = 0.0
             sync_segment["borrowed_after"] = 0.0
-            sync_segment["used_gap"] = outcome.used_gap
-            sync_segment["detected_leading_silence"] = round(
-                outcome.detected_leading_silence, 6
-            )
-            sync_segment["detected_trailing_silence"] = round(
-                outcome.detected_trailing_silence, 6
-            )
-            sync_segment["trimmed_leading_silence"] = round(
-                outcome.trimmed_leading_silence, 6
-            )
-            sync_segment["trimmed_trailing_silence"] = round(
-                outcome.trimmed_trailing_silence, 6
-            )
-            sync_segment["silence_trim_decision"] = outcome.silence_trim_decision
 
     previous_plan = sync_payload.get("video_timing_plan", {})
     source_duration = (

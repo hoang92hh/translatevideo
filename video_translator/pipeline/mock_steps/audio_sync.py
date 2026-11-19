@@ -56,8 +56,6 @@ def execute(
             "Chọn lại output Step 4 hợp lệ rồi chạy Step 5.",
         )
     max_speed = max(1.0, float(settings["max_speed"]))
-    use_gap = bool(settings["use_gap"])
-    trim_silence = bool(settings["trim_silence"])
     auto_extend_video = bool(settings["auto_extend_video"])
     video_extension_mode = str(settings["video_extension_mode"])
     min_video_speed = max(0.25, min(1.0, float(settings["min_video_speed"])))
@@ -111,12 +109,6 @@ def execute(
                         "sync_strategy": "zero_duration",
                         "borrowed_before": 0.0,
                         "borrowed_after": 0.0,
-                        "used_gap": 0.0,
-                        "detected_leading_silence": 0.0,
-                        "detected_trailing_silence": 0.0,
-                        "trimmed_leading_silence": 0.0,
-                        "trimmed_trailing_silence": 0.0,
-                        "silence_trim_decision": "zero_duration",
                         "status": "ready",
                         "initial_sync_error": False,
                         "seq": 0,
@@ -131,9 +123,6 @@ def execute(
                 )
                 continue
             target_duration = max(0.01, segment.duration)
-            next_start = segments[index + 1].start if index + 1 < len(segments) else segment.end
-            gap_duration = max(0.0, next_start - segment.end) if use_gap else 0.0
-            allowed_duration = target_duration + gap_duration
             output = segment_folder / f"segment_{segment.id:04d}.wav"
             if progress:
                 value = round(index / max(1, len(segments)) * 95)
@@ -142,9 +131,7 @@ def execute(
                 segment.audio_file,
                 output,
                 target_duration,
-                allowed_duration,
                 max_speed,
-                trim_silence,
                 allow_overflow=auto_extend_video,
             )
             if outcome.success:
@@ -172,7 +159,7 @@ def execute(
                     "sync_output_file": str(output),
                     "timeline_output_file": str(output),
                     "target_duration": target_duration,
-                    "allowed_duration": allowed_duration,
+                    "allowed_duration": target_duration,
                     "input_duration": outcome.input_duration,
                     "prepared_duration": outcome.prepared_duration,
                     "output_duration": outcome.output_duration,
@@ -187,20 +174,6 @@ def execute(
                     "sync_strategy": "local",
                     "borrowed_before": 0.0,
                     "borrowed_after": 0.0,
-                    "used_gap": outcome.used_gap,
-                    "detected_leading_silence": round(
-                        outcome.detected_leading_silence, 6
-                    ),
-                    "detected_trailing_silence": round(
-                        outcome.detected_trailing_silence, 6
-                    ),
-                    "trimmed_leading_silence": round(
-                        outcome.trimmed_leading_silence, 6
-                    ),
-                    "trimmed_trailing_silence": round(
-                        outcome.trimmed_trailing_silence, 6
-                    ),
-                    "silence_trim_decision": outcome.silence_trim_decision,
                     "status": "ready" if outcome.success else "needs_edit",
                     "initial_sync_error": not outcome.success,
                     "seq": 0 if outcome.success else 1,
@@ -228,8 +201,6 @@ def execute(
             "source_tts_candidate_id": state.selected_tts_candidate_id,
             "sync_candidate_id": candidate_id,
             "max_speed": max_speed,
-            "use_gap": use_gap,
-            "trim_silence": trim_silence,
             "auto_extend_video": auto_extend_video,
             "video_extension_mode": video_extension_mode,
             "min_video_speed": min_video_speed,

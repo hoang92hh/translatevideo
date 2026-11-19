@@ -41,17 +41,10 @@ class AudioSyncStepPage(StepPage):
                 default_value(StepId.SYNC, "provider"),
                 (
                     FieldSpec("max_speed", "Tốc độ tối đa", "float", default_value(StepId.SYNC, "max_speed")),
-                    FieldSpec("use_gap", "Tận dụng khoảng trống kế tiếp", "bool", default_value(StepId.SYNC, "use_gap")),
-                    FieldSpec(
-                        "trim_silence",
-                        "Tự động cắt silence dư khi audio vượt khung",
-                        "bool",
-                        default_value(StepId.SYNC, "trim_silence"),
-                    ),
                     FieldSpec(
                         "auto_extend_video",
                         "Auto Extend Video to Match TTS",
-                        "bool",
+                        "checkbox",
                         default_value(StepId.SYNC, "auto_extend_video"),
                     ),
                     FieldSpec(

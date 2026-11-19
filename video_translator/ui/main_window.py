@@ -34,6 +34,7 @@ from ..steps.step2_transcription.batch_session import release_batch_session, rel
 from ..steps.step4_tts.service import release_tts_session
 from ..pipeline.story_worker import VideoAnalysisWorker
 from ..steps.step3_translation.quality import assess_manual_segments
+from ..config.step_defaults import default_value
 from ..pipeline.worker import (
     AudioSyncAiRewriteWorker,
     AudioSyncBatchRepairWorker,
@@ -1189,7 +1190,9 @@ class MainWindow(QMainWindow):
                 self._fail_batch_video(message, step)
                 return
             next_index = STEP_ORDER.index(step) + 1
-            if step == StepId.TRANSLATE:
+            if step == StepId.TRANSLATE and bool(
+                settings.get("review_step3", default_value(StepId.TRANSLATE, "review_step3"))
+            ):
                 result = self.batch_state.results.get(step)
                 issues = assess_manual_segments(result.segments, self.batch_state.target_language) if result else []
                 if issues:

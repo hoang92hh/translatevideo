@@ -182,9 +182,15 @@ các ID và câu nguồn vẫn được giữ, segment bị gộp có bản dị
 chỉnh sửa; người dùng xem kết quả rồi bấm **Lưu thay đổi**. Nút **Đánh giá lại** và thao tác lưu cập
 nhật danh sách cảnh báo; vẫn có lựa chọn hiển thị toàn bộ segment.
 Đây là cảnh báo tham khảo: Step 3 vẫn hoàn thành, output vẫn là input hợp lệ cho Step 4.
-Batch theo video dừng chuỗi tự động của video có cảnh báo sau Step 3, lưu checkpoint Step 4 rồi
+Thiết lập Step 3 tách riêng block AI (model, API/Project URL, prompt và hỗ trợ speaker)
+với block segment/batch dùng chung. Các thông số dùng chung được lưu trong project và giữ
+nguyên khi đổi provider. Checkbox Step 3 có viền trắng để dễ nhận biết.
+Checkbox **Duyệt step 3** mặc định bật, giữ hành vi duyệt hiện có cho cả project cũ.
+Khi bật, batch theo video dừng chuỗi tự động của video có cảnh báo sau Step 3, lưu checkpoint Step 4 rồi
 chuyển video kế tiếp; thống kê cuối batch cho biết số video đã dừng để kiểm tra. Người dùng chạy
 từ Step 4 bằng các thao tác hiện có, không bắt buộc sửa và không có nút tiếp tục mới.
+Khi bỏ chọn, batch theo video bỏ qua việc dừng duyệt các cảnh báo còn chữ Trung Quốc,
+câu liền kề giống nhau hoặc chứa nhau và tự chạy tiếp Step 4. Các lỗi thực thi khác vẫn dừng như trước.
 Batch theo step vẫn lưu output Step 3, báo số video có cảnh báo và dịch tiếp video kế tiếp.
 Popup hiển thị riêng các cột **Step 1–7** cho mỗi video: chưa chạy, đang chạy,
 hoàn thành, lỗi hoặc cần cập nhật, dựa trên dữ liệu đã lưu. Di chuột lên ô để xem
@@ -287,7 +293,7 @@ Muốn đổi mặc định của một tùy chọn step, sửa `STEP_DEFAULTS` 
 - Step 4 tách từng TTS thành component riêng, chọn bằng các nút dạng tab con và có thể đặt một provider làm mặc định cho các lần mở ứng dụng sau. Các provider gồm VieNeu-TTS local cho tiếng Việt, Piper TTS local CPU/ONNX, MeloTTS + OpenVoice V2 local cho English/Spanish/Chinese/Japanese/Korean và Edge TTS online. `SPEAKER_00`, `SPEAKER_01`, `SPEAKER_02` có cấu hình giọng/model riêng; mọi speaker còn lại dùng chung một cấu hình. VieNeu và Melo/OpenVoice dùng audio tham chiếu; Piper dùng cặp voice model `.onnx` + `.onnx.json`, hỗ trợ `speaker_id` của model đa giọng và các tham số `SynthesisConfig` native; Edge dùng voice preset. Ánh xạ này được giữ khi Step 5 tạo lại voice. Mỗi lần chạy thành công tạo một candidate riêng trong `generated_audio/`; candidate mới nhất tự động là input Step 5, còn lỗi không thay đổi input trước đó.
 - `Auto` ở provider local chọn GPU khi runtime CUDA của chính provider khả dụng, nếu không chọn CPU. `CPU` và `GPU` tuân thủ đúng lựa chọn; chế độ `GPU` báo lỗi thay vì fallback CPU.
 - XTTS-v2 chỉ nằm trong danh sách dưới dạng chưa triển khai và có ghi chú chỉ phi thương mại theo Coqui Public Model License.
-- Step 5 cắt khoảng lặng thừa, tận dụng khoảng trống trước segment kế tiếp, tăng tốc trong giới hạn người dùng chọn và chèn khoảng lặng khi audio ngắn hơn timestamp gốc. Trong **Thiết lập project → Step 05**, tùy chọn **Auto Extend Video to Match TTS** có thể lập kế hoạch kéo dài cục bộ bằng `Freeze Frame`, `Slow Motion` hoặc `Hybrid`; chỉ đoạn có voice vượt khung bị biến đổi, còn các đoạn sau chỉ được dịch timestamp. Mỗi lần chạy tạo candidate riêng trong `synchronized_audio/`.
+- Step 5 căn audio theo khung thời gian gốc của từng segment, tăng tốc trong giới hạn người dùng chọn và chèn khoảng lặng khi audio ngắn hơn timestamp gốc. Hai tùy chọn tận dụng khoảng trống kế tiếp và tự động cắt silence dư đã được loại bỏ; cấu hình cũ của chúng được bỏ qua. Trong **Thiết lập project → Step 05**, checkbox có viền trắng; tùy chọn **Auto Extend Video to Match TTS** có thể lập kế hoạch kéo dài cục bộ bằng `Freeze Frame`, `Slow Motion` hoặc `Hybrid`; chỉ đoạn có voice vượt khung bị biến đổi, còn các đoạn sau chỉ được dịch timestamp. Mỗi lần chạy tạo candidate riêng trong `synchronized_audio/`.
 - Trên màn hình Step 5, nút **Nạp model Step 4** nạp trước model TTS local của output đang chọn và giữ phiên khi đóng popup sửa segment hoặc chuyển sang video khác. **Tạo lại voice và đồng bộ** dùng lại phiên đã nạp khi cấu hình TTS giống nhau; nếu cấu hình khác, model tương ứng được nạp lại. Bấm **Đóng model Step 4** sau khi sửa xong. Edge TTS online không cần nạp model local.
 - Project mới mặc định giới hạn tốc độ nói ở `1,5×`, tốc độ video tối thiểu `0,8×` và Freeze tối đa `0,2` giây mỗi segment trong Step 5. Các giá trị Step 5 đã lưu của project cũ không bị ghi đè.
 - Timeline Step 2 là dữ liệu nhận dạng gốc và chỉ làm tham chiếu đầu vào; sửa voice/timeline tại Step 5 không ghi ngược vào manifest Step 2, Step 3 hoặc Step 4. Candidate Step 5 lưu `source_start/source_end` cùng timeline hiệu lực riêng. Voice tạo lại nằm trong thư mục `repairs/` của candidate Step 5, không ghi đè audio Step 4. Nội dung rỗng được xem là chủ động bỏ voice: interval Step 5 được thu về `start = end`, không cần audio và không tính là lỗi; Step 6 tự bỏ qua segment đó nhưng vẫn giữ ID trong manifest.

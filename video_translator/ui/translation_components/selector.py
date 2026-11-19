@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -58,8 +59,12 @@ class _ProviderComponent(QWidget):
         return ""
 
 
-class _CommonTranslationComponent(_ProviderComponent):
-    def _add_common_controls(self, form: QFormLayout) -> None:
+class _SharedTranslationSettings(Card):
+    def __init__(self) -> None:
+        super().__init__("Thiết lập segment / batch dùng chung", "Giữ nguyên khi chuyển AI dịch.")
+        self.provider_name = ""
+        form = QFormLayout()
+        self.content_layout.addLayout(form)
         self.batch_size = QSpinBox()
         self.batch_size.setRange(1, 1000)
         self.batch_size.setValue(int(default_value(StepId.TRANSLATE, "batch_size")))
@@ -81,7 +86,6 @@ class _CommonTranslationComponent(_ProviderComponent):
                 checked and self.provider_name not in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
             )
         )
-        form.addRow("Phạm vi dịch", self.all_project_segments)
         self.batch_size.setDisabled(
             self.all_project_segments.isChecked()
             and self.provider_name not in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
@@ -90,20 +94,53 @@ class _CommonTranslationComponent(_ProviderComponent):
         self.auto_adjacent_cleanup.setChecked(
             bool(default_value(StepId.TRANSLATE, "auto_adjacent_cleanup"))
         )
-        form.addRow("Sau khi dịch", self.auto_adjacent_cleanup)
+        self.review_step3 = QCheckBox("Duyệt step 3")
+        self.review_step3.setChecked(bool(default_value(StepId.TRANSLATE, "review_step3")))
+        self.review_step3.setToolTip(
+            "Batch theo video: dừng để duyệt khi còn chữ Trung Quốc, câu liền kề giống nhau "
+            "hoặc chứa nhau. Bỏ chọn để tiếp tục Step 4; lỗi thực thi vẫn dừng."
+        )
+        options = QGridLayout()
+        options.setHorizontalSpacing(24)
+        options.setVerticalSpacing(12)
+        options.setColumnStretch(0, 1)
+        options.setColumnStretch(1, 1)
+        self.content_layout.addLayout(options)
+        for index, control in enumerate(
+            (self.all_project_segments, self.auto_adjacent_cleanup, self.review_step3)
+        ):
+            control.setProperty("clearOption", True)
+            options.addWidget(control, index // 2, index % 2)
+
+    def set_provider(self, provider: str) -> None:
+        self.provider_name = provider
+        self.batch_size.setDisabled(
+            self.all_project_segments.isChecked()
+            and provider not in {GEMINI_PROVIDER_NAME, OPENCODE_GO_PROVIDER_NAME}
+        )
+
+    def settings(self) -> dict[str, Any]:
+        return {
+            "batch_size": self.batch_size.value(),
+            "video_story_group_size": self.video_story_group_size.value(),
+            "proper_name_mode": self.proper_name_mode.currentText(),
+            "all_project_segments": self.all_project_segments.isChecked(),
+            "auto_adjacent_cleanup": self.auto_adjacent_cleanup.isChecked(),
+            "review_step3": self.review_step3.isChecked(),
+        }
+
+
+class _CommonTranslationComponent(_ProviderComponent):
+    def _add_ai_controls(self, form: QFormLayout) -> None:
         if self.provider_name in {GEMINI_PROVIDER_NAME, DEEPSEEK_PROVIDER_NAME}:
             self.speaker_context_translation = QCheckBox("Dịch theo bối cảnh có hỗ trợ speaker")
+            self.speaker_context_translation.setProperty("clearOption", True)
             self.speaker_context_translation.setChecked(False)
             form.addRow("Xưng hô", self.speaker_context_translation)
 
     def _common_settings(self) -> dict[str, Any]:
         return {
             "provider": self.provider_name,
-            "batch_size": self.batch_size.value(),
-            "video_story_group_size": self.video_story_group_size.value(),
-            "proper_name_mode": self.proper_name_mode.currentText(),
-            "all_project_segments": self.all_project_segments.isChecked(),
-            "auto_adjacent_cleanup": self.auto_adjacent_cleanup.isChecked(),
             "speaker_context_translation": (
                 self.speaker_context_translation.isChecked()
                 if hasattr(self, "speaker_context_translation") else False
@@ -134,7 +171,7 @@ class _GeminiComponent(_CommonTranslationComponent):
         self.model.setCurrentText(str(default_value(StepId.TRANSLATE, "model")))
         self.model.currentTextChanged.connect(self._update_note)
         form.addRow("Model", self.model)
-        self._add_common_controls(form)
+        self._add_ai_controls(form)
         card.content_layout.addLayout(form)
         self.model_note = QLabel()
         self.model_note.setObjectName("muted")
@@ -196,7 +233,7 @@ class _DeepSeekComponent(_CommonTranslationComponent):
         self.model = QComboBox()
         self.model.addItem(DEEPSEEK_MODEL)
         form.addRow("Model", self.model)
-        self._add_common_controls(form)
+        self._add_ai_controls(form)
         card.content_layout.addLayout(form)
         root.addWidget(card)
         self._configured = False
@@ -252,7 +289,7 @@ class _OpenCodeGoComponent(_CommonTranslationComponent):
         self.model = QComboBox()
         self.model.addItem(OPENCODE_GO_MODEL)
         form.addRow("Model", self.model)
-        self._add_common_controls(form)
+        self._add_ai_controls(form)
         card.content_layout.addLayout(form)
         root.addWidget(card)
         self._configured = False
@@ -301,7 +338,7 @@ class _WebComponent(_CommonTranslationComponent):
         self.project_url.setText(str(default_value(StepId.TRANSLATE, "project_url")))
         self.project_url.setPlaceholderText(f"URL Project trên {website}")
         form.addRow("Project URL", self.project_url)
-        self._add_common_controls(form)
+        self._add_ai_controls(form)
         card.content_layout.addLayout(form)
         note = QLabel(
             "Trước khi chạy: nạp extension, đăng nhập, chỉ để một tab của provider và để ô nhập trống. "
@@ -380,9 +417,6 @@ class TranslationProviderSelector(QWidget):
         self.button_group.setExclusive(True)
         self.stack = QStackedWidget()
         for index, component in enumerate(self.components):
-            component.auto_adjacent_cleanup.toggled.connect(
-                self._sync_auto_adjacent_cleanup
-            )
             button = QPushButton()
             button.setCheckable(True)
             button.clicked.connect(lambda _checked=False, target=index: self.select_index(target))
@@ -416,8 +450,15 @@ class TranslationProviderSelector(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setMinimumHeight(480)
-        scroll.setWidget(self.stack)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.addWidget(self.stack)
+        self.shared_settings = _SharedTranslationSettings()
+        content_layout.addWidget(self.shared_settings)
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        scroll.setMinimumHeight(max(640, content.sizeHint().height() + 2 * scroll.frameWidth()))
         root.addWidget(scroll, 1)
         self.select_index(0)
         self._refresh_button_labels()
@@ -427,20 +468,13 @@ class TranslationProviderSelector(QWidget):
         self.status_timer.timeout.connect(self._poll_status)
         self.status_timer.start()
 
-    def _sync_auto_adjacent_cleanup(self, checked: bool) -> None:
-        for component in self.components:
-            control = component.auto_adjacent_cleanup
-            if control.isChecked() != checked:
-                was_blocked = control.blockSignals(True)
-                control.setChecked(checked)
-                control.blockSignals(was_blocked)
-
     def select_index(self, index: int) -> None:
         if index < 0 or index >= len(self.components):
             index = 0
         self.stack.setCurrentIndex(index)
         self.button_group.button(index).setChecked(True)
         component = self.current_component()
+        self.shared_settings.set_provider(component.provider_name)
         component.refresh_status()
         if hasattr(self, "_last_ready"):
             self._last_ready = component.is_ready()
@@ -478,6 +512,7 @@ class TranslationProviderSelector(QWidget):
         )
         return {
             **component.settings(),
+            **self.shared_settings.settings(),
             "prompt_template": self._prompt_by_provider.get(
                 self._default_provider,
                 default_value(StepId.TRANSLATE, "prompt_template"),

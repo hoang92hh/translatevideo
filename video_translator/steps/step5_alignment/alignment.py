@@ -18,7 +18,7 @@ def build_video_timing_plan(
     """Apply cumulative video offsets to the Step 5 audio schedule.
 
     The source timestamps remain untouched.  Only segments whose prepared voice
-    exceeds their original slot (including an allowed following gap) create a
+    exceeds their original slot create a
     local video edit; later segments inherit the accumulated offset.
     """
     selected_mode = mode if mode in VIDEO_EXTENSION_MODES else "Hybrid"
@@ -46,8 +46,7 @@ def build_video_timing_plan(
             item["error"] = ""
             item["sync_error_type"] = ""
 
-        allowed_duration = max(0.0, float(item.get("allowed_duration", source_end - source_start)))
-        following_gap = max(0.0, allowed_duration - (source_end - source_start))
+        allowed_duration = source_end - source_start
         audio_strategy = str(item.get("sync_strategy", ""))
         if audio_strategy.startswith("video_"):
             audio_strategy = "local"
@@ -97,11 +96,7 @@ def build_video_timing_plan(
                 item["video_slow_duration"] = round(slow_extension, 6)
                 item["video_freeze_duration"] = round(freeze_extension, 6)
                 item["video_speed"] = round(video_speed, 6)
-                freeze_at_source = (
-                    source_end + following_gap / 2.0
-                    if freeze_extension > 0.002 and following_gap >= 0.12
-                    else source_end
-                )
+                freeze_at_source = source_end
                 edits.append(
                     {
                         "segment_id": int(item.get("id", 0)),

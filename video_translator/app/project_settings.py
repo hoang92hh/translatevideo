@@ -791,22 +791,24 @@ class ProjectSettingsDialog(QDialog):
         values = with_defaults(StepId.TRANSLATE, values)
         provider = str(values["provider"])
         component = self.translation.set_default_provider(provider)
-        for key in ("model", "proper_name_mode"):
-            control = getattr(component, key, None)
+        shared = self.translation.shared_settings
+        for key, target in (("model", component), ("proper_name_mode", shared)):
+            control = getattr(target, key, None)
             if isinstance(control, QComboBox):
                 control.setCurrentText(str(values[key]))
         for key in ("batch_size", "video_story_group_size"):
-            control = getattr(component, key, None)
+            control = getattr(shared, key, None)
             if isinstance(control, QSpinBox):
                 control.setValue(int(values[key]))
-        all_project_segments = getattr(component, "all_project_segments", None)
+        all_project_segments = shared.all_project_segments
         if isinstance(all_project_segments, QCheckBox):
             all_project_segments.setChecked(
                 bool(values["all_project_segments"])
             )
-        auto_adjacent_cleanup = getattr(component, "auto_adjacent_cleanup", None)
+        auto_adjacent_cleanup = shared.auto_adjacent_cleanup
         if isinstance(auto_adjacent_cleanup, QCheckBox):
             auto_adjacent_cleanup.setChecked(bool(values["auto_adjacent_cleanup"]))
+        shared.review_step3.setChecked(bool(values["review_step3"]))
         speaker_context = getattr(component, "speaker_context_translation", None)
         if isinstance(speaker_context, QCheckBox):
             speaker_context.setChecked(bool(values["speaker_context_translation"]))

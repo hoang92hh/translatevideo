@@ -46,6 +46,7 @@ STEP_DEFAULTS: Mapping[StepId, Mapping[str, Any]] = {
         "proper_name_mode": PROPER_NAME_MODE_AUTO,
         "all_project_segments": True, "project_url": "",
         "auto_adjacent_cleanup": True,
+        "review_step3": True,
         "speaker_context_translation": False,
     },
     StepId.TTS: {
@@ -58,7 +59,6 @@ STEP_DEFAULTS: Mapping[StepId, Mapping[str, Any]] = {
     },
     StepId.SYNC: {
         "provider": "FFmpeg — Duration Sync", "max_speed": 1.5,
-        "use_gap": True, "trim_silence": False,
         "auto_extend_video": True, "video_extension_mode": "Hybrid",
         "min_video_speed": 0.8, "max_freeze_duration": 0.2,
     },
@@ -112,6 +112,9 @@ def with_defaults(step: StepId, settings: Mapping[str, Any]) -> dict[str, Any]:
     provider = str(settings.get("provider", STEP_DEFAULTS[step]["provider"]))
     values = defaults_for(step, provider)
     values.update(settings)
+    if step == StepId.SYNC:
+        for key in ("use_gap", "trim_silence"):
+            values.pop(key, None)
     if step == StepId.STT:
         for key in ("segmentation_mode", "vad_recovery", "vad_filter", "segment_recovery", "ocr_region"):
             values.pop(key, None)

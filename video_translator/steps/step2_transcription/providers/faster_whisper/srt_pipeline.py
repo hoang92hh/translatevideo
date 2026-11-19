@@ -460,9 +460,51 @@ def add_recovery_segments(existing, incoming, report):
     """Use supplementary recognition only in uncovered time ranges."""
     added = []
     protected = list(existing)
+    decisions = report.setdefault("recovery_decisions", [])
+    windows = {window["id"]: window for window in report.get("windows", [])}
     for segment in incoming:
+        # Judge the complete utterance before overlap trimming can hide weak words.
+        decision = {"segment_id": segment["id"], "segment": segment,
+                    "status": "rejected", "reasons": []}
+        no_speech = segment.get("no_speech_prob")
+        logprob = segment.get("avg_logprob")
+        if (no_speech is not None and logprob is not None
+                and np.isfinite([no_speech, logprob]).all()
+                and no_speech > 0.6 and logprob < -1.0):
+            decision["reasons"].append("high_no_speech_and_low_logprob")
+
+        key = "".join(char for char in segment["text"].casefold() if char.isalnum())
+        window = windows.get(segment["source"])
+        for previous in decisions:
+            if previous["status"] != "accepted":
+                continue
+            original = previous["segment"]
+            other_window = windows.get(original["source"])
+            if (not key or original["source"] == segment["source"]
+                    or window is None or other_window is None):
+                continue
+            original_key = "".join(char for char in original["text"].casefold()
+                                   if char.isalnum())
+            # Require both source-window and original-utterance overlap: nearby
+            # intentional repetitions with distinct timings must remain eligible.
+            if (key == original_key
+                    and min(window["end"], other_window["end"])
+                    > max(window["start"], other_window["start"])
+                    and min(segment["end"], original["end"])
+                    > max(segment["start"], original["start"])):
+                decision["reasons"].append("duplicate_recovery_utterance")
+                decision["duplicate_of"] = original["id"]
+                break
+        if decision["reasons"]:
+            decisions.append(decision)
+            report["alternatives"].append({"segment_id": segment["id"],
+                                           "reason": decision["reasons"][0],
+                                           "text": segment["text"]})
+            continue
         words = segment["words"]
         if not words:
+            decision["reasons"].append("missing_word_timing")
+            decisions.append(decision)
             report["alternatives"].append({"segment_id": segment["id"],
                                            "reason": "missing_word_timing"})
             continue
@@ -492,6 +534,12 @@ def add_recovery_segments(existing, incoming, report):
                              start=group[0]["start"], end=group[-1]["end"])
             added.append(recovered)
             protected.append(recovered)
+        decision["status"] = "accepted" if groups else "rejected"
+        decision["accepted_segment_ids"] = [f"{segment['id']}:gap-{index}"
+                                             for index in range(len(groups))]
+        if not groups:
+            decision["reasons"].append("no_uncovered_words")
+        decisions.append(decision)
     return added
 
 

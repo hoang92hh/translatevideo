@@ -11,7 +11,7 @@ from ...errors import UserFacingError
 from ...common.models import StepId, StepResult, SyncCandidate
 from ...config.step_defaults import with_defaults
 from ...steps.step5_alignment.service import AudioSyncService
-from ...steps.step5_alignment.alignment import build_video_timing_plan
+from ...steps.step5_alignment.alignment import build_video_timing_plan, following_gap_allowances
 from ...state import ProjectState
 from .common import previous_segments
 
@@ -56,6 +56,7 @@ def execute(
             "Chọn lại output Step 4 hợp lệ rồi chạy Step 5.",
         )
     max_speed = max(1.0, float(settings["max_speed"]))
+    following_gap_seconds = max(0.0, float(settings["following_gap_seconds"]))
     auto_extend_video = bool(settings["auto_extend_video"])
     video_extension_mode = str(settings["video_extension_mode"])
     min_video_speed = max(0.25, min(1.0, float(settings["min_video_speed"])))
@@ -72,6 +73,10 @@ def execute(
         default=0.0,
     )
     payload_segments: list[dict[str, Any]] = []
+    gap_allowances = following_gap_allowances(
+        [{"id": item.id, "start": item.start, "end": item.end} for item in segments],
+        source_video_duration, following_gap_seconds,
+    )
     error_count = 0
     try:
         for index, segment in enumerate(segments):
@@ -123,6 +128,7 @@ def execute(
                 )
                 continue
             target_duration = max(0.01, segment.duration)
+            allowed_duration = target_duration + gap_allowances.get(segment.id, 0.0)
             output = segment_folder / f"segment_{segment.id:04d}.wav"
             if progress:
                 value = round(index / max(1, len(segments)) * 95)
@@ -133,6 +139,7 @@ def execute(
                 target_duration,
                 max_speed,
                 allow_overflow=auto_extend_video,
+                allowed_duration=allowed_duration,
             )
             if outcome.success:
                 segment.synced_audio_file = str(output)
@@ -159,7 +166,7 @@ def execute(
                     "sync_output_file": str(output),
                     "timeline_output_file": str(output),
                     "target_duration": target_duration,
-                    "allowed_duration": target_duration,
+                    "allowed_duration": allowed_duration,
                     "input_duration": outcome.input_duration,
                     "prepared_duration": outcome.prepared_duration,
                     "output_duration": outcome.output_duration,
@@ -201,6 +208,7 @@ def execute(
             "source_tts_candidate_id": state.selected_tts_candidate_id,
             "sync_candidate_id": candidate_id,
             "max_speed": max_speed,
+            "following_gap_seconds": following_gap_seconds,
             "auto_extend_video": auto_extend_video,
             "video_extension_mode": video_extension_mode,
             "min_video_speed": min_video_speed,

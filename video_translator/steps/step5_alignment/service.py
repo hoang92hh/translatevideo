@@ -9,11 +9,13 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ...config.gemini import GEMINI_PROVIDER_NAME
+from ...config.step_defaults import default_value
+from ...common.models import StepId
 from ...errors import UserFacingError
 from ...common.services.ffmpeg_service import FFmpegError, FFmpegService
 from ..step4_tts.service import TextToSpeechService
 from ..step3_translation.providers import create_translation_provider
-from .alignment import build_video_timing_plan
+from .alignment import build_video_timing_plan, following_gap_allowances
 
 
 ProgressCallback = Callable[[int, str], None]
@@ -113,6 +115,8 @@ class AudioSyncService:
         target_duration: float,
         max_speed: float,
         allow_overflow: bool = False,
+        *,
+        allowed_duration: float | None = None,
     ) -> SyncOutcome:
         source = Path(source_path)
         output = Path(output_path)
@@ -131,10 +135,11 @@ class AudioSyncService:
             )
 
         prepared = output.with_name(f".{output.stem}.prepared.wav")
+        allowed_duration = max(target_duration, allowed_duration if allowed_duration is not None else target_duration)
         try:
             self._run_ffmpeg(source, prepared, [])
             prepared_duration = self.ffmpeg.probe_duration(prepared) or input_duration
-            required_speed = prepared_duration / max(target_duration, 0.01)
+            required_speed = prepared_duration / max(allowed_duration, 0.01)
             if required_speed > max_speed + 0.0001 and not allow_overflow:
                 output.unlink(missing_ok=True)
                 return SyncOutcome(
@@ -143,7 +148,7 @@ class AudioSyncService:
                     prepared_duration=prepared_duration,
                     output_duration=0.0,
                     target_duration=target_duration,
-                    allowed_duration=target_duration,
+                    allowed_duration=allowed_duration,
                     speed_factor=required_speed,
                     error=(
                         f"Cần tốc độ {required_speed:.2f}x nhưng giới hạn là {max_speed:.2f}x"
@@ -168,7 +173,7 @@ class AudioSyncService:
                 prepared_duration=prepared_duration,
                 output_duration=measured,
                 target_duration=target_duration,
-                allowed_duration=target_duration,
+                allowed_duration=allowed_duration,
                 speed_factor=speed_factor,
             )
         finally:
@@ -793,6 +798,22 @@ def repair_sync_segments(
         sync_segment["speaker_corrected_in_step_5"] = speaker_id != previous_speaker
         sync_segment["skip_voice"] = not text or duration <= 0
 
+    previous_plan = sync_payload.get("video_timing_plan", {})
+    source_duration = (
+        float(previous_plan.get("source_duration", 0.0))
+        if isinstance(previous_plan, dict) else 0.0
+    )
+    following_gap_seconds = max(0.0, float(sync_payload.get(
+        "following_gap_seconds", default_value(StepId.SYNC, "following_gap_seconds"),
+    )))
+    sync_payload["following_gap_seconds"] = following_gap_seconds
+    gap_allowances = following_gap_allowances(
+        list(sync_segments.values()), source_duration, following_gap_seconds,
+    )
+    for segment_id in target_ids:
+        item = sync_segments[segment_id]
+        item["allowed_duration"] = float(item["target_duration"]) + gap_allowances.get(segment_id, 0.0)
+
     active_ids = [
         segment_id
         for segment_id in target_ids
@@ -863,6 +884,7 @@ def repair_sync_segments(
                 float(sync_segment.get("target_duration", 0.0)),
                 float(sync_payload.get("max_speed", 1.35)),
                 allow_overflow=bool(sync_payload.get("auto_extend_video", True)),
+                allowed_duration=float(sync_segment.get("allowed_duration", 0.0)),
             )
         except Exception as exc:
             outcome = None
@@ -916,12 +938,6 @@ def repair_sync_segments(
             sync_segment["borrowed_before"] = 0.0
             sync_segment["borrowed_after"] = 0.0
 
-    previous_plan = sync_payload.get("video_timing_plan", {})
-    source_duration = (
-        float(previous_plan.get("source_duration", 0.0))
-        if isinstance(previous_plan, dict)
-        else 0.0
-    )
     video_timing_plan = build_video_timing_plan(
         [item for item in sync_payload.get("segments", []) if isinstance(item, dict)],
         source_duration,

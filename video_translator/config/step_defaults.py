@@ -59,6 +59,7 @@ STEP_DEFAULTS: Mapping[StepId, Mapping[str, Any]] = {
     },
     StepId.SYNC: {
         "provider": "FFmpeg — Duration Sync", "max_speed": 1.5,
+        "following_gap_seconds": 0.5,
         "auto_extend_video": True, "video_extension_mode": "Hybrid",
         "min_video_speed": 0.8, "max_freeze_duration": 0.2,
     },

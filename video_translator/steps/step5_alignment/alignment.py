@@ -6,6 +6,24 @@ from typing import Any
 VIDEO_EXTENSION_MODES = {"Freeze Frame", "Slow Motion", "Hybrid"}
 
 
+def following_gap_allowances(
+    segments: list[dict[str, Any]], source_duration: float, limit: float,
+) -> dict[int, float]:
+    """Bound each forward allowance by the next start and the original video end."""
+    ordered = sorted(segments, key=lambda item: float(item.get("start", 0.0)))
+    allowances: dict[int, float] = {}
+    for index, item in enumerate(ordered):
+        start = float(item.get("start", 0.0))
+        end = float(item.get("end", start))
+        boundary = source_duration
+        if index + 1 < len(ordered):
+            boundary = min(boundary, float(ordered[index + 1].get("start", end)))
+        allowances[int(item["id"])] = (
+            min(max(0.0, limit), max(0.0, boundary - end)) if end > start else 0.0
+        )
+    return allowances
+
+
 def build_video_timing_plan(
     segments: list[dict[str, Any]],
     source_duration: float,
@@ -26,6 +44,7 @@ def build_video_timing_plan(
     freeze_limit = max(0.0, float(max_freeze_duration))
     cumulative_extension = 0.0
     edits: list[dict[str, Any]] = []
+    available_gaps = following_gap_allowances(segments, source_duration, float("inf"))
 
     for item in segments:
         source_start = max(0.0, float(item.get("start", 0.0)))
@@ -46,7 +65,13 @@ def build_video_timing_plan(
             item["error"] = ""
             item["sync_error_type"] = ""
 
-        allowed_duration = source_end - source_start
+        original_duration = source_end - source_start
+        allowed_duration = max(original_duration, min(
+            float(item.get("allowed_duration", original_duration)),
+            original_duration + available_gaps.get(int(item.get("id", 0)), 0.0),
+        ))
+        item["allowed_duration"] = allowed_duration
+        item["effective_end"] = round(source_start + allowed_duration, 6)
         audio_strategy = str(item.get("sync_strategy", ""))
         if audio_strategy.startswith("video_"):
             audio_strategy = "local"

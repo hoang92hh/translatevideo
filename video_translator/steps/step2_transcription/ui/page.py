@@ -8,6 +8,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -25,22 +26,35 @@ from video_translator.ui.components import Card, ProviderPanel
 from video_translator.ui.specs import DEVICE_FIELD, FieldSpec, ProviderSpec, StepSpec
 from video_translator.ui.steps.base import StepPage
 
+from ..ocr_region import resolve_region
+from .ocr_region_picker import OcrRegionPicker
+
 
 class SpeechToTextProviderPanel(ProviderPanel):
     def __init__(self, providers) -> None:
         super().__init__(providers)
-        self._ocr_height = self.controls[0]["ocr_height_percent"]
-        self._ocr_bottom_margin = self.controls[0]["ocr_bottom_margin_percent"]
-        self._ocr_height.valueChanged.connect(self._update_ocr_margin_limit)
-        self._update_ocr_margin_limit()
+        self.region_picker = OcrRegionPicker()
+        self.region_picker.set_region(resolve_region({}))
+        enabled = self.controls[0]["ocr_enabled"]
+        form = self.stack.widget(0).layout()
+        if isinstance(form, QFormLayout):
+            checkbox_row, _ = form.getWidgetPosition(enabled)
+            form.insertRow(checkbox_row + 1, self.region_picker)
+        enabled.toggled.connect(self.region_picker.setVisible)
+        self.region_picker.setVisible(enabled.isChecked())
 
-    def _update_ocr_margin_limit(self, *_: object) -> None:
-        self._ocr_bottom_margin.setMaximum(100 - self._ocr_height.value())
+    def set_preview_video(self, path: str) -> None:
+        self.region_picker.set_video(path)
 
     def set_values(self, values: dict[str, object]) -> None:
-        # Load height first so a valid saved margin is not clamped by the old height.
-        self._ocr_height.setValue(values.get("ocr_height_percent", self._ocr_height.value()))
+        self.region_picker.set_region(resolve_region(values))
         super().set_values(values)
+
+    def values(self) -> dict[str, object]:
+        values = super().values()
+        if self.region_picker.region is not None:
+            values["ocr_region_normalized"] = list(self.region_picker.region)
+        return values
 
 
 class SpeechToTextStepPage(StepPage):
@@ -63,27 +77,17 @@ class SpeechToTextStepPage(StepPage):
                 ),
                 FieldSpec(
                     "ocr_enabled", "OCR", "checkbox",
-                    default_value(StepId.STT, "ocr_enabled"), row="ocr",
+                    default_value(StepId.STT, "ocr_enabled"),
                 ),
                 FieldSpec(
-                    "ocr_interval_seconds", "Chu kỳ quét", "float",
+                    "ocr_interval_seconds", "Bước quét", "float",
                     default_value(StepId.STT, "ocr_interval_seconds"),
-                    minimum=0.01, maximum=3600.0, suffix=" giây", row="ocr",
+                    minimum=0.01, maximum=60.0, suffix=" giây", row="ocr",
                 ),
                 FieldSpec(
-                    "ocr_bottom_margin_percent", "Cách mép dưới", "int",
-                    default_value(StepId.STT, "ocr_bottom_margin_percent"),
-                    minimum=0, maximum=100, suffix="%", row="ocr",
-                ),
-                FieldSpec(
-                    "ocr_width_percent", "Rộng", "int",
-                    default_value(StepId.STT, "ocr_width_percent"),
-                    minimum=1, maximum=100, suffix="%", row="ocr",
-                ),
-                FieldSpec(
-                    "ocr_height_percent", "Cao", "int",
-                    default_value(StepId.STT, "ocr_height_percent"),
-                    minimum=1, maximum=100, suffix="%", row="ocr",
+                    "ocr_max_scans_per_side", "Số lượt mỗi bên", "int",
+                    default_value(StepId.STT, "ocr_max_scans_per_side"),
+                    minimum=1, maximum=100, row="ocr",
                 ),
             )),
         ),

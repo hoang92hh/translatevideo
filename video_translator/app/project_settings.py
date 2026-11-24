@@ -455,8 +455,8 @@ class ProjectSettingsDialog(QDialog):
         body.addWidget(self.navigation)
         body.addWidget(self.stack, 1)
         root.addLayout(body, 1)
-        self._build_project_page()
         self.step_panels: dict[StepId, ProviderPanel] = {}
+        self._build_project_page()
         self._add_provider_page(ExtractStepPage.SPEC)
         self._add_provider_page(SpeechToTextStepPage.SPEC)
         self._build_translation_page()
@@ -671,6 +671,12 @@ class ProjectSettingsDialog(QDialog):
         if item.column() == 0:
             self._refresh_video_groups()
 
+    def _update_ocr_preview(self) -> None:
+        panel = self.step_panels.get(StepId.STT)
+        if isinstance(panel, SpeechToTextProviderPanel):
+            selected = self._selected_videos()
+            panel.set_preview_video(selected[0] if selected else "")
+
     def _refresh_video_groups(self, *_args: object) -> None:
         if not hasattr(self, "video_table"):
             return
@@ -691,6 +697,7 @@ class ProjectSettingsDialog(QDialog):
                     group.setText("—")
         finally:
             self.video_table.blockSignals(signals_were_blocked)
+        self._update_ocr_preview()
 
     def _move_video(self, offset: int) -> None:
         row = self.video_table.currentRow()

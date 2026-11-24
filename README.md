@@ -265,7 +265,7 @@ ghép, chỉnh thứ tự video tại **Project & Input** trước.
 - Khi chạy MDX, ứng dụng tự đưa thư mục chứa FFmpeg/FFprobe đã chọn vào môi trường của provider; không bắt buộc cấu hình PATH toàn hệ thống.
 - Step 1.5 chạy sau Step 1 và ghi SRT tại `<thư mục cha của input>/srt/<tên-video>.srt`. Whisper nhận dạng toàn bộ audio gốc, giữ ranh giới segment ASR và chia cue theo mốc từ với khoảng nghỉ 0,3 giây, mục tiêu tối đa 6 giây và 40 ký tự. Silero VAD luôn chạy để đối chiếu vùng lời nói, nhận dạng bổ sung vùng thiếu và rà đầu/cuối audio. Stable-ts căn lại timing lỗi và refine start với bước 0,02 giây. Báo cáo từng lượt được lưu trong `srt/diagnostics/<tên-video>/<lần-chạy>/report.json`. Batch chọn **Step 1.5** để tạo SRT và **Step 2** để chuyển SRT thành transcript segment candidate cho Step 3.
 - Project mới mặc định chọn `Whisper` và tắt **Gộp segment liền kề** ở Step 1.5. Nếu project cũ lưu chế độ `VAD`, hãy chọn lại một trong ba chế độ hiện có trước khi chạy Step 1.5.
-- Whisper giữ hai tùy chọn **Speaker diarization** và **Gộp segment liền kề**. Diarization dùng voice gốc để gán speaker và xuất thêm `_speaker.srt`. Gộp segment áp dụng sau pipeline ASR. Checkbox **OCR** đi kèm Whisper, mặc định bỏ chọn. Cùng hàng có chu kỳ quét, khoảng cách tới mép dưới và kích thước rộng/cao theo phần trăm khung hình. OCR đọc video gốc và ghi `srt/<tên-video>.txt`, mỗi lần text thay đổi thêm một dòng. Khoảng trắng được chuẩn hóa, lượt quét rỗng được bỏ qua. Cấu hình mặc định Step 1–7 được quản lý trong `video_translator/config/step_defaults.py`.
+- Whisper giữ hai tùy chọn **Speaker diarization** và **Gộp segment liền kề**. Diarization dùng voice gốc để gán speaker và xuất thêm `_speaker.srt`. Gộp segment áp dụng sau pipeline ASR. Checkbox **OCR** đi kèm Whisper, mặc định bỏ chọn. Bật OCR để tua video đầu tiên và kéo chuột chọn vùng phụ đề. Các ô X, Y, chiều rộng và chiều cao hiển thị theo phần trăm và có thể chỉnh tay để cập nhật khung. Step 1.5 ghi SRT từ Whisper, sau đó dùng OCR để cập nhật text theo từng mục SRT.
 
 Muốn đổi mặc định của một tùy chọn step, sửa `STEP_DEFAULTS` trong `video_translator/config/step_defaults.py`; các mặc định riêng cho provider nằm ở `PROVIDER_DEFAULTS`. `default_value()` cấp giá trị cho giao diện, còn `with_defaults()` áp dụng cấu hình project lên mặc định trước khi chạy pipeline. Các ngưỡng thuật toán và giá trị dùng để đọc dữ liệu lỗi không thuộc registry này.
 - Step 2 có nút **Nhập TXT/SRT thành output mới**. Với TXT, mỗi dòng không trắng thay text của một segment trong transcript đang chọn theo đúng thứ tự; số dòng phải bằng số segment, còn ID/timestamp/speaker được giữ nguyên. Với SRT, mỗi mục phụ đề tạo một segment có text và timestamp từ file; ID được cấp theo thứ tự, speaker là `SPEAKER_UNKNOWN`, không cần transcript Step 2 có sẵn. Cả hai cách đều tạo candidate transcript mới, giữ output cũ và chọn output mới làm input Step 3. File sai định dạng, sai số dòng, thời gian chồng nhau hoặc text trống sẽ có thông báo lỗi cụ thể.
@@ -280,12 +280,12 @@ Muốn đổi mặc định của một tùy chọn step, sửa `STEP_DEFAULTS` 
   | Biến | Mặc định | Ý nghĩa |
   | --- | --- | --- |
   | `ocr_enabled` | `False` | Trạng thái checkbox OCR |
-  | `ocr_interval_seconds` | `0.25` | Chu kỳ quét video, tính bằng giây |
-  | `ocr_bottom_margin_percent` | `0` | Khoảng cách từ mép dưới video đến cạnh dưới vùng OCR, từ 0 đến `100 − ocr_height_percent` |
-  | `ocr_width_percent` | `100` | Chiều rộng vùng quét, căn giữa theo chiều ngang |
-  | `ocr_height_percent` | `35` | Chiều cao vùng quét theo phần trăm chiều cao video |
+  | `ocr_interval_seconds` | `0.25` | Bước thời gian giữa hai lượt quét cùng phía, tính bằng giây |
+  | `ocr_max_scans_per_side` | `3` | Số lượt tối đa ở mỗi phía của điểm giữa mục SRT |
+  | `ocr_region_normalized` | 35% dưới cùng khung hình | Tọa độ vùng chọn trên preview, lưu dạng `[x, y, rộng, cao]` theo tỷ lệ từ 0 đến 1 |
 
-  Chiều rộng vùng quét căn giữa. Khoảng cách mép dưới tính theo phần trăm chiều cao video. Với vùng cao 35%, khoảng cách điều chỉnh từ 0% đến 65%; ví dụ cách mép dưới 5% thì vùng OCR nằm từ mốc 60% đến 95% chiều cao hình. Khi tăng chiều cao vùng quét, giao diện tự giảm khoảng cách nếu vượt giới hạn mới. Giá trị đã lưu trong project được ưu tiên hơn mặc định. OCR dùng EasyOCR theo ngôn ngữ nguồn, thiết bị theo Auto/CPU/GPU và cache model tại `%LOCALAPPDATA%/TransLanguage/easyocr-models`. Lần dùng đầu có thể tải model.
+  Project cũ dùng vùng đã lưu theo chiều rộng, chiều cao và khoảng cách mép dưới cho đến khi chọn vùng mới. OCR dùng EasyOCR theo ngôn ngữ nguồn và chế độ Auto/CPU/GPU. Model nằm tại `%LOCALAPPDATA%/TransLanguage/easyocr-models`. Lần dùng đầu có thể tải model.
+
 
 - Whisper hỗ trợ `medium`, `large-v2`, `large-v3`, các kiểu tính toán `int8_float32`, `float16`, `float32` và ba chế độ thiết bị `Auto`, `CPU`, `GPU`.
 - Profile CUDA khóa cuBLAS `12.6.4.1` và cuDNN `9.6.0.74` để tiếp tục hỗ trợ GPU Pascal như GTX 1060.

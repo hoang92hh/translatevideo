@@ -32,9 +32,11 @@ STEP_DEFAULTS: Mapping[StepId, Mapping[str, Any]] = {
         "provider": "Whisper", "model": "large-v2", "device": "Auto",
         "compute_type": "int8_float32",
         "diarization": False, "merge_contained_adjacent_segments": False,
-        # OCR reads the original video and exports changed text to a TXT file.
+        # OCR updates the text of existing SRT cues from the source video.
         "ocr_enabled": False,
         "ocr_interval_seconds": 0.25,
+        "ocr_max_scans_per_side": 3,
+        "ocr_region_normalized": None,
         "ocr_bottom_margin_percent": 0,
         "ocr_width_percent": 100,
         "ocr_height_percent": 35,

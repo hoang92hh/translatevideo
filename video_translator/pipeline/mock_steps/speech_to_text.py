@@ -175,14 +175,6 @@ def execute(
     )
     transcription = service.transcribe(input_audio, asr_progress)
     ocr_result = None
-    if settings["ocr_enabled"]:
-        ocr_progress = (
-            (lambda value, message: progress(70 + round(value * 0.28), message))
-            if progress else None
-        )
-        ocr_result = OcrTextService(language_code, settings, batch_session).extract(
-            source_video, ocr_progress,
-        )
     if not transcription.segments:
         raise ValueError("Không nhận diện được lời nói trong audio.")
     segments = transcription.segments
@@ -224,16 +216,9 @@ def execute(
     report_path = str((transcription.asr_recovery or {}).get("report_path", ""))
     device_log["report_path"] = report_path
     temporary_path = srt_path.with_suffix(".srt.part")
-    ocr_path = srt_path.with_suffix(".txt")
-    ocr_temporary_path = ocr_path.with_suffix(".txt.part")
     try:
-        if ocr_result is not None:
-            ocr_text = "\n".join(ocr_result.lines)
-            ocr_temporary_path.write_text(ocr_text + ("\n" if ocr_text else ""), encoding="utf-8")
         temporary_path.write_text("\n".join(cues), encoding="utf-8")
         temporary_path.replace(srt_path)
-        if ocr_result is not None:
-            ocr_temporary_path.replace(ocr_path)
         if speaker_cues:
             speaker_path = srt_path.with_name(f"{srt_path.stem}_speaker.srt")
             speaker_temporary_path = speaker_path.with_suffix(".srt.part")
@@ -254,8 +239,16 @@ def execute(
             raise
     except Exception:
         temporary_path.unlink(missing_ok=True)
-        ocr_temporary_path.unlink(missing_ok=True)
         raise
+
+    if settings["ocr_enabled"]:
+        ocr_progress = (
+            (lambda value, message: progress(70 + round(value * 0.28), message))
+            if progress else None
+        )
+        ocr_result = OcrTextService(language_code, settings, batch_session).update_srt(
+            source_video, srt_path, speaker_path if speaker_cues else None, ocr_progress,
+        )
 
     detected = transcription.language or "không xác định"
     probability = (
@@ -291,9 +284,8 @@ def execute(
         "asr_recovery": transcription.asr_recovery,
         "ocr_enabled": bool(settings["ocr_enabled"]),
         "ocr_interval_seconds": settings["ocr_interval_seconds"],
-        "ocr_bottom_margin_percent": settings["ocr_bottom_margin_percent"],
-        "ocr_width_percent": settings["ocr_width_percent"],
-        "ocr_height_percent": settings["ocr_height_percent"],
+        "ocr_max_scans_per_side": settings["ocr_max_scans_per_side"],
+        "ocr_region_normalized": settings["ocr_region_normalized"],
         "ocr_row_count": len(ocr_result.lines) if ocr_result is not None else 0,
         "ocr_scan_count": ocr_result.scan_count if ocr_result is not None else 0,
         "ocr_actual_device": ocr_result.actual_device if ocr_result is not None else "",
@@ -306,7 +298,6 @@ def execute(
             "srt": str(srt_path),
             "device_log": str(device_log_path),
             "asr_report": report_path,
-            **({"ocr_text": str(ocr_path)} if ocr_result is not None else {}),
             **({"speaker_srt": str(speaker_path)} if speaker_cues else {}),
         },
         segments=[],

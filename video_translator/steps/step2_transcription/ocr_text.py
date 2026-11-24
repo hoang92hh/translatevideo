@@ -1,7 +1,8 @@
-"""OCR text export from original video, independently of ASR timing."""
+"""Run OCR against the source video and existing SRT cues."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -31,11 +32,33 @@ class OcrTextService:
     def preload(self) -> None:
         self._run({"type": "preload"}, None)
 
-    def extract(self, video: str | Path, progress: ProgressCallback | None = None) -> OcrTextResult:
+    def update_srt(
+        self, video: str | Path, srt: Path, speaker_srt: Path | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> OcrTextResult:
+        result = self.extract(video, srt, progress)
+        paths = [srt, speaker_srt] if speaker_srt else [srt]
+        staged = []
+        try:
+            for path in paths:
+                content = _updated_srt(path, result.lines, has_speakers=path == speaker_srt)
+                draft = path.with_suffix(".srt.part")
+                staged.append((draft, path))
+                draft.write_text(content, encoding="utf-8")
+            for draft, path in staged:
+                draft.replace(path)
+        finally:
+            for draft, _ in staged:
+                draft.unlink(missing_ok=True)
+        return result
+
+    def extract(
+        self, video: str | Path, srt: Path, progress: ProgressCallback | None = None,
+    ) -> OcrTextResult:
         source = Path(video)
         if not source.is_file():
             raise FileNotFoundError(f"Không tìm thấy video gốc để quét OCR: {source}")
-        result = self._run({"input_video": str(source.resolve())}, progress)
+        result = self._run({"input_video": str(source.resolve()), "input_srt": str(srt.resolve())}, progress)
         lines = result.get("lines")
         if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
             raise UserFacingError("Kết quả OCR không hợp lệ", "Worker không trả về danh sách dòng text.")
@@ -67,3 +90,19 @@ class OcrTextService:
         finally:
             if not self.batch_session:
                 release_batch_worker(session_key, "ocr")
+
+
+def _updated_srt(path: Path, lines: tuple[str, ...], *, has_speakers: bool) -> str:
+    original = path.read_text(encoding="utf-8")
+    blocks = re.split(r"\n[ \t]*\n+", original.rstrip("\n"))
+    if len(blocks) != len(lines):
+        raise ValueError(f"Số mục OCR không khớp với {path.name}.")
+    updated = []
+    for block, text in zip(blocks, lines, strict=True):
+        number, timing, *original_text = block.split("\n")
+        if has_speakers and original_text:
+            prefix = re.match(r"^\[[^\]\n]+\] ", original_text[0])
+            if prefix and text:
+                text = prefix.group() + text
+        updated.append(f"{number}\n{timing}\n{text}\n")
+    return "\n".join(updated)

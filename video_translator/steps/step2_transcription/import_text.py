@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-_TIMESTAMP = r"(\d{2,}):([0-5]\d):([0-5]\d)[,.](\d{1,3})"
+_TIMESTAMP = r"(\d+):([0-5]\d):([0-5]\d)[,.](\d{1,3})"
 _CUE_TIME = re.compile(rf"^\s*{_TIMESTAMP}\s*-->\s*{_TIMESTAMP}(?:\s+.*)?$")
 _SPEAKER_PREFIX = re.compile(r"^\[(SPEAKER_(?:\d+|UNKNOWN))\](?:\s+|$)")
 

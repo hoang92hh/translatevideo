@@ -14,6 +14,12 @@ from typing import Any
 PREFIX = "project-relative:"
 
 
+def srt_path_for_video(source: str | Path, *, ocr: bool = False) -> Path:
+    video = Path(source).resolve()
+    suffix = "_ocr.srt" if ocr else ".srt"
+    return video.parent.parent / "srt" / f"{video.stem}{suffix}"
+
+
 def _within(path: Path, parent: Path) -> bool:
     try:
         path.relative_to(parent)

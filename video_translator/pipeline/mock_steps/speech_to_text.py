@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from ...common.models import Segment, StepId, StepResult, TranscriptCandidate
 from ...config.step_defaults import with_defaults
+from ...project_paths import srt_path_for_video
 from ...state import ProjectState
 from ...steps.step2_transcription.import_text import read_srt
 from ...steps.step2_transcription.ocr_text import OcrTextService
@@ -143,12 +144,18 @@ def execute(
     if state.project is None:
         raise ValueError("Chưa mở project để xử lý SRT.")
     source_video = Path(state.input_video).resolve()
-    srt_path = source_video.parent.parent / "srt" / f"{source_video.stem}.srt"
+    srt_path = srt_path_for_video(source_video)
+    ocr_enabled = bool(settings["ocr_enabled"])
+    ocr_path = srt_path_for_video(source_video, ocr=True)
     if not settings.get("_srt_only"):
-        if not srt_path.is_file():
-            raise FileNotFoundError(f"Không tìm thấy SRT của video: {srt_path}. Hãy chạy Step 1.5 trước.")
-        return _convert_srt(state, srt_path)
+        selected_srt = ocr_path if ocr_enabled else srt_path
+        if not selected_srt.is_file():
+            raise FileNotFoundError(f"Không tìm thấy SRT của video: {selected_srt}. Hãy chạy Step 1.5 trước.")
+        if ocr_enabled and srt_path.is_file() and ocr_path.stat().st_mtime_ns < srt_path.stat().st_mtime_ns:
+            raise ValueError(f"Bản OCR cũ hơn SRT Whisper: {ocr_path}. Hãy chạy lại Step 1.5 để cập nhật.")
+        return _convert_srt(state, selected_srt)
 
+    batch_session = str(settings.get("_batch_model_session", ""))
     provider = str(settings["provider"])
     if provider != "Whisper":
         raise RuntimeError(f"{provider} hiện chưa được triển khai.")
@@ -159,7 +166,6 @@ def execute(
     language_code = LANGUAGE_CODES.get(state.source_language)
     if language_code is None:
         raise ValueError(f"Ngôn ngữ nguồn của project chưa được hỗ trợ: {state.source_language}")
-    batch_session = str(settings.get("_batch_model_session", ""))
     service = SpeechToTextService(
         model_name=model_name,
         device=requested_device,
@@ -169,12 +175,10 @@ def execute(
         batch_session=batch_session,
         diagnostics_dir=str(srt_path.parent / "diagnostics" / source_video.stem),
     )
-    asr_progress = (
-        (lambda value, message: progress(round(value * 0.7), message))
-        if progress and settings["ocr_enabled"] else progress
-    )
+    asr_progress = progress
+    if progress is not None and ocr_enabled:
+        asr_progress = lambda value, message: progress(round(value * 0.7), message)
     transcription = service.transcribe(input_audio, asr_progress)
-    ocr_result = None
     if not transcription.segments:
         raise ValueError("Không nhận diện được lời nói trong audio.")
     segments = transcription.segments
@@ -241,13 +245,14 @@ def execute(
         temporary_path.unlink(missing_ok=True)
         raise
 
-    if settings["ocr_enabled"]:
-        ocr_progress = (
-            (lambda value, message: progress(70 + round(value * 0.28), message))
-            if progress else None
-        )
-        ocr_result = OcrTextService(language_code, settings, batch_session).update_srt(
-            source_video, srt_path, speaker_path if speaker_cues else None, ocr_progress,
+    ocr_result = None
+    if ocr_enabled:
+        ocr_progress = None
+        if progress is not None:
+            progress(70, "Đã lưu SRT Whisper. Đang chuẩn bị OCR…")
+            ocr_progress = lambda value, message: progress(70 + round(value * 0.3), message)
+        ocr_result = OcrTextService(settings, batch_session).create_srt(
+            source_video, srt_path, ocr_path, ocr_progress,
         )
 
     detected = transcription.language or "không xác định"
@@ -260,7 +265,7 @@ def execute(
         f"{model_name} · {transcription.actual_device}"
     )
     if ocr_result is not None:
-        summary += f" · OCR {len(ocr_result.lines)} dòng text"
+        summary += f" · OCR CUDA {len(ocr_result.lines)} mục"
     recovery = transcription.asr_recovery or {}
     if recovery.get("status") == "needs_review":
         summary += (
@@ -282,24 +287,26 @@ def execute(
         "vad_enabled": True,
         "diarization": bool(settings["diarization"]),
         "asr_recovery": transcription.asr_recovery,
-        "ocr_enabled": bool(settings["ocr_enabled"]),
-        "ocr_interval_seconds": settings["ocr_interval_seconds"],
-        "ocr_max_scans_per_side": settings["ocr_max_scans_per_side"],
-        "ocr_region_normalized": settings["ocr_region_normalized"],
-        "ocr_row_count": len(ocr_result.lines) if ocr_result is not None else 0,
-        "ocr_scan_count": ocr_result.scan_count if ocr_result is not None else 0,
-        "ocr_actual_device": ocr_result.actual_device if ocr_result is not None else "",
+        "ocr_enabled": ocr_enabled,
         "merge_contained_adjacent_segments": bool(settings["merge_contained_adjacent_segments"]),
     }
+    artifacts = {
+        "srt": str(srt_path),
+        "device_log": str(device_log_path),
+        "asr_report": report_path,
+        **({"speaker_srt": str(speaker_path)} if speaker_cues else {}),
+    }
+    if ocr_result is not None:
+        metadata.update({
+            **{key: value for key, value in settings.items() if key.startswith("ocr_")},
+            "ocr_scan_count": ocr_result.scan_count,
+            "ocr_actual_device": ocr_result.actual_device,
+        })
+        artifacts.update(srt=str(ocr_path), whisper_srt=str(srt_path))
     return StepResult(
         step=StepId.STT,
         summary=summary,
-        artifacts={
-            "srt": str(srt_path),
-            "device_log": str(device_log_path),
-            "asr_report": report_path,
-            **({"speaker_srt": str(speaker_path)} if speaker_cues else {}),
-        },
+        artifacts=artifacts,
         segments=[],
         metadata=metadata,
     )

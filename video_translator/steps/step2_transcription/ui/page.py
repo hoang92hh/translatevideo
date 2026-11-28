@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from video_translator.common.models import StepId, StepStatus
-from video_translator.config.step_defaults import default_value
+from video_translator.config.step_defaults import default_value, with_defaults
 from video_translator.errors import UserFacingError
 from video_translator.steps.step2_transcription.csv_exchange import export_segments
 from video_translator.ui.transcript_timeline_dialog import TranscriptTimelineDialog
@@ -26,6 +26,7 @@ from video_translator.ui.components import Card, ProviderPanel
 from video_translator.ui.specs import DEVICE_FIELD, FieldSpec, ProviderSpec, StepSpec
 from video_translator.ui.steps.base import StepPage
 
+from ..ocr_engine import IMAGE_MODES, MODEL_SIZES, OCR_METHODS, SEEK_MODES
 from ..ocr_region import resolve_region
 from .ocr_region_picker import OcrRegionPicker
 
@@ -35,20 +36,37 @@ class SpeechToTextProviderPanel(ProviderPanel):
         super().__init__(providers)
         self.region_picker = OcrRegionPicker()
         self.region_picker.set_region(resolve_region({}))
-        enabled = self.controls[0]["ocr_enabled"]
+        controls = self.controls[0]
+        enabled = controls["ocr_enabled"]
+        enabled.setToolTip("Step 1.5 tạo SRT bằng Whisper rồi dùng bản đó để tạo file _ocr.srt.")
+        default_model = controls["ocr_default_model"]
         form = self.stack.widget(0).layout()
         if isinstance(form, QFormLayout):
             checkbox_row, _ = form.getWidgetPosition(enabled)
             form.insertRow(checkbox_row + 1, self.region_picker)
-        enabled.toggled.connect(self.region_picker.setVisible)
-        self.region_picker.setVisible(enabled.isChecked())
+
+            def set_ocr_rows(visible: bool) -> None:
+                form.setRowVisible(self.region_picker, visible)
+                for key, control in controls.items():
+                    if key.startswith("ocr_") and key != "ocr_enabled":
+                        form.setRowVisible(control, visible)
+
+            enabled.toggled.connect(set_ocr_rows)
+            set_ocr_rows(enabled.isChecked())
+
+        def set_model_controls(use_defaults: bool) -> None:
+            controls["ocr_det_model"].setDisabled(use_defaults)
+            controls["ocr_rec_model"].setDisabled(use_defaults)
+
+        default_model.toggled.connect(set_model_controls)
+        set_model_controls(default_model.isChecked())
 
     def set_preview_video(self, path: str) -> None:
         self.region_picker.set_video(path)
 
     def set_values(self, values: dict[str, object]) -> None:
         self.region_picker.set_region(resolve_region(values))
-        super().set_values(values)
+        super().set_values(with_defaults(StepId.STT, values))
 
     def values(self) -> dict[str, object]:
         values = super().values()
@@ -80,14 +98,51 @@ class SpeechToTextStepPage(StepPage):
                     default_value(StepId.STT, "ocr_enabled"),
                 ),
                 FieldSpec(
-                    "ocr_interval_seconds", "Bước quét", "float",
+                    "ocr_interval_seconds", "Bước quét SRT > 2 ký tự", "float",
                     default_value(StepId.STT, "ocr_interval_seconds"),
-                    minimum=0.01, maximum=60.0, suffix=" giây", row="ocr",
+                    minimum=0.01, maximum=60.0, suffix=" giây",
                 ),
                 FieldSpec(
-                    "ocr_max_scans_per_side", "Số lượt mỗi bên", "int",
-                    default_value(StepId.STT, "ocr_max_scans_per_side"),
-                    minimum=1, maximum=100, row="ocr",
+                    "ocr_short_interval_seconds", "Bước quét SRT ≤ 2 ký tự", "float",
+                    default_value(StepId.STT, "ocr_short_interval_seconds"),
+                    minimum=0.01, maximum=60.0, suffix=" giây",
+                ),
+                FieldSpec(
+                    "ocr_extension_seconds", "Mở rộng cửa sổ quét mỗi phía", "float",
+                    default_value(StepId.STT, "ocr_extension_seconds"),
+                    minimum=0.0, maximum=1_000_000.0, suffix=" giây",
+                ),
+                FieldSpec(
+                    "ocr_short_fallback", "SRT ≤ 2 ký tự thiếu OCR: ghi B+ kèm nội dung SRT", "checkbox",
+                    default_value(StepId.STT, "ocr_short_fallback"),
+                ),
+                FieldSpec(
+                    "ocr_default_model", "Default V10 (model mặc định RapidOCR)", "checkbox",
+                    default_value(StepId.STT, "ocr_default_model"),
+                ),
+                FieldSpec(
+                    "ocr_det_model", "Detection (PP-OCRv6)", "choice",
+                    default_value(StepId.STT, "ocr_det_model"), MODEL_SIZES,
+                ),
+                FieldSpec(
+                    "ocr_rec_model", "Recognition (PP-OCRv6)", "choice",
+                    default_value(StepId.STT, "ocr_rec_model"), MODEL_SIZES,
+                ),
+                FieldSpec(
+                    "ocr_image_mode", "Xử lý ảnh", "choice",
+                    default_value(StepId.STT, "ocr_image_mode"), IMAGE_MODES,
+                ),
+                FieldSpec(
+                    "ocr_method", "Chế độ OCR", "choice",
+                    default_value(StepId.STT, "ocr_method"), OCR_METHODS,
+                ),
+                FieldSpec(
+                    "ocr_seek_mode", "Đọc frame", "choice",
+                    default_value(StepId.STT, "ocr_seek_mode"), SEEK_MODES,
+                ),
+                FieldSpec(
+                    "ocr_text_score", "Ngưỡng tin cậy OCR", "float",
+                    default_value(StepId.STT, "ocr_text_score"), minimum=0.0, maximum=1.0,
                 ),
             )),
         ),

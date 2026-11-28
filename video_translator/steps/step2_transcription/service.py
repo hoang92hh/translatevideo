@@ -65,14 +65,6 @@ def preload_batch_models(session_key: str, settings: dict[str, object]) -> None:
                 "Kiểm tra model local và thiết bị đã cấu hình.", stderr,
             )
 
-    if settings["ocr_enabled"]:
-        from .ocr_text import OcrTextService
-
-        source_language = str(settings.get("_source_language", ""))
-        language = {"Chinese": "zh", "English": "en", "Vietnamese": "vi",
-                    "Japanese": "ja", "Korean": "ko"}.get(source_language, source_language)
-        OcrTextService(language, settings, session_key).preload()
-
 
 @dataclass(frozen=True, slots=True)
 class TranscriptSegment:

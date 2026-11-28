@@ -34,8 +34,17 @@ STEP_DEFAULTS: Mapping[StepId, Mapping[str, Any]] = {
         "diarization": False, "merge_contained_adjacent_segments": False,
         # OCR updates the text of existing SRT cues from the source video.
         "ocr_enabled": False,
-        "ocr_interval_seconds": 0.25,
-        "ocr_max_scans_per_side": 3,
+        "ocr_interval_seconds": 0.2,
+        "ocr_short_interval_seconds": 0.1,
+        "ocr_extension_seconds": 0.5,
+        "ocr_short_fallback": False,
+        "ocr_default_model": True,
+        "ocr_det_model": "small",
+        "ocr_rec_model": "small",
+        "ocr_image_mode": "Original",
+        "ocr_method": "Det+Rec",
+        "ocr_seek_mode": "Timestamp",
+        "ocr_text_score": 0.8,
         "ocr_region_normalized": None,
         "ocr_bottom_margin_percent": 0,
         "ocr_width_percent": 100,
@@ -119,7 +128,11 @@ def with_defaults(step: StepId, settings: Mapping[str, Any]) -> dict[str, Any]:
         for key in ("use_gap", "trim_silence"):
             values.pop(key, None)
     if step == StepId.STT:
-        for key in ("segmentation_mode", "vad_recovery", "vad_filter", "segment_recovery", "ocr_region"):
+        if ("ocr_max_scans_per_side" in settings and "ocr_short_interval_seconds" not in settings
+                and settings.get("ocr_interval_seconds") == 0.25):
+            values["ocr_interval_seconds"] = STEP_DEFAULTS[step]["ocr_interval_seconds"]
+        for key in ("segmentation_mode", "vad_recovery", "vad_filter", "segment_recovery",
+                    "ocr_region", "ocr_max_scans_per_side"):
             values.pop(key, None)
         if values["provider"] in {"Stable Whisper", "Faster Whisper"}:
             values["provider"] = "Whisper"

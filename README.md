@@ -265,7 +265,7 @@ ghép, chỉnh thứ tự video tại **Project & Input** trước.
 - Khi chạy MDX, ứng dụng tự đưa thư mục chứa FFmpeg/FFprobe đã chọn vào môi trường của provider; không bắt buộc cấu hình PATH toàn hệ thống.
 - Step 1.5 chạy sau Step 1 và ghi SRT tại `<thư mục cha của input>/srt/<tên-video>.srt`. Whisper nhận dạng toàn bộ audio gốc, giữ ranh giới segment ASR và chia cue theo mốc từ với khoảng nghỉ 0,3 giây, mục tiêu tối đa 6 giây và 40 ký tự. Silero VAD luôn chạy để đối chiếu vùng lời nói, nhận dạng bổ sung vùng thiếu và rà đầu/cuối audio. Stable-ts căn lại timing lỗi và refine start với bước 0,02 giây. Báo cáo từng lượt được lưu trong `srt/diagnostics/<tên-video>/<lần-chạy>/report.json`. Batch chọn **Step 1.5** để tạo SRT và **Step 2** để chuyển SRT thành transcript segment candidate cho Step 3.
 - Project mới mặc định chọn `Whisper` và tắt **Gộp segment liền kề** ở Step 1.5. Nếu project cũ lưu chế độ `VAD`, hãy chọn lại một trong ba chế độ hiện có trước khi chạy Step 1.5.
-- Whisper giữ hai tùy chọn **Speaker diarization** và **Gộp segment liền kề**. Diarization dùng voice gốc để gán speaker và xuất thêm `_speaker.srt`. Gộp segment áp dụng sau pipeline ASR. Checkbox **OCR** đi kèm Whisper, mặc định bỏ chọn. Bật OCR để tua video đầu tiên và kéo chuột chọn vùng phụ đề. Các ô X, Y, chiều rộng và chiều cao hiển thị theo phần trăm và có thể chỉnh tay để cập nhật khung. Step 1.5 ghi SRT từ Whisper, sau đó dùng OCR để cập nhật text theo từng mục SRT.
+- Whisper giữ hai tùy chọn **Speaker diarization** và **Gộp segment liền kề**. Diarization dùng voice gốc để gán speaker và xuất thêm `_speaker.srt`. Gộp segment áp dụng sau pipeline ASR. Checkbox **OCR** trong **Thiết lập project → Step 2** mặc định tắt. Bật OCR để khoanh vùng phụ đề trên video đầu tiên hoặc nhập X, Y, chiều rộng và chiều cao theo phần trăm. Step 1.5 luôn chạy Whisper để tạo `srt/<tên-video>.srt`. Khi bật OCR, cùng lượt chạy dùng video gốc và file Whisper vừa tạo để ghi `srt/<tên-video>_ocr.srt` với cùng số thứ tự và timestamp. Step 2 dùng file `_ocr.srt` khi bật OCR và file Whisper khi tắt.
 
 Muốn đổi mặc định của một tùy chọn step, sửa `STEP_DEFAULTS` trong `video_translator/config/step_defaults.py`; các mặc định riêng cho provider nằm ở `PROVIDER_DEFAULTS`. `default_value()` cấp giá trị cho giao diện, còn `with_defaults()` áp dụng cấu hình project lên mặc định trước khi chạy pipeline. Các ngưỡng thuật toán và giá trị dùng để đọc dữ liệu lỗi không thuộc registry này.
 - Step 2 có nút **Nhập TXT/SRT thành output mới**. Với TXT, mỗi dòng không trắng thay text của một segment trong transcript đang chọn theo đúng thứ tự; số dòng phải bằng số segment, còn ID/timestamp/speaker được giữ nguyên. Với SRT, mỗi mục phụ đề tạo một segment có text và timestamp từ file; ID được cấp theo thứ tự, speaker là `SPEAKER_UNKNOWN`, không cần transcript Step 2 có sẵn. Cả hai cách đều tạo candidate transcript mới, giữ output cũ và chọn output mới làm input Step 3. File sai định dạng, sai số dòng, thời gian chồng nhau hoặc text trống sẽ có thông báo lỗi cụ thể.
@@ -280,11 +280,16 @@ Muốn đổi mặc định của một tùy chọn step, sửa `STEP_DEFAULTS` 
   | Biến | Mặc định | Ý nghĩa |
   | --- | --- | --- |
   | `ocr_enabled` | `False` | Trạng thái checkbox OCR |
-  | `ocr_interval_seconds` | `0.25` | Bước thời gian giữa hai lượt quét cùng phía, tính bằng giây |
-  | `ocr_max_scans_per_side` | `3` | Số lượt tối đa ở mỗi phía của điểm giữa mục SRT |
+  | `ocr_interval_seconds` | `0.2` | Bước quét mục SRT trên 2 ký tự, tính bằng giây |
+  | `ocr_short_interval_seconds` | `0.1` | Bước quét mục SRT tối đa 2 ký tự, tính bằng giây |
+  | `ocr_extension_seconds` | `0.5` | Mở rộng cửa sổ quét mỗi phía, tính bằng giây |
+  | `ocr_short_fallback` | `False` | Khi bật, mục tối đa 2 ký tự thiếu OCR nhận `B+` kèm chữ SRT; các mục thiếu khác nhận `A` |
+  | `ocr_default_model` | `True` | Dùng model mặc định RapidOCR (Default V10) |
+  | `ocr_det_model`, `ocr_rec_model` | `small`, `small` | Kích thước model PP-OCRv6 khi tắt Default V10 |
+  | `ocr_image_mode`, `ocr_method`, `ocr_seek_mode`, `ocr_text_score` | `Original`, `Det+Rec`, `Timestamp`, `0.8` | Tiền xử lý ảnh, chế độ nhận dạng, cách đọc frame và ngưỡng tin cậy |
   | `ocr_region_normalized` | 35% dưới cùng khung hình | Tọa độ vùng chọn trên preview, lưu dạng `[x, y, rộng, cao]` theo tỷ lệ từ 0 đến 1 |
 
-  Project cũ dùng vùng đã lưu theo chiều rộng, chiều cao và khoảng cách mép dưới cho đến khi chọn vùng mới. OCR dùng EasyOCR theo ngôn ngữ nguồn và chế độ Auto/CPU/GPU. Model nằm tại `%LOCALAPPDATA%/TransLanguage/easyocr-models`. Lần dùng đầu có thể tải model.
+  Project cũ dùng vùng đã lưu theo chiều rộng, chiều cao và khoảng cách mép dưới cho đến khi chọn vùng mới. OCR V25 dùng RapidOCR với ONNX Runtime GPU trên cấu hình CUDA. Lần dùng đầu có thể tải model. Bộ lọc kết quả V25 giữ chữ Hán, chữ số và dấu câu phụ đề.
 
 
 - Whisper hỗ trợ `medium`, `large-v2`, `large-v3`, các kiểu tính toán `int8_float32`, `float16`, `float32` và ba chế độ thiết bị `Auto`, `CPU`, `GPU`.

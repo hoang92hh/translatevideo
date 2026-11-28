@@ -21,6 +21,7 @@ from .common.models import (
     TtsCandidate,
 )
 from .project import VideoProject
+from .project_paths import srt_path_for_video
 from .steps.step1_separation.state import AudioStateMixin
 from .steps.step2_transcription.state import TranscriptStateMixin
 from .steps.step3_translation.state import TranslationStateMixin
@@ -265,7 +266,7 @@ class ProjectState(
             self.statuses[step] = StepStatus.DONE
         return None
 
-    def restore_selected_inputs(self, before_step: StepId) -> StepId | None:
+    def restore_selected_inputs(self, before_step: StepId, *, ocr_enabled: bool = False) -> StepId | None:
         """Hydrate the selected output immediately preceding an explicit start step."""
         target_index = STEP_ORDER.index(before_step)
         if target_index == 0:
@@ -276,10 +277,11 @@ class ProjectState(
         input_step = STEP_ORDER[target_index - 1]
         if input_step == StepId.EXTRACT:
             input_path = self.audio_input_path()
-            if not input_path or not Path(input_path).is_file():
+            if input_path and Path(input_path).is_file():
+                self.statuses[input_step] = StepStatus.DONE
+            elif not self.can_run(before_step, ocr_enabled=ocr_enabled):
                 self.invalidate_from(before_step)
                 return input_step
-            self.statuses[input_step] = StepStatus.DONE
         else:
             selected_inputs = {
                 StepId.STT: (
@@ -548,12 +550,14 @@ class ProjectState(
             self.statuses[current] = StepStatus.STALE if had_output else StepStatus.PENDING
             self.step_changed.emit(current.value)
 
-    def can_run(self, step: StepId) -> bool:
+    def can_run(self, step: StepId, *, srt_only: bool = False, ocr_enabled: bool = False) -> bool:
         index = STEP_ORDER.index(step)
         if index == 0:
             return bool(self.input_video)
         previous_done = self.statuses[STEP_ORDER[index - 1]] == StepStatus.DONE
         if step == StepId.STT:
+            if not srt_only and self.input_video and (ocr_enabled or srt_path_for_video(self.input_video).is_file()):
+                return True
             input_path = self.audio_input_path()
             return previous_done and bool(input_path) and Path(input_path).is_file()
         if step == StepId.TRANSLATE:

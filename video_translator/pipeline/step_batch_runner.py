@@ -100,7 +100,11 @@ class StepBatchRunner(QObject):
             self.state = state
             if self.step == StepId.TRANSLATE:
                 state.restore_selected_inputs(StepId.TRANSLATE)
-            if not state.can_run(self.step):
+            if not state.can_run(
+                self.step,
+                srt_only=bool(self.settings.get("_srt_only")),
+                ocr_enabled=bool(self.settings.get("ocr_enabled")),
+            ):
                 raise ValueError(
                     f"Step {self.step_number} chưa có đủ đầu vào. "
                     "Hãy hoàn tất step trước và chọn output hợp lệ."

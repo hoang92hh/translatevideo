@@ -554,10 +554,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(dialog, "Không thể chuẩn bị batch", str(exc))
             return False
         preload_step1 = step == StepId.EXTRACT and single_step and settings.get("provider") == "MDX-Net — Audio Separator"
-        if (preload_step1 or (step == StepId.STT and srt_only) or step == StepId.TTS) and video_ids and step not in dialog.loaded_model_steps:
+        preload_asr = step == StepId.STT and srt_only
+        if (preload_step1 or preload_asr or step == StepId.TTS) and video_ids and step not in dialog.loaded_model_steps:
             preloader = BatchModelPreloader(
                 dialog.model_session_key, step, settings, self.batch_project.target_language,
-                self.batch_project.source_language,
             )
             self.batch_running = True
             dialog.set_batch_busy(True, number)
@@ -1061,7 +1061,10 @@ class MainWindow(QMainWindow):
             project = BatchProjectService.open_video(self.batch_project, video_id)
             self.batch_state.bind_project(project, restore_candidates=False)
             if explicit_start:
-                validated_step = self.batch_state.restore_selected_inputs(next_step)
+                stt_settings = self.batch_settings.get(StepId.STT.value, {})
+                validated_step = self.batch_state.restore_selected_inputs(
+                    next_step, ocr_enabled=bool(stt_settings.get("ocr_enabled")),
+                )
                 if validated_step != next_step:
                     requested_number = STEP_ORDER.index(next_step) + 1
                     input_number = STEP_ORDER.index(validated_step) + 1 if validated_step else requested_number - 1
@@ -1109,7 +1112,8 @@ class MainWindow(QMainWindow):
         if step.value not in self.batch_settings:
             self._fail_batch_video("Step chưa có thiết lập project.", step)
             return
-        if not self.batch_state.can_run(step):
+        settings = dict(self.batch_settings[step.value])
+        if not self.batch_state.can_run(step, srt_only=srt_only, ocr_enabled=bool(settings.get("ocr_enabled"))):
             self._fail_batch_video("Step không có đủ đầu vào.", step)
             return
         video_id = self.batch_state.project.video_id
@@ -1118,7 +1122,6 @@ class MainWindow(QMainWindow):
         )
         self._update_selected_batch_status(video_id, "processing", step=step)
         self._refresh_header()
-        settings = dict(self.batch_settings[step.value])
         if step == StepId.STT:
             settings["_srt_only"] = srt_only
             settings["input_audio"] = self.batch_state.audio_input_path()
@@ -1706,7 +1709,8 @@ class MainWindow(QMainWindow):
             if continue_all:
                 self._finish_pipeline_sequence(needs_continue=True)
             return
-        if not self.state.can_run(step):
+        settings = dict(self.batch_settings[step.value])
+        if not self.state.can_run(step, srt_only=srt_only, ocr_enabled=bool(settings.get("ocr_enabled"))):
             if self.batch_running:
                 self._fail_batch_video(
                     f"Step {STEP_ORDER.index(step) + 1:02d} không có đủ đầu vào."
@@ -1717,7 +1721,6 @@ class MainWindow(QMainWindow):
                 self._finish_pipeline_sequence(needs_continue=True)
             return
         page = self.pages[step]
-        settings = dict(self.batch_settings.get(step.value, {}))
         if step == StepId.STT:
             settings["_srt_only"] = srt_only
             settings["input_audio"] = self.state.audio_input_path()

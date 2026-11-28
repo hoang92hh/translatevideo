@@ -16,14 +16,12 @@ class BatchModelPreloader(QThread):
     def __init__(
         self, session_key: str, step: StepId,
         settings: dict[str, object], target_language: str,
-        source_language: str = "",
     ) -> None:
         super().__init__()
         self.session_key = session_key
         self.step = step
         self.settings = dict(settings)
         self.target_language = target_language
-        self.source_language = source_language
 
     def run(self) -> None:
         errors: list[str] = []
@@ -36,10 +34,7 @@ class BatchModelPreloader(QThread):
         elif self.step == StepId.STT:
             self.progress_changed.emit(0, "Đang nạp model Step 1.5…")
             try:
-                preload_batch_models(
-                    self.session_key,
-                    {**self.settings, "_source_language": self.source_language},
-                )
+                preload_batch_models(self.session_key, self.settings)
             except Exception as exc:
                 errors.append(f"Step 1.5: {exc}")
         elif self.step == StepId.TTS and self.settings.get("provider") != provider_id("edge"):

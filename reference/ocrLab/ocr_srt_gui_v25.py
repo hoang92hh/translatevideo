@@ -1,8 +1,8 @@
-"""OCR subtitles from midpoint, bounded by neighboring subtitle content.
+"""OCR V25: midpoint confidence search and two-block mapping.
 
 Windows: Python 3.13 + opencv-python + rapidocr + onnxruntime-gpu + CUDA 12 / cuDNN 9
 
-Run: python ocr_srt_gui_v10_short_dense.py
+Run: python ocr_srt_gui_v25.py
 
 Requires subtitle_region_selector.py in same directory.
 
@@ -23,6 +23,7 @@ import sys
 import threading
 
 import traceback
+import time
 
 import unicodedata
 
@@ -53,7 +54,7 @@ MATCH_THRESHOLD = 0.70
 
 MATCH_RULES = "1 chữ: 100%; 2 chữ: 50%; 3 chữ: 66,7%; từ 4 chữ: 70%"
 
-NOT_FOUND = "Không thấy chữ"
+NOT_FOUND = "A"
 
 
 def match_threshold(length: int) -> float:
@@ -71,9 +72,10 @@ def validate_interval(interval: float) -> float:
         raise ValueError("Khoảng cách phải lớn hơn 0 và không quá 60 giây")
     return interval
 
-def validate_scan_limit(value: int) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ValueError("Số lần quét mỗi phía phải là số nguyên dương")
+def validate_extension(value: float) -> float:
+    import math
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("Thời gian mở rộng phải là số hữu hạn không âm")
     return value
 
 
@@ -94,6 +96,20 @@ def seconds(value: str) -> float:
         raise ValueError(f"Mốc thời gian SRT không hợp lệ: {value}")
     ms_digits = len(m.group(4))
     return hh * 3600 + mm * 60 + ss + ms / (10 ** ms_digits)
+
+def format_srt_time(value: float) -> str:
+    total = max(0, round(value * 1000))
+    hours, remainder = divmod(total, 3600000)
+    minutes, remainder = divmod(remainder, 60000)
+    seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+
+
+def srt_record(segment: Segment, text: str) -> str:
+    return (f"{segment.index}\n"
+            f"{format_srt_time(segment.start)} --> {format_srt_time(segment.end)}\n"
+            f"{text}\n\n")
+
 
 def read_srt(path: Path) -> list[Segment]:
     raw = path.read_bytes()
@@ -151,6 +167,33 @@ def crop_region(frame, region):
     x2, y2 = max(x1 + 1, min(width, x2)), max(y1 + 1, min(height, y2))
     return frame[y1:y2, x1:x2]
 
+def preprocess(img, mode, cv):
+    if mode == 'Original': return img.copy()
+    if mode == 'Upscale 2x': return cv.resize(img, None, fx=2, fy=2, interpolation=cv.INTER_CUBIC)
+    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    if mode == 'Threshold Otsu': gray = cv.threshold(gray, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU)[1]
+    return cv.cvtColor(gray, cv.COLOR_GRAY2BGR)
+
+
+
+IMAGE_MODES = ("Original", "Grayscale", "Threshold Otsu", "Upscale 2x")
+OCR_METHODS = ("Det+Rec", "Rec only")
+SEEK_MODES = ("Timestamp", "Frame index")
+
+
+def validate_ocr_options(image_mode, method, seek, text_score):
+    if image_mode not in IMAGE_MODES or method not in OCR_METHODS or seek not in SEEK_MODES:
+        raise ValueError("Chế độ OCR không hợp lệ")
+    if not 0 <= text_score <= 1:
+        raise ValueError("Text score phải từ 0 đến 1")
+
+
+def run_ocr_image(engine, crop, cv, image_mode, method, text_score):
+    image = preprocess(crop, image_mode, cv)
+    full = method == "Det+Rec"
+    return engine(image.copy(), use_det=full, use_cls=full, use_rec=True, text_score=text_score)
+
+
 def join_ocr_fragments(fragments: list[str]) -> str:
     """Join detected fragments without inserting separators into CJK text."""
     joined = ""
@@ -168,30 +211,39 @@ def join_ocr_fragments(fragments: list[str]) -> str:
         joined += separator + fragment
     return joined
 
-def extract_text(ocr_result) -> tuple[str, float]:
-    # RapidOCR returns a RapidOCROutput with .txts and .scores.
-    texts = getattr(ocr_result, "txts", None) or []
-    scores = getattr(ocr_result, "scores", None)
-    if scores is None:
-        scores = [0.0] * len(texts)
-    lines = []
-    confidences = []
-    for text, score in zip(texts, scores):
-        text = str(text).strip()
-        if text:
-            lines.extend(text.splitlines())
-            confidences.append(float(score))
-    return join_ocr_fragments(lines), (sum(confidences) / len(confidences) if confidences else 0.0)
+def is_subtitle_character(c):
+    name = unicodedata.name(c, '')
+    return name.startswith(('CJK UNIFIED IDEOGRAPH', 'CJK COMPATIBILITY IDEOGRAPH')) or c == '〇' or c.isdecimal()
+
+
+def extract_text(ocr_result, text_score=0.5) -> tuple[str, float]:
+    """Keep raw recognition fragments; preserve the existing score filter.
+    Pure noise fragments do not contribute to the subtitle score. A mixed
+    fragment retains its original recognition score, with no recalculation.
+    """
+    import math
+    texts = getattr(ocr_result, 'txts', None)
+    scores = getattr(ocr_result, 'scores', None)
+    texts = [] if texts is None else list(texts)
+    scores = [] if scores is None else list(scores)
+    retained = []
+    for i, raw in enumerate(texts):
+        score = float(scores[i]) if i < len(scores) else 0.0
+        if str(raw).strip() and math.isfinite(score) and text_score <= score <= 1.0:
+            retained.append((str(raw), score))
+    content_scores = [c for t,c in retained if any(is_subtitle_character(ch) for ch in t)]
+    return (join_ocr_fragments([t for t,_ in retained]),
+            sum(content_scores)/len(content_scores) if content_scores else 0.0)
+
 
 def normalized_text(text: str) -> tuple[str, list[int]]:
-    """Keep source positions so a matched OCR block can be returned verbatim."""
+    """Comparison keys only: never modify stored OCR; retain raw offsets."""
     chars, positions = [], []
     for pos, char in enumerate(text):
-        for folded in char.casefold():
-            if folded.isalnum():
-                chars.append(folded)
-                positions.append(pos)
-    return "".join(chars), positions
+        if is_subtitle_character(char):
+            chars.append(char)
+            positions.append(pos)
+    return ''.join(chars), positions
 
 @lru_cache(maxsize=1)
 def chinese_converter():
@@ -327,8 +379,13 @@ class ScanResult:
     used_end: int = 0
     deferred_frame: str = ""
     deferred_owner: str | None = None
+    deferred_time: float | None = None
+    deferred_blocks: tuple[OCRBlock, ...] = ()
     previous_update: str = ""
     previous_update_frame: str = ""
+    confidence: float = 0.0
+    boundary_raw: str = ""
+    last_valid_ocr: str = ""  # carry boundary across NO_TEXT, not previous record state
 
 @dataclass(frozen=True)
 
@@ -591,186 +648,448 @@ def fuller_previous(raw, previous, previous_segment, refs, split):
     return previous.text[:-len(last_part)] + raw
 
 
+def missing_block(text: str, reference: str):
+    """Reverse partition: split SRT into two contiguous pieces, compare OCR
+    against a complete edge using the same whole-block scoring and thresholds.
+    Return (missing direction, missing reference), or None if ambiguous.
+    """
+    source = text
+    target = srt_reference(reference)
+    n, m = len(norm(target)), len(norm(source))
+    if not m or n - m <= 2:
+        return None
+    baseline = comparison_score(source, target)
+    candidates = []
+    for cut in range(1, n):
+        head, tail = block_slice(target, 0, cut), block_slice(target, cut, n)
+        for direction, matched, missing in (("right", head, tail), ("left", tail, head)):
+            if len(norm(missing)) < 3 or abs(len(norm(matched))-m) > 2:
+                continue
+            score = comparison_score(source, matched)
+            if not fits(source, matched) or score <= baseline + 1e-9:
+                continue
+            # Same full-block evidence as partition; no fuzzy interior span
+            # may manufacture a missing prefix/suffix.
+            rank = (round(score, 9), -abs(len(norm(matched))-m))
+            candidates.append((rank, direction, missing))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    best = candidates[0]
+    if any(c[0] == best[0] and c[1:] != best[1:] for c in candidates[1:]):
+        return None
+    return best[1], best[2]
+
+
+@dataclass(frozen=True)
+class OCRBlock:
+    text: str
+    raw: str
+    timestamp: float
+    confidence: float
+    first: float
+    last: float
+
+
+def clean_ocr(text):
+    """Remove non-subtitle glyphs from a committed block; preserve Han, digits and punctuation.
+    A mixed fragment has only one recognition score; cleaning cannot raise it.
+    """
+    punctuation = set('，。！？、；：…—－·“”‘’《》〈〉「」『』（）【】,.!?;:-()[]\"\'')
+    cleaned = ''.join(c for c in text if is_subtitle_character(c) or c in punctuation)
+    return cleaned if any(is_subtitle_character(c) for c in cleaned) else ''
+
+
+def same_block(a, b):
+    x, y = simplified(norm(a)), simplified(norm(b))
+    if x == y:
+        return bool(x)
+    # Short distinct subtitles must not be merged by a single shared character.
+    return min(len(x), len(y)) >= 3 and output_similarity(x, y) >= .80
+
+
+def sample_variant(a, b):
+    """Within adjacent nonempty samples only: allow one missing edge character."""
+    if same_block(a, b):
+        return True
+    x, y = simplified(norm(a)), simplified(norm(b))
+    if len(x) > len(y):
+        x, y = y, x
+    return bool(x) and len(y) == len(x) + 1 and (y.startswith(x) or y.endswith(x))
+
+
+def collect_blocks(samples):
+    blocks = []
+    group = []
+    def flush():
+        if group:
+            best = max(group, key=lambda item: item[3])
+            blocks.append(OCRBlock(best[2], best[1], best[0], best[3], group[0][0], group[-1][0]))
+            group.clear()
+    for t, raw, score in samples:
+        text = clean_ocr(raw)
+        if not text:
+            flush()
+            continue
+        if group and not sample_variant(text, max(group, key=lambda item: item[3])[2]):
+            flush()
+        group.append((t, raw, text, score))
+    flush()
+    return blocks
+
+
+STANDARD_CONFIDENCE = 0.95
+SHORT_CONFIDENCE = 0.95
+
+
+def allocate_block(text, ref, anchor, prior_ref, following, timestamp, segment, previous_timestamp):
+    """Return ownership separately from recognition confidence.
+
+    Only a confirmed adjacent boundary excludes a nonempty block.
+    Similarity to the current SRT is not an acceptance requirement.
+    """
+    if not norm(text):
+        return 'EMPTY', '', ''
+    x = simplified(norm(text))
+    left = simplified(norm(anchor))
+    own = comparison_score(text, ref)
+    right = comparison_score(text, following)
+    if left and x == left:
+        return 'PREV', '', ''
+    if following and x == simplified(norm(following)):
+        return 'NEXT', '', ''
+    if own >= 1-1e-9:
+        return 'OWN', text, ''
+    left_refs = tuple(dict.fromkeys(r for r in (anchor, prior_ref) if norm(r)))
+    # Handle an exact A+B+C frame before the existing two-owner splitter.
+    b, c = simplified(norm(ref)), simplified(norm(following))
+    for lref in left_refs:
+        a = simplified(norm(lref))
+        if a and b and c and x == a+b+c:
+            return '1:2', block_slice(text,len(a),len(a)+len(b)), block_slice(text,len(a)+len(b),len(x))
+    for lref in left_refs or ('',):
+        split = partition(text, (lref, ref, following))
+        if split:
+            own_span = next(((a,b) for j,a,b in split if j==1), None)
+            tail = next(((a,b) for j,a,b in split if j==2), None)
+            if own_span:
+                return '1:2', block_slice(text,*own_span), block_slice(text,*tail) if tail else ''
+    ls = max((comparison_score(text,r) for r in left_refs), default=0.)
+    left_ok = any(simplified(norm(r)) == x or (min(len(x),len(norm(r)))>=3 and ls>=.80) for r in left_refs)
+    right_ok = bool(following and (x == c or (min(len(x),len(c))>=3 and right>=.80)))
+    # Weaker relative evidence is useful near the corresponding temporal edge,
+    # not a universal threshold for short/shared phrases inside the segment.
+    if timestamp <= segment.start+1e-8 and ls>=.50 and ls>own+.20:
+        left_ok = True
+    if timestamp >= segment.end-1e-8 and right>=.50 and right>own+.20:
+        right_ok = True
+    if left_ok and ls>own+1e-9 and ls>right+1e-9:
+        return 'PREV','',''
+    if right_ok and right>own+1e-9 and right>ls+1e-9:
+        return 'NEXT','',''
+    # No confirmed boundary: retain the OCR even when current similarity is zero.
+    return 'OWN',text,''
+
+
 def scan_segment(segment: Segment, next_segment: Segment | None,
                  previous: ScanResult, duration: float, interval: float,
                  recognize, cancelled: threading.Event,
                  previous_segment: Segment | None = None, on_sample=None,
-                 all_segments=None, current_index=None, max_scans_per_side: int = 5) -> ScanResult:
-    validate_interval(interval); validate_scan_limit(max_scans_per_side)
-    midpoint = (segment.start+segment.end)/2
-    left_limit = max(0,(previous_segment.start+previous_segment.end)/2) if previous_segment else 0
-    right_limit = min(duration,(next_segment.start+next_segment.end)/2) if next_segment else duration
-    refs = [srt_reference(v.text) if v else "" for v in (previous_segment,segment,next_segment)]
-    ref = refs[1]; length = len(norm(ref))
-    short_srt = length == 2
-    if short_srt:
-        interval /= 2
-    extra_next = (all_segments[current_index+2].text if all_segments is not None and
-                  current_index is not None and current_index+2<len(all_segments) else "")
-    # A future block is cached ONLY by a validated partition, not by leftover text.
-    cached = previous.boundary_owner == segment.index and previous.raw and fits(previous.raw, ref)
-    if cached and not short_srt:
-        return ScanResult(text=previous.raw,raw=previous.raw,timestamp=previous.timestamp,
-                          reference=segment.text,parts=(previous.raw,),classification="1:N",
-                          boundary_owner=segment.index,used_frame=previous.used_frame,
-                          used_end=len(norm(previous.used_frame)),last_scan_reason="block đã phân bổ hợp lệ")
-    history=[]  # (raw, accepted, left boundary, right boundary), includes rejected readings
-    observations=[]  # (timestamp, selected OCR, raw OCR)
-    left_open=right_open=True; done=False
-    text=""; case="NO_TEXT"; boundary=""; owner=1; boundary_time=None
-    used_frame=previous.used_frame; used_end=previous.used_end
-    last_time=None; last_raw=""; last_reason=""
-    previous_update=""; previous_update_frame=""
-    if cached and short_srt:
-        t = previous.timestamp if previous.timestamp is not None else midpoint
-        observations = [(t, previous.raw, previous.used_frame or previous.raw)]
-        text = boundary = previous.raw
-        boundary_time = t
-        case = "1:N"
-    for distance in range(max_scans_per_side+1):
-        if done or not (left_open or right_open): break
-        for offset in ((0.,) if distance==0 else (-distance*interval,distance*interval)):
-            if cancelled.is_set(): return ScanResult()
-            if (offset<0 and not left_open) or (offset>0 and not right_open): continue
-            t=midpoint+offset
-            if t<left_limit or (previous_segment and t<=left_limit):
-                left_open=False; continue
-            if t>=right_limit:
-                right_open=False; continue
-            result=recognize(t); raw=result[0] if isinstance(result,tuple) else result
-            raw=raw or ""
-            selected=""; ls=rs=False; tail=""; tail_owner=1; reason="không có chữ"
-            if norm(raw):
-                # Compare full readings before any cut. Rejected variants remain rejected.
-                split=partition(raw,refs)
-                same_frame=bool(used_frame and frame_variant(raw,used_frame))
-                consumed=mapped_end(used_frame,raw,used_end) if same_frame else 0
-                # A genuine separate current subtitle outranks an old frame variant.
-                current_exact=(comparison_score(raw,ref)>=1 and
-                               comparison_score(raw,refs[0])<1 and norm(raw)!=norm(used_frame))
-                revised=fuller_previous(raw, previous, previous_segment, refs, split)
-                # A rejected earlier reading can still supply a fuller version of
-                # the previous owner's text; do this before inheriting rejection.
-                if revised and not current_exact:
-                    previous_update,previous_update_frame=revised,raw
-                    used_frame,used_end=raw,len(norm(raw))
-                    previous=replace(previous,text=revised,raw=raw,
-                                     parts=previous.parts[:-1]+(raw,),
-                                     used_frame=raw,used_end=used_end)
-                    ls=True; reason="OCR đầy đủ hơn của segment trước; cập nhật segment trước"
-                else:
-                    rejected=next((h for h in history if not h[1] and equivalent(raw,h[0])),None)
-                    if rejected and not current_exact and not split:
-                        ls,rs=rejected[2:]; reason="OCR cũ/tương đồng đã bị loại; bỏ qua"
-                    elif consumed and not current_exact:
-                        # Only a validated partition may allocate previously unused text.
-                        valid_split=bool(split and any(j==1 and a>=consumed for j,a,b in split))
-                        if valid_split:
-                            selected,ls,rs,tail,tail_owner,reason=assess(raw,refs,previous.raw,False,offset)
-                        else:
-                            ls=True; reason="OCR đã dùng; không có block còn lại khớp SRT"
-                    elif not split and future_only(raw,refs,extra_next):
-                        rs=True; reason="biên nội dung SRT phía sau"
-                    else:
-                        selected,ls,rs,tail,tail_owner,reason=assess(raw,refs,previous.raw,False,offset)
-                if ls: left_open=False
-                if rs and offset>=0: right_open=False
-                if short_srt and selected and not fits(selected, ref):
-                    selected = ""
-                    reason += "; OCR không đạt ngưỡng SRT 2 ký tự, bỏ qua"
-                if selected:
-                    if short_srt:
-                        # Keep the last valid reading in scan order, never concatenate.
-                        observations = [(t, selected, raw)]
-                        text = selected
-                        case = "1:N" if reason.startswith("1:N") else "1:1"
-                        boundary = tail; owner = tail_owner; boundary_time = t
-                        reason += "; OCR hợp lệ, tiếp tục quét SRT 2 ký tự"
-                    elif not observations:
-                        observations=[(t,selected,raw)]; text=selected
-                        case="1:N" if reason.startswith("1:N") else "1:1"
-                        boundary=tail; owner=tail_owner; boundary_time=t
-                        done=(case=="1:N" or len(norm(selected))>=length or span_in_reference(selected,ref) is None)
-                    else:
-                        candidate=list(observations)
-                        duplicate=next((i for i,o in enumerate(candidate) if equivalent(o[1],selected)),None)
-                        if duplicate is not None:
-                            old=candidate[duplicate]
-                            if len(norm(selected))>len(norm(old[1])) and comparison_score(selected,ref)>comparison_score(old[1],ref):
-                                candidate[duplicate]=(t,selected,raw)
-                            else:
-                                candidate=None; reason+="; OCR tương đồng, bỏ qua"
-                        else:
-                            new_span=span_in_reference(selected,ref)
-                            if new_span is None:
-                                candidate=None; reason+="; không khớp phần SRT hiện tại"
-                            elif any((old_span:=span_in_reference(o[1],ref)) and
-                                     max(0,min(old_span.end,new_span.end)-max(old_span.start,new_span.start))/min(old_span.end-old_span.start,new_span.end-new_span.start)>=.7 for o in candidate):
-                                candidate=None; reason+="; OCR cùng vị trí SRT, bỏ qua"
-                            else:
-                                candidate.append((t,selected,raw))
-                        if candidate is not None:
-                            candidate.sort(key=lambda o:o[0])
-                            merged=join_ocr_fragments([o[1] for o in candidate])
-                            block,bl,br,bt,bo,why=assess(merged,refs,previous.raw,False,offset)
-                            if bl: left_open=False
-                            if br and offset>=0: right_open=False
-                            # A trial merge may not take text belonging to either neighbor.
-                            if block and comparison_score(block,ref)>comparison_score(text,ref)+1e-9 and not (bl or br):
-                                observations=candidate; text=block
-                                case="N:1" if len(candidate)>1 else "1:1"
-                                boundary=candidate[-1][1]; owner=1; boundary_time=candidate[-1][0]
-                                done=len(norm(text))>=length or comparison_score(text,ref)>=1.
-                                reason+="; ghép hợp lệ"
-                            else:
-                                reason+="; không chấp nhận ghép"
-                    if done: reason+="; chuyển segment"
-                    else: reason+="; quét thêm"
-                history.append((raw,bool(selected and any(o[2]==raw for o in observations)),ls,rs))
-            if on_sample: on_sample(t,raw,reason)
-            last_time,last_raw,last_reason=t,raw,reason
-            if done: break
-    if not text:
-        return ScanResult(reference=segment.text,last_scan_time=last_time,last_scan_raw=last_raw,last_scan_reason=last_reason,
-                          used_frame=used_frame,used_end=used_end,
-                          previous_update=previous_update,previous_update_frame=previous_update_frame)
-    last=sorted(observations,key=lambda o:o[0])[-1]
-    frame=last[2]; fragment=last[1]
-    start=simplified(norm(frame)).find(simplified(norm(fragment)))
-    end_used=start+len(norm(fragment)) if start>=0 else len(norm(frame))
-    owner_segment=(previous_segment,segment,next_segment)[owner]
-    return ScanResult(text,boundary,boundary_time,segment.text,tuple(o[1] for o in observations),
-                      last_time,last_raw,last_reason,case,owner_segment.index if owner_segment else None,frame,end_used,
-                      previous_update=previous_update,previous_update_frame=previous_update_frame)
+                 all_segments=None, current_index=None, extension: float = 1.0,
+                 short_fallback: bool = False, short_interval: float = 0.125) -> ScanResult:
+    import math
+    validate_interval(interval); validate_interval(short_interval); validate_extension(extension)
+    ref = clean_ocr(srt_reference(segment.text))
+    is_short = len(norm(ref)) <= 2
+    anchor = previous.last_valid_ocr
+    prior_ref = clean_ocr(srt_reference(previous_segment.text)) if previous_segment else ''
+    following = clean_ocr(srt_reference(next_segment.text)) if next_segment else ''
+    lo = max(0., segment.start-extension)
+    if previous.timestamp is not None:
+        lo = max(lo, previous.timestamp)
+    elif previous_segment:
+        lo = max(lo, previous_segment.end)
+    # Preserve the old time limits, including exclusion of the next SRT start.
+    hi = min(segment.end+extension, math.nextafter(duration, -math.inf),
+             math.nextafter(next_segment.start, -math.inf) if next_segment else duration)
+    # A microsecond margin avoids rounding an exclusive upper bound back onto it.
+    if next_segment and hi >= next_segment.start-1e-8:
+        hi = next_segment.start-1e-6
+    if hi >= duration-1e-8:
+        hi = duration-1e-6
+    observed = {}
+    last = (None, '', 0.)
+    deferred = []
+    def log(t, text, reason):
+        if on_sample: on_sample(t, text, reason)
+    def sample(t):
+        nonlocal last
+        t = round(t, 9)
+        if t in observed:
+            raw, score = observed[t]
+            log(t, raw, f'CACHE | confidence={score:.4f}')
+        else:
+            if previous.boundary_raw and previous.timestamp is not None and abs(t-previous.timestamp)<1e-8:
+                value = (previous.boundary_raw, previous.confidence)
+            else:
+                value = recognize(t)
+            raw, score = value if isinstance(value, tuple) else (value, 0.)
+            raw, score = raw or '', float(score)
+            if not raw: score = 0.0
+            observed[t] = (raw, score)
+            log(t, raw, f'QUÉT | confidence={score:.4f}')
+        last = (t, raw, score)
+        return OCRBlock(raw, raw, t, score, t, t)
+    def allocate(block):
+        return allocate_block(block.text, ref, anchor, prior_ref, following,
+                              block.timestamp, segment, previous.timestamp)
+    def result(selected, classification):
+        if not selected:
+            return ScanResult(text=NOT_FOUND, reference=segment.text, last_valid_ocr=anchor,
+                timestamp=previous.timestamp, confidence=previous.confidence,
+                boundary_raw=previous.boundary_raw, boundary_owner=previous.boundary_owner, used_frame=previous.used_frame,
+                used_end=previous.used_end, last_scan_time=last[0], last_scan_raw=last[1],
+                last_scan_reason='EMPTY', classification='NO_TEXT')
+        selected = sorted(selected, key=lambda item:item[0].timestamp)
+        parts = tuple(item[1] for item in selected)
+        b,text,_ = selected[-1]
+        for item,part,tail in selected:
+            log(item.timestamp,part,f'BLOCK CHỌN | confidence={item.confidence:.4f}')
+            if tail and next_segment:
+                deferred.append(replace(item,text=tail,raw=tail))
+                log(item.timestamp,tail,'CHUYỂN BLOCK | phần SRT kế tiếp')
+        return ScanResult(text=join_ocr_fragments(list(parts)), raw=text, timestamp=b.timestamp,
+            confidence=b.confidence, boundary_raw=text, parts=parts, classification=classification,
+            boundary_owner=segment.index,last_valid_ocr=text,used_frame=clean_ocr(b.text),used_end=len(norm(text)),
+            reference=segment.text,last_scan_time=last[0],last_scan_raw=last[1],
+            last_scan_reason=classification,deferred_blocks=tuple(deferred),
+            deferred_owner=next_segment.index if deferred and next_segment else None)
+    def finish_empty():
+        empty = result([], 'NO_TEXT')
+        if is_short and short_fallback and norm(ref):
+            return replace(empty,text='B+'+segment.text,classification='SRT_FALLBACK')
+        return empty
+
+    def same_reading(a, b):
+        # Three-character readings may differ by one OCR substitution (委屈了 / 季屈了).
+        # Preserve distinct numeric/ordinal subtitles rather than merging 第二世 / 第三世.
+        x, y = simplified(norm(a)), simplified(norm(b))
+        if x == y: return bool(x)
+        if re.findall(r'[0-9]+', number_key(x)) != re.findall(r'[0-9]+', number_key(y)):
+            return False
+        if sample_variant(a,b): return True
+        return len(x)==len(y) and len(x)>=3 and sum(i!=j for i,j in zip(x,y))==1
+
+    def choose_block(candidates, initial=None):
+        """One accumulator for both primary and supplemental blocks.
+        Never compare confidence across different text blocks. Preserve the
+        first different sample as lookahead; no further OCR after a transition.
+        """
+        best = initial
+        if best and best[0].confidence > STANDARD_CONFIDENCE:
+            return best, None, 'CONFIDENCE'
+        for event, candidate in candidates:
+            if cancelled.is_set(): return None, None, 'CANCELLED'
+            if event == 'BOUNDARY':
+                if best is not None: return best, None, 'BOUNDARY'
+                continue
+            if candidate is None: continue
+            block, text, _ = candidate
+            if best is None:
+                best = candidate
+                log(block.timestamp,text,'KHỞI TẠO BLOCK')
+            elif not same_reading(text,best[1]):
+                log(block.timestamp,text,'CHUYỂN BLOCK | chốt block đang xét; giữ mẫu mới')
+                return best, candidate, 'TRANSITION'
+            elif block.confidence > best[0].confidence:
+                best = candidate
+                log(block.timestamp,text,'CẬP NHẬT BLOCK | confidence cao hơn')
+            if best[0].confidence > STANDARD_CONFIDENCE:
+                return best,None,'CONFIDENCE'
+        return best,None,'EXHAUSTED'
+
+    def commit(candidate):
+        b, text, tail = candidate
+        return b, clean_ocr(text), clean_ocr(tail)
+
+    def announce(candidate, reason, label='BLOCK CHUẨN'):
+        b, text, _ = candidate
+        log(b.timestamp,text,f'{label} | confidence={b.confidence:.4f}; chốt={reason}')
+
+    if lo>hi or cancelled.is_set(): return finish_empty()
+
+    def primary_samples():
+        nonlocal lo,hi
+        if is_short:
+            count=int(math.floor((hi-lo)/short_interval+1e-9))
+            times=[min(hi,lo+i*short_interval) for i in range(count+1)]
+            if hi-times[-1]>1e-8: times.append(hi)
+            for t in times:
+                if cancelled.is_set(): return
+                b=sample(t); kind,text,tail=allocate(b)
+                if kind in ('PREV','NEXT'):
+                    log(t,b.text,f'BIÊN | {kind}')
+                    yield 'BOUNDARY',None
+                    if kind=='NEXT': return
+                elif text: yield 'TEXT',(b,text,tail)
+            return
+        mid=min(hi,max(lo,(segment.start+segment.end)/2))
+        left_open=right_open=True
+        k=0
+        while left_open or right_open:
+            if cancelled.is_set(): return
+            points=[('mid',mid)] if k==0 else ([('left',max(lo,mid-k*interval))] if left_open else [])+([('right',min(hi,mid+k*interval))] if right_open else [])
+            for direction,t in points:
+                if (direction=='left' and not left_open) or (direction=='right' and not right_open): continue
+                if t<lo-1e-8 or t>hi+1e-8: continue
+                if cancelled.is_set(): return
+                b=sample(t); kind,text,tail=allocate(b)
+                if kind=='PREV':
+                    left_open=False; lo=max(lo,t)
+                    log(t,b.text,'EMPTY | ĐÓNG BIÊN TRÁI')
+                    yield 'BOUNDARY',None
+                elif kind=='NEXT':
+                    right_open=False; hi=min(hi,t)
+                    log(t,b.text,'EMPTY | ĐÓNG BIÊN PHẢI')
+                    yield 'BOUNDARY',None
+                elif text:
+                    yield 'TEXT',(b,text,tail)
+                if direction in ('left','mid') and t<=lo+1e-8: left_open=False
+                if direction in ('right','mid') and t>=hi-1e-8: right_open=False
+            k+=1
+
+    standard, pending, reason=choose_block(primary_samples())
+    if cancelled.is_set(): return ScanResult()
+    if standard is None and previous.deferred_owner==segment.index:
+        for b in previous.deferred_blocks:
+            if not lo-1e-8<=b.timestamp<=hi+1e-8: continue
+            kind,text,tail=allocate(b)
+            if kind in ('OWN','1:2') and text:
+                standard=(b,text,tail); reason='TRANSFER'; break
+    if standard is None: return finish_empty()
+    standard = commit(standard)
+    announce(standard,reason)
+    b,text,tail=standard
+    kind,_,_=allocate(b)
+    if is_short: return result([standard],'1:1')
+    if kind=='1:2': log(b.timestamp,text,'SO KHỚP | 1:2 | tách theo SRT liền kề')
+    delta=len(norm(ref))-len(norm(text)); score=comparison_score(text,ref)
+    log(b.timestamp,text,f'SO KHỚP | SRT={len(norm(ref))}; OCR={len(norm(text))}; thiếu={delta}; similarity={score:.2%}; ngưỡng={match_threshold(len(norm(ref))):.2%}')
+    missing_info=missing_block(text,ref)
+    if missing_info is None:
+        return result([standard],'1:2' if kind=='1:2' else '1:1')
+    direction,missing=missing_info
+    right=direction=='right'
+    log(b.timestamp,text,f'2:1 | thiếu phía {"phải" if right else "trái"}: {missing}; bước={short_interval:g}s')
+    edge=hi if right else lo
+    def in_missing_side(t):
+        return b.timestamp+1e-8<t<=hi+1e-8 if right else lo-1e-8<=t<b.timestamp-1e-8
+    def secondary_part(other,part,other_tail):
+        if not part: return None
+        x,y=simplified(norm(part)),simplified(norm(text))
+        if same_reading(part,text) or x in y: return None
+        if y in x:
+            if not right and x.endswith(y): part=block_slice(part,0,len(x)-len(y))
+            elif right and x.startswith(y): part=block_slice(part,len(y),len(x))
+            else: return None
+        return (other,part,other_tail) if part and not same_reading(part,text) else None
+    initial=None
+    if pending and in_missing_side(pending[0].timestamp):
+        initial=secondary_part(*pending)
+        if initial: log(initial[0].timestamp,initial[1],'BỔ SUNG | tận dụng mẫu chuyển block')
+    def supplemental_samples():
+        entered=False
+        entry_owner='NEXT' if right else 'PREV'
+        j=0
+        while True:
+            if cancelled.is_set(): return
+            t=edge-j*short_interval if right else edge+j*short_interval
+            if not in_missing_side(t): return
+            j+=1
+            if initial and abs(t-initial[0].timestamp)<1e-8:
+                entered=True
+                continue
+            other=sample(t); owner,part,other_tail=allocate(other)
+            if owner in ('PREV','NEXT'):
+                if not entered and owner==entry_owner:
+                    log(t,other.text,f'BỔ SUNG | bỏ qua biên xuất phát {owner}')
+                    continue
+                log(t,other.text,f'DỪNG BỔ SUNG | phạm biên {owner}')
+                yield 'BOUNDARY',None
+                return
+            if not part: continue
+            entered=True
+            candidate=secondary_part(other,part,other_tail)
+            if candidate is None:
+                log(t,part,'BỔ SUNG | trùng hoặc chồng lấn block chuẩn')
+                continue
+            yield 'TEXT',candidate
+    second, third, second_reason=choose_block(supplemental_samples(),initial)
+    if cancelled.is_set(): return ScanResult()
+    if second is None:
+        log(b.timestamp,text,'KẾT THÚC BỔ SUNG | không có block thứ hai; giữ block chuẩn')
+        return result([standard],'2:1_PARTIAL')
+    second = commit(second)
+    announce(second,second_reason,'BLOCK CHUẨN 2')
+    # Recompare in timeline order; never let block 2 replace block 1.
+    merged=join_ocr_fragments([item[1] for item in sorted([standard,second],key=lambda x:x[0].timestamp)])
+    merged_score=comparison_score(merged,ref)
+    # A clearly worse fit with excessive length is evidence of over-merge;
+    # do not require the supplemental OCR to equal inaccurate ASR text.
+    if len(norm(merged))-len(norm(ref))>2 and merged_score+1e-9<score:
+        log(second[0].timestamp,second[1],'LOẠI BLOCK 2 | ghép thừa, so khớp giảm')
+        return result([standard],'2:1_PARTIAL')
+    log(second[0].timestamp,second[1],f'SO KHỚP SAU GHÉP | similarity={merged_score:.2%}; giới hạn 2 block')
+    return result([standard,second],'2:1')
 
 
-def initialize_cuda_ocr(report):
+def initialize_cuda_ocr(report, det_model="small", rec_model="medium",
+                        default_model=False, method="Det+Rec", text_score=0.5):
     """Start RapidOCR on CUDA and verify real detection/recognition sessions.
     Reject silent CPU fallback. Requires ONNX Runtime GPU and NVIDIA CUDA DLLs.
     """
     import cv2
     import numpy as np
     import onnxruntime as ort
-    from rapidocr import RapidOCR
+    from rapidocr import RapidOCR, EngineType, ModelType, OCRVersion
     report("log", "Đang nạp CUDA/cuDNN từ môi trường Python...")
     # directory='' discovers NVIDIA wheels in this exact virtual environment.
     ort.preload_dlls(directory="")
     if "CUDAExecutionProvider" not in ort.get_available_providers():
         raise RuntimeError("ONNX Runtime không có CUDAExecutionProvider. Hãy kiểm tra onnxruntime-gpu.")
     report("log", "Đang khởi tạo RapidOCR bằng GPU CUDA...")
-    engine = RapidOCR(params={"EngineConfig.onnxruntime.use_cuda": True})
+    report("log", f"PP-OCRv6: Detection={det_model}, Recognition={rec_model}")
+    params = {
+        "EngineConfig.onnxruntime.use_cuda": True,
+        "Det.engine_type": EngineType.ONNXRUNTIME,
+        "Det.ocr_version": OCRVersion.PPOCRV6,
+        "Det.model_type": ModelType(det_model),
+        "Det.lang_type": "ch",
+        "Rec.engine_type": EngineType.ONNXRUNTIME,
+        "Rec.ocr_version": OCRVersion.PPOCRV6,
+        "Rec.model_type": ModelType(rec_model),
+        "Rec.lang_type": "ch",
+    }
+    if default_model:
+        params = {"EngineConfig.onnxruntime.use_cuda": True}
+    engine = RapidOCR(params=params)
+    report("log", f"Model thực tế: {engine.cfg.Det.ocr_version}/{engine.cfg.Det.model_type}, "
+                  f"{engine.cfg.Rec.ocr_version}/{engine.cfg.Rec.model_type}")
     # RapidOCR lazily creates ONNX sessions. Trigger BOTH detector and recognizer.
     # White test images alone do not create a recognition session.
     sample = np.full((160, 800, 3), 255, dtype=np.uint8)
     cv2.putText(sample, "HELLO WORLD", (50, 100),
                 cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 0), 4)
-    probe = engine(sample)
-    probe_text = getattr(probe, "txts", None) or ()
-    if not probe_text:
+    full = method == "Det+Rec"
+    probe = engine(sample, use_det=full, use_cls=full, use_rec=True, text_score=0.5)
+    probe_text = getattr(probe, "txts", None)
+    if probe_text is None or len(probe_text) == 0:
         raise RuntimeError("Không kích hoạt được mô hình Recognition trong bước thử GPU.")
     checked = []
-    for label, component in (("Detection", engine.text_det),
-                             ("Recognition", engine.text_rec)):
+    components = [("Recognition", engine.text_rec)]
+    if full:
+        components.insert(0, ("Detection", engine.text_det))
+    for label, component in components:
         # In RapidOCR 3.10.0: component.session = OrtInferSession;
         # component.session.session = onnxruntime.InferenceSession.
         real_session = getattr(getattr(component, "session", None), "session", None)
@@ -781,7 +1100,7 @@ def initialize_cuda_ocr(report):
         if not providers or providers[0] != "CUDAExecutionProvider":
             raise RuntimeError(f"{label} không sử dụng CUDA; đã chặn chạy ngầm trên CPU: {providers}")
         checked.append(label)
-    report("log", "GPU CUDA OK: Detection + Recognition. Bắt đầu xử lý SRT.")
+    report("log", f"GPU CUDA OK: {method}. Bắt đầu xử lý SRT.")
     return engine
 
 def output_similarity(first: str, second: str, threshold=None) -> float:
@@ -810,7 +1129,11 @@ def _output_similarity(first: str, second: str) -> float:
     return 1 - row[-1] / max(len(a), len(b))
 
 def ocr_worker(video_path: Path, srt_path: Path, region, output: Path,
-               report, cancelled: threading.Event, interval: float, max_scans_per_side: int = 5):
+               report, cancelled: threading.Event, interval: float, extension: float = 1.0,
+               short_fallback: bool = False, det_model: str = "small",
+               rec_model: str = "medium", image_mode: str = "Original",
+               method: str = "Det+Rec", seek: str = "Timestamp", text_score: float = 0.5,
+               default_model: bool = True, short_interval: float = 0.125):
     import cv2
     segments = read_srt(srt_path)
     report("total", len(segments))
@@ -818,7 +1141,9 @@ def ocr_worker(video_path: Path, srt_path: Path, region, output: Path,
         report("done", str(output))
         return
     chinese_converter()
-    engine = initialize_cuda_ocr(report)
+    validate_ocr_options(image_mode, method, seek, text_score)
+    engine = initialize_cuda_ocr(report, det_model, rec_model, default_model, method, text_score)
+    report("log", f"OCR: {image_mode} | {method} | {seek} | Text score={text_score:g}")
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
         raise RuntimeError(f"Không thể mở video: {video_path}")
@@ -829,23 +1154,60 @@ def ocr_worker(video_path: Path, srt_path: Path, region, output: Path,
         if duration is None or duration <= 0:
             raise RuntimeError("Không xác định được thời lượng video để giới hạn quét.")
         previous = ScanResult()
-        with output.open("w", encoding="utf-8-sig", newline="\n") as stream:
+        sample_path = output.with_name(output.stem + f"_ocr_samples_{time.time_ns()}.jsonl")
+        report("log", f"Dữ liệu OCR thô: {sample_path}")
+        with output.open("w", encoding="utf-8-sig", newline="\n") as stream, \
+                sample_path.open("x", encoding="utf-8", newline="\n") as samples:
+            samples.write(json.dumps({"type": "settings", "video": str(video_path), "srt": str(srt_path),
+                "region": list(region), "fps": fps, "image_mode": image_mode, "method": method,
+                "seek": seek, "text_score": text_score, "default_model": default_model,
+                "model_config": str(engine.cfg), "interval": interval, "short_interval": short_interval, "extension": extension}, ensure_ascii=False) + "\n")
+            samples.flush()
+            from collections import OrderedDict
+            attempted_frames = OrderedDict()
             previous_record_offset = None
             for seq, segment in enumerate(segments, 1):
-                attempted_frames = set()
                 def recognize(target):
-                    frame_id = round(target * fps)
-                    if frame_id in attempted_frames:
-                        return ""
-                    attempted_frames.add(frame_id)
-                    capture.set(cv2.CAP_PROP_POS_MSEC, target * 1000.0)
+                    frame_id = max(0, min(frames-1, int(target * fps + 1e-9)))
+                    # Timestamp and frame-index seeking do not necessarily return the same frame.
+                    key = frame_id if seek == "Frame index" else round(target, 9)
+                    if key in attempted_frames:
+                        attempted_frames.move_to_end(key)
+                        return attempted_frames[key]
+                    if seek == "Frame index":
+                        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+                    else:
+                        capture.set(cv2.CAP_PROP_POS_MSEC, target * 1000.0)
                     valid, frame = capture.read()
                     if not valid:
+                        report("log", f"Không đọc được frame @ {target:.3f}s")
                         return ""
-                    crop = crop_region(frame, region)
+                    crop = crop_region(frame, region).copy()
                     if crop.size == 0:
                         return ""
-                    return extract_text(engine(crop))
+                    reported_frame = capture.get(cv2.CAP_PROP_POS_FRAMES) - 1
+                    reported_msec = capture.get(cv2.CAP_PROP_POS_MSEC)
+                    begin = time.perf_counter()
+                    result = run_ocr_image(engine, crop, cv2, image_mode, method, text_score)
+                    elapsed = (time.perf_counter() - begin) * 1000
+                    text, confidence = extract_text(result, text_score)
+                    def values(name):
+                        v = getattr(result, name, None)
+                        return [] if v is None else list(v)
+                    fragments = [str(v) for v in values("txts")]
+                    scores = [float(v) for v in values("scores")]
+                    boxes = [v.tolist() if hasattr(v, "tolist") else v for v in values("boxes")]
+                    samples.write(json.dumps({"type": "sample", "segment": segment.index,
+                        "requested_s": target, "reported_frame": reported_frame,
+                        "reported_msec": reported_msec, "text": text, "fragments": fragments,
+                        "scores": scores, "clean_confidence": confidence, "boxes": boxes, "elapsed_ms": round(elapsed, 2)},
+                        ensure_ascii=False) + "\n")
+                    samples.flush()
+                    report("log", f"OCR raw @ {target:.3f}s | {' | '.join(fragments) or 'EMPTY'} | {scores} | {elapsed:.0f}ms")
+                    attempted_frames[key] = (text, confidence)
+                    if len(attempted_frames) > 512:
+                        attempted_frames.popitem(last=False)
+                    return attempted_frames[key]
                 def explain_sample(target, recognized, reason):
                     report("log", f"Segment {segment.index} @ {target:.3f}s: "
                            + (recognized or "(không có chữ)") + f" [{reason}]")
@@ -854,24 +1216,19 @@ def ocr_worker(video_path: Path, srt_path: Path, region, output: Path,
                 result = scan_segment(segment, following, previous, duration,
                                       interval, recognize, cancelled, preceding, explain_sample,
                                       all_segments=segments, current_index=seq-1,
-                                      max_scans_per_side=max_scans_per_side)
+                                      extension=extension, short_fallback=short_fallback, short_interval=short_interval)
                 if result.last_scan_time is not None:
-                    report("log", f"Segment {segment.index} dừng sau lượt OCR cuối "
+                    report("log", f"Segment {segment.index} kết thúc quét tại "
                            f"@ {result.last_scan_time:.3f}s: "
                            f"{result.last_scan_raw or '(không có chữ)'} "
                            f"[{result.last_scan_reason}]")
                 if result.timestamp is not None and result.raw:
                     report("log", f"Segment {segment.index} OCR đã chấp nhận làm biên trái cho segment sau "
-                           f"@ {result.timestamp:.3f}s: {result.raw or '(không có chữ)'}")
-                # SRT fallback affects output only; never create an OCR anchor.
-                text = result.text if result.parts else NOT_FOUND
+                           f"@ {result.timestamp:.3f}s: {result.raw or '(không có chữ)'} | confidence={result.confidence:.4f}")
+                text = result.text
                 classification = result.classification
-                if not result.parts and len(norm(srt_reference(segment.text))) <= 2:
-                    text = "@" + segment.text
-                    classification = "SRT_FALLBACK"
-                    report("log", f"Segment {segment.index}: không có OCR hợp lệ; giữ nguyên SRT tối đa 2 ký tự")
                 report("log", f"Segment {segment.index}: {classification} | {text}")
-                # Reset on NO_TEXT too: never carry an older segment's anchor.
+                # Keep immediate record state; last_valid_ocr carries the boundary across NO_TEXT.
                 previous = result
                 if cancelled.is_set():
                     report("log", "Đã dừng theo yêu cầu. Những segment hoàn thành đã được lưu.")
@@ -880,11 +1237,11 @@ def ocr_worker(video_path: Path, srt_path: Path, region, output: Path,
                     # Only the immediately preceding record is revised. Preserve all
                     # completed earlier records and flush the corrected file as before.
                     stream.seek(previous_record_offset)
-                    stream.write(f"{preceding.index}\n{result.previous_update}\n\n")
+                    stream.write(srt_record(preceding, result.previous_update))
                     stream.truncate()
                     report("log", f"Cập nhật segment {preceding.index}: {result.previous_update}")
                 previous_record_offset = stream.tell()
-                stream.write(f"{segment.index}\n{text}\n\n")
+                stream.write(srt_record(segment, text))
                 stream.flush()
                 report("progress", (seq, segment.index, text[:90]))
     finally:
@@ -894,9 +1251,9 @@ def ocr_worker(video_path: Path, srt_path: Path, region, output: Path,
 class OCRApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("OCR Tool — SRT + vùng phụ đề (GPU CUDA)")
-        root.geometry("820x700")
-        root.minsize(700, 610)
+        root.title("OCR Tool V25 — SRT + vùng phụ đề (GPU CUDA)")
+        root.geometry("900x900")
+        root.minsize(700, 690)
         self.video = tk.StringVar()
         self.srt = tk.StringVar()
         self.json_path = tk.StringVar()
@@ -905,7 +1262,16 @@ class OCRApp:
         self.status = tk.StringVar(value="Sẵn sàng")
         self.percent = tk.StringVar(value="0 / 0")
         self.scan_interval = tk.StringVar(value="0.25")
-        self.max_scans_per_side = tk.StringVar(value="5")
+        self.short_interval = tk.StringVar(value="0.125")
+        self.extension = tk.StringVar(value="1")
+        self.det_model = tk.StringVar(value="small")
+        self.rec_model = tk.StringVar(value="small")
+        self.default_model = tk.BooleanVar(value=True)
+        self.image_mode = tk.StringVar(value="Original")
+        self.ocr_method = tk.StringVar(value="Det+Rec")
+        self.seek_mode = tk.StringVar(value="Timestamp")
+        self.text_score = tk.StringVar(value="0.5")
+        self.short_fallback = tk.BooleanVar(value=False)
         self.scan_summary = tk.StringVar()
         self.queue = queue.Queue()
         self.stop_event = threading.Event()
@@ -914,7 +1280,8 @@ class OCRApp:
         self.selector_json = None
         self.build()
         self.scan_interval.trace_add("write", self.update_scan_summary)
-        self.max_scans_per_side.trace_add("write", self.update_scan_summary)
+        self.short_interval.trace_add("write", self.update_scan_summary)
+        self.extension.trace_add("write", self.update_scan_summary)
         self.update_scan_summary()
         self.root.after(150, self.poll)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -933,18 +1300,57 @@ class OCRApp:
         ttk.Label(region_box, textvariable=self.region_text, font=("Consolas", 10)).pack(anchor="w", pady=(9, 1))
         ttk.Label(region_box, textvariable=self.json_path, foreground="#555555", wraplength=750).pack(anchor="w")
         self.row(pad, "3. File SRT", self.srt, self.pick_srt, "Chọn SRT")
-        self.row(pad, "4. File TXT kết quả", self.output, self.pick_output, "Nơi lưu TXT")
-        ttk.Label(pad, text="Đầu ra: ưu tiên OCR; nếu không có OCR, giữ SRT tối đa 2 ký tự").pack(anchor="w", pady=(0, 6))
-        scan_box = ttk.LabelFrame(pad, text="5. Quét giữa → trái → phải, ngưỡng theo số chữ SRT", padding=10)
+        self.row(pad, "4. File SRT kết quả", self.output, self.pick_output, "Nơi lưu SRT")
+        ttk.Label(pad, text="Đầu ra: OCR hợp lệ; không tìm thấy ghi A hoặc B+SRT theo tùy chọn").pack(anchor="w", pady=(0, 6))
+        scan_box = ttk.LabelFrame(pad, text="5. Quét Midpoint / biên", padding=10)
         scan_box.pack(fill="x", pady=(3, 10))
         scan_line = ttk.Frame(scan_box)
         scan_line.pack(fill="x")
-        ttk.Label(scan_line, text="Khoảng cách (giây):").pack(side="left")
+        ttk.Label(scan_line, text="Bước quét SRT > 2 ký tự (giây):").pack(side="left")
         ttk.Entry(scan_line, textvariable=self.scan_interval, width=9).pack(side="left", padx=(6, 0))
-        ttk.Label(scan_line, text="Số lần quét tối đa mỗi phía:").pack(side="left", padx=(16, 0))
-        ttk.Entry(scan_line, textvariable=self.max_scans_per_side, width=7).pack(side="left", padx=(6, 0))
+        ttk.Label(scan_line, text="Mở rộng mỗi phía (giây):").pack(side="left", padx=(16, 0))
+        ttk.Entry(scan_line, textvariable=self.extension, width=7).pack(side="left", padx=(6, 0))
+        short_line = ttk.Frame(scan_box)
+        short_line.pack(fill="x", pady=(6, 0))
+        ttk.Label(short_line, text="Bước quét SRT ≤ 2 ký tự (giây):").pack(side="left")
+        ttk.Entry(short_line, textvariable=self.short_interval, width=9).pack(side="left", padx=(6, 0))
         ttk.Label(scan_box, textvariable=self.scan_summary, foreground="#555555",
                   wraplength=770).pack(anchor="w", pady=(8, 0))
+        ttk.Checkbutton(scan_box, text="SRT ≤ 2 ký tự: nếu không có OCR, xuất B+SRT text",
+                        variable=self.short_fallback).pack(anchor="w", pady=(6, 0))
+        model_box = ttk.LabelFrame(pad, text="6. Model OCR — PP-OCRv6", padding=10)
+        model_box.pack(fill="x", pady=(0, 10))
+        ttk.Label(model_box, text="Detection:").pack(side="left")
+        self.det_select = ttk.Combobox(model_box, textvariable=self.det_model,
+                                       values=("tiny", "small", "medium"), state="readonly", width=10)
+        self.det_select.pack(side="left", padx=(6, 18))
+        ttk.Label(model_box, text="Recognition:").pack(side="left")
+        self.rec_select = ttk.Combobox(model_box, textvariable=self.rec_model,
+                                       values=("tiny", "small", "medium"), state="readonly", width=10)
+        self.rec_select.pack(side="left", padx=(6, 0))
+        # Single configuration per run, unlike the diagnostic matrix in OCR Test.
+        model_default = ttk.Checkbutton(pad, text="Default V10 (model mặc định RapidOCR)",
+                                        variable=self.default_model, command=self.update_model_controls)
+        model_default.pack(anchor="w")
+        self.default_check = model_default
+        image_box = ttk.LabelFrame(pad, text="7. Xử lý ảnh / OCR (từ OCR Test)", padding=8)
+        image_box.pack(fill="x", pady=(4, 8))
+        line = ttk.Frame(image_box); line.pack(fill="x")
+        self.ocr_controls = []
+        for label, var, opts, width in (("Ảnh:", self.image_mode, IMAGE_MODES, 17),
+                                       ("OCR:", self.ocr_method, OCR_METHODS, 10),
+                                       ("Đọc frame:", self.seek_mode, SEEK_MODES, 12)):
+            ttk.Label(line, text=label).pack(side="left", padx=(0, 4))
+            control = ttk.Combobox(line, textvariable=var, values=opts, state="readonly", width=width)
+            control.pack(side="left", padx=(0, 9)); self.ocr_controls.append(control)
+        ttk.Label(line, text="Score:").pack(side="left")
+        self.score_entry = ttk.Entry(line, textvariable=self.text_score, width=5)
+        self.score_entry.pack(side="left", padx=4)
+        ttk.Label(image_box, text="Original: ảnh gốc | Grayscale: ảnh xám | Otsu: đen trắng | Upscale: phóng to 2x",
+                  foreground="#555555", wraplength=820).pack(anchor="w", pady=(6, 0))
+        ttk.Label(image_box, text="Det+Rec: tìm và đọc chữ | Rec only: đọc cả vùng crop | Score: ngưỡng tin cậy 0–1",
+                  foreground="#555555", wraplength=820).pack(anchor="w")
+        self.update_model_controls()
         commands = ttk.Frame(pad)
         commands.pack(fill="x")
         self.run_button = ttk.Button(commands, text="▶ BẮT ĐẦU OCR", command=self.start)
@@ -963,19 +1369,30 @@ class OCRApp:
         self.logbox.configure(yscrollcommand=scroll.set)
         self.logbox.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+    def update_model_controls(self):
+        state = "disabled" if self.running or self.default_model.get() else "readonly"
+        self.det_select.configure(state=state)
+        self.rec_select.configure(state=state)
+
+    def set_ocr_controls(self, running):
+        self.default_check.configure(state="disabled" if running else "normal")
+        for control in self.ocr_controls:
+            control.configure(state="disabled" if running else "readonly")
+        self.score_entry.configure(state="disabled" if running else "normal")
+        self.update_model_controls()
+
     def update_scan_summary(self, *_):
         try:
             step = validate_interval(float(self.scan_interval.get().strip().replace(",", ".")))
-            limit = validate_scan_limit(int(self.max_scans_per_side.get().strip()))
+            short_step = validate_interval(float(self.short_interval.get().strip().replace(",", ".")))
+            extension = validate_extension(float(self.extension.get().strip().replace(",", ".")))
             self.scan_summary.set(
-                f"Tối đa {limit} lần mỗi phía + 1 midpoint = {2*limit+1} lượt. "
-                f"Midpoint → -{step:g}s → +{step:g}s → -{2*step:g}s → +{2*step:g}s… "
-                "SRT đúng 2 ký tự: bước quét bằng một nửa, không ghép, lấy OCR hợp lệ cuối. "
-                "Các SRT khác giữ nguyên quy tắc quét. Phân loại 1:1, 1:N, N:1; "
-                "ưu tiên OCR; không có OCR: giữ SRT tối đa 2 ký tự, còn lại ghi Không thấy chữ. Biên: "
-                + MATCH_RULES)
+                f"Quét Midpoint trái/phải; mở rộng {extension:g}s mỗi phía, bước {step:g}s. "
+                f"SRT ≤ 2 ký tự: bước {short_step:g}s. "
+                "SRT > 2: chốt confidence > 95%; tối đa 2 block. SRT ≤ 2: trái → phải, chốt > 95%, 1:1. Case 2:1 dùng bước quét ngắn; dừng khi đủ 2 block sạch hoặc phạm biên. "
+                "Không có OCR: A. Biên trái: OCR hợp lệ gần nhất (giữ qua A); biên phải: SRT kế tiếp. " + MATCH_RULES)
         except (ValueError, OverflowError):
-            self.scan_summary.set("Nhập khoảng cách > 0 đến 60 giây và số lần quét mỗi phía là số nguyên dương.")
+            self.scan_summary.set("Nhập cả hai bước quét > 0 đến 60 giây và thời gian mở rộng >= 0.")
     def row(self, parent, title, var, callback, button_label):
         ttk.Label(parent, text=title, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(4, 3))
         line = ttk.Frame(parent)
@@ -996,11 +1413,11 @@ class OCRApp:
         picked = filedialog.askopenfilename(title="Chọn file SRT", filetypes=SRT_TYPES)
         if picked:
             self.srt.set(picked)
-            self.output.set(str(Path(picked).with_name(Path(picked).stem + "_ocr.txt")))
+            self.output.set(str(Path(picked).with_name(Path(picked).stem + "_ocr.srt")))
     def pick_output(self):
-        picked = filedialog.asksaveasfilename(title="Lưu kết quả OCR", defaultextension=".txt",
-                                              filetypes=[("Text", "*.txt")],
-                                              initialfile=Path(self.output.get()).name or "ocr_result.txt")
+        picked = filedialog.asksaveasfilename(title="Lưu kết quả OCR", defaultextension=".srt",
+                                              filetypes=SRT_TYPES,
+                                              initialfile=Path(self.output.get()).name or "ocr_srt.srt")
         if picked:
             self.output.set(picked)
     def pick_region(self):
@@ -1074,12 +1491,19 @@ class OCRApp:
             region = parse_region(region_file)
             try:
                 interval = validate_interval(float(self.scan_interval.get().strip().replace(",", ".")))
-                max_scans = validate_scan_limit(int(self.max_scans_per_side.get().strip()))
+                short_interval = validate_interval(float(self.short_interval.get().strip().replace(",", ".")))
+                extension = validate_extension(float(self.extension.get().strip().replace(",", ".")))
             except (ValueError, OverflowError) as exc:
                 raise ValueError(f"Cấu hình quét không hợp lệ: {exc}") from exc
+            image_mode, method, seek = self.image_mode.get(), self.ocr_method.get(), self.seek_mode.get()
+            text_score = float(self.text_score.get().strip().replace(",", "."))
+            validate_ocr_options(image_mode, method, seek, text_score)
+            default_model = self.default_model.get()
             count = len(read_srt(srt))
             if not str(self.output.get()).strip():
-                raise ValueError("Chưa chọn đường dẫn TXT")
+                raise ValueError("Chưa chọn đường dẫn SRT")
+            if output.suffix.lower() != ".srt":
+                raise ValueError("File đầu ra phải có phần mở rộng .srt")
             if output.resolve() in (video.resolve(), srt.resolve(), region_file.resolve()):
                 raise ValueError("File đầu ra không được trùng file đầu vào")
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -1088,7 +1512,10 @@ class OCRApp:
         except Exception as exc:
             messagebox.showerror("Thông tin chưa hợp lệ", str(exc))
             return
+        short_fallback = self.short_fallback.get()
+        det_model, rec_model = self.det_model.get(), self.rec_model.get()
         self.running = True
+        self.set_ocr_controls(True)
         self.stop_event.clear()
         self.progress.configure(maximum=count, value=0)
         self.percent.set(f"0 / {count}")
@@ -1096,12 +1523,15 @@ class OCRApp:
         self.run_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.append_log(f"Bắt đầu {count} segment, vùng chọn: {region_file.name}")
-        self.append_log(f"Quét giữa → trái → phải, bước {interval:g}s; {MATCH_RULES}; biên thời gian là midpoint hai segment liền kề")
-        self.append_log(f"Giới hạn quét: {max_scans} lần mỗi phía + 1 midpoint (tối đa {2*max_scans+1} lượt).")
-        self.append_log("Phân loại 1:1, 1:N, N:1 hoặc chưa xác định. Không có OCR: giữ SRT tối đa 2 ký tự, còn lại ghi Không thấy chữ.")
+        self.append_log(f"Quét Midpoint trái/phải; bước {interval:g}s; SRT ≤ 2 ký tự: {short_interval:g}s; mở rộng {extension:g}s mỗi phía; {MATCH_RULES}")
+        self.append_log("SRT > 2: Midpoint, trái/phải, chốt confidence > 95%; 1:1 / 1:2 / 2:1. SRT ≤ 2: trái → phải, chốt > 95%, 1:1. Case 2:1 dùng bước quét ngắn; dừng khi đủ 2 block sạch hoặc phạm biên.")
+        self.append_log("Không có OCR hợp lệ: A. Biên trái: OCR cuối hợp lệ (giữ qua A); biên phải: SRT kế tiếp.")
+        self.append_log(f"Dự phòng SRT ≤ 2 ký tự: {'B+SRT' if short_fallback else 'A'}")
         def job():
             try:
-                ocr_worker(video, srt, region, output, self.report, self.stop_event, interval, max_scans)
+                ocr_worker(video, srt, region, output, self.report, self.stop_event, interval, extension,
+                           short_fallback, det_model, rec_model, image_mode, method, seek, text_score, default_model,
+                           short_interval=short_interval)
             except Exception as exc:
                 self.report("error", f"{exc}\n{traceback.format_exc()}")
         threading.Thread(target=job, daemon=True).start()
@@ -1125,9 +1555,10 @@ class OCRApp:
                     self.status.set(f"Đang quét segment {index}...")
                     self.append_log(f"[{index}] {snippet}")
                 elif what == "done":
-                    self.append_log("Đã lưu TXT: " + data)
+                    self.append_log("Đã lưu SRT: " + data)
                     self.status.set("Đã dừng; lưu kết quả một phần." if self.stop_event.is_set() else "Hoàn tất OCR.")
                     self.running = False
+                    self.set_ocr_controls(False)
                     self.run_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     messagebox.showinfo("Kết quả OCR", f"Đã lưu tại:\n{data}")
@@ -1135,6 +1566,7 @@ class OCRApp:
                     self.append_log(data)
                     self.status.set("Có lỗi khi OCR, xem nhật ký.")
                     self.running = False
+                    self.set_ocr_controls(False)
                     self.run_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     messagebox.showerror("OCR thất bại", data.splitlines()[0])
